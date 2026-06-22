@@ -1,0 +1,19 @@
+# Generated build artifacts
+/Makefile
+/obj/
+/bin/
+*.o
+*.mod
+*.a
+*.x
+*.dSYM/
+
+# fesm-utils is symlinked in per-machine, not committed
+/fesm-utils
+
+# Disposable, worktree-local logs
+/logs/
+
+# Editor / OS
+*~
+.DS_Store
