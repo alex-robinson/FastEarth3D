@@ -13,7 +13,8 @@ program test_love
    use fe_earth_structure, only: earth_model, earth_layer, build_M3L70V01, &
                                  RHEOL_ELASTIC, RHEOL_FLUID
    use fe_radial_fe,       only: radial_mesh, radial_operator, loading_love, &
-                                 radial_fe_finalize
+                                 radial_fe_finalize, build_dense_operator, &
+                                 uniq_weight, idx_u, idx_v, idx_f, ndof_of
    implicit none
 
    real(wp), parameter :: km = 1.0e3_wp
@@ -61,6 +62,11 @@ program test_love
    write(*,'(a)') ' (3) elastic M3-L70-V01 loading Love numbers'
    write(*,'(a)') '      j       h           l           k        iters  resid'
    call elastic_M3()
+
+   ! --- 4. degree-1: sparse bordered operator reproduces E_uniq exactly --------
+   write(*,'(a)') ''
+   write(*,'(a)') ' (4) degree-1 sparse bordered operator (E_uniq without densifying)'
+   call degree1_bordered()
 
    write(*,'(a)') ''
    if (ok) then
@@ -127,5 +133,88 @@ contains
          end if
       end do
    end subroutine elastic_M3
+
+   subroutine degree1_bordered()
+      !! The j=1 operator must reinstate Martinec's E_uniq rigid-mode removal
+      !! (eq 83) WITHOUT the dense (4π/3) w wᵀ fill. The radial_operator imposes
+      !! it as a sparse KKT saddle point — the constraint wᵀ d = 0 (the CM /
+      !! geocenter frame; the penalty's coefficient is ~1e16× the band, so it is
+      !! a hard constraint in all but name). We solve a unit degree-1 load and
+      !! verify it is the unique CM-frame solution of Martinec's real operator:
+      !!   (i)   it CONVERGES — the bordered system is non-singular, so the rigid
+      !!         translation null space really is removed;
+      !!   (ii)  the rigid mode is gone:  wᵀ d / (‖w‖‖d‖) ≈ 0;
+      !!   (iii) the BAND operator A_band (the actual Martinec physics, eqs 80-84
+      !!         without E_uniq) is satisfied in every direction except the gauge
+      !!         direction w: the residual A_band d − b is parallel to w, and is
+      !!         exactly zero on the F (potential) rows, where w = 0;
+      !!   (iv)  the surface response is finite and non-trivial — a real geocenter
+      !!         deformation, not a collapsed null mode.
+      type(earth_model)     :: e
+      type(radial_mesh)     :: m
+      real(wp), allocatable :: Ab(:,:), w(:), b(:), d(:), r(:), wn(:), rp(:)
+      real(wp) :: rr, wTd, rperp, rF, h1, l1, k1, ua1, va1, fa1
+      integer  :: it, nd, nn
+
+      e = build_M3L70V01()
+      call m%build(e)
+      call op%assemble(e, m, 1)                 ! bordered (sparse) KKT j=1 operator
+      nd = ndof_of(m%nr)
+
+      b = op%load_rhs(1.0_wp)                    ! unit degree-1 surface load (eq 84)
+      allocate(d(nd))
+      call op%solve_vec(b, d, iters=it, resid=rr)
+
+      ! (i) non-singular: the equilibrated GMRES residual is at solver tolerance.
+      if (rr > 1.0e-8_wp) then
+         write(*,'(a,es10.2)') '      FAIL: j=1 solve did not converge, resid = ', rr
+         ok = .false.
+      end if
+
+      Ab = build_dense_operator(e, m, 1, with_uniq=.false.)   ! Martinec band, no E_uniq
+      w  = uniq_weight(m)
+      wn = w / sqrt(dot_product(w, w))
+
+      ! (ii) rigid translation removed (the defining job of E_uniq).
+      wTd = abs(dot_product(w, d)) / (sqrt(dot_product(w,w))*sqrt(dot_product(d,d)))
+
+      ! (iii) the real operator is satisfied off the gauge direction: A_band d − b
+      !       lies entirely along w (= −w λ from the KKT row), and vanishes on the
+      !       F rows where w = 0.
+      r  = matmul(Ab, d) - b
+      rp = r - dot_product(r, wn)*wn                  ! component of r perpendicular to w
+      rperp = sqrt(dot_product(rp,rp)) / sqrt(dot_product(r,r))
+      rF = 0.0_wp
+      do nn = 1, m%nr
+         rF = max(rF, abs(r(idx_f(nn))))
+      end do
+      rF = rF / maxval(abs(b))
+
+      write(*,'(a,i0,a,es9.2)') '      converged in ', it, ' iters, resid ', rr
+      write(*,'(a,es9.2,a,es9.2,a,es9.2)') '      wᵀd/|w||d| = ', wTd, &
+           '   ||r_⊥w||/||r|| = ', rperp, '   |r_F|/||b|| = ', rF
+      if (wTd > 1.0e-10_wp) then
+         write(*,'(a)') '      FAIL: rigid translation not removed (wᵀd /= 0)'; ok = .false.
+      end if
+      if (rperp > 1.0e-6_wp) then
+         write(*,'(a)') '      FAIL: band operator not satisfied off the gauge direction'
+         ok = .false.
+      end if
+      if (rF > 1.0e-8_wp) then
+         write(*,'(a)') '      FAIL: potential (F) equations not satisfied'; ok = .false.
+      end if
+
+      ! (iv) geocenter sanity: finite, non-trivial surface response.
+      ua1 = d(idx_u(m%nr));  va1 = d(idx_v(m%nr));  fa1 = d(idx_f(m%nr))
+      call loading_love(e, 1, 1.0_wp, ua1, va1, fa1, h1, l1, k1)
+      write(*,'(a,3es13.5)') '      degree-1 Love h,l,k = ', h1, l1, k1
+      if (h1 /= h1 .or. l1 /= l1 .or. k1 /= k1) then           ! NaN guard
+         write(*,'(a)') '      FAIL: j=1 Love numbers not finite'; ok = .false.
+      end if
+      if (abs(ua1) <= 0.0_wp .or. abs(fa1) <= 0.0_wp) then
+         write(*,'(a)') '      FAIL: j=1 load produced no surface deformation'
+         ok = .false.
+      end if
+   end subroutine degree1_bordered
 
 end program test_love

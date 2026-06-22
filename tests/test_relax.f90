@@ -57,6 +57,9 @@ program test_relax
       write(*,'(a)') '   FAIL: relaxation time does not scale with eta'; ok = .false.
    end if
 
+   ! (5) the stepper runs for j=1 (same bordered KKT operator, no special-casing)
+   call ve_degree1_smoke()
+
    write(*,'(a)') ''
    if (ok) then
       write(*,'(a)') ' PASS: Maxwell relaxation runs elastic -> fluid, t_relax ~ eta'
@@ -113,6 +116,43 @@ contains
       hinf = h
       call ve%destroy()
    end subroutine relax_run
+
+   subroutine ve_degree1_smoke()
+      !! fe_viscoelastic must run for j=1 too. The stepper uses the SAME bordered
+      !! KKT operator (radial_operator handles j=1 internally), so ve_degree needs
+      !! no special-casing. Confirm a held degree-1 load on a Maxwell sphere steps
+      !! stably — finite, non-trivial, and actually relaxing (the surface response
+      !! evolves away from its elastic value), not frozen or divergent.
+      type(earth_model) :: e
+      type(radial_mesh) :: m
+      type(ve_degree)   :: ve
+      real(wp) :: dt, t, ua, va, fa, u0, ulast
+      integer  :: istep, nstep
+      logical  :: finite
+      call mk_earth(e, 1.0e21_wp);  call m%build(e)
+      dt = 10.0_wp*yr
+      call ve%init(e, m, 1, dt)              ! degree 1
+      nstep = nint(20.0e3_wp*yr/dt)
+      finite = .true.;  u0 = 0.0_wp;  ulast = 0.0_wp
+      do istep = 0, nstep
+         call ve%step(1.0_wp, t, ua, va, fa)
+         if (ua /= ua .or. abs(ua) > 1.0e30_wp) finite = .false.
+         if (istep == 0) u0 = ua
+         ulast = ua
+      end do
+      call ve%destroy()
+      write(*,'(a)') ''
+      write(*,'(a,es12.4,a,es12.4)') '   j=1 VE: U(a) elastic=', u0, '  relaxed=', ulast
+      if (.not. finite) then
+         write(*,'(a)') '   FAIL: j=1 viscoelastic step not finite'; ok = .false.
+      end if
+      if (abs(u0) <= 0.0_wp) then
+         write(*,'(a)') '   FAIL: j=1 elastic response is zero'; ok = .false.
+      end if
+      if (abs(ulast - u0) <= 1.0e-3_wp*abs(u0)) then
+         write(*,'(a)') '   FAIL: j=1 load did not relax'; ok = .false.
+      end if
+   end subroutine ve_degree1_smoke
 
    subroutine mk_earth(e, eta)
       type(earth_model), intent(out) :: e
