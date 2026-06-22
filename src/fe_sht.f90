@@ -22,6 +22,8 @@ module fe_sht
    ! prefix include dir; found via -I$(SHTNSROOT)/include).
    include 'shtns.f03'
 
+   real(wp), parameter :: pi = acos(-1.0_wp)
+
    public :: sht_grid
 
    type :: sht_grid
@@ -33,12 +35,17 @@ module fe_sht
       integer :: nlat = 0              !! # latitudes (Gauss nodes)
       integer :: nphi = 0              !! # longitudes
       integer :: nlm  = 0              !! # spectral coefficients (m >= 0)
+      ! Physical grid geometry, cached at init. Spatial fields are (nphi, nlat).
+      real(wp), allocatable :: colat(:)    !! colatitude of each latitude row [rad] (nlat)
+      real(wp), allocatable :: lon(:)      !! longitude of each column [rad] (nphi)
+      real(wp), allocatable :: gauss_w(:)  !! Gauss quadrature weights [-] (nlat), sum = 2
    contains
       procedure :: init      => sht_grid_init
       procedure :: destroy   => sht_grid_destroy
       procedure :: synthesis => sht_grid_synthesis   !! spectral -> spatial
       procedure :: analysis  => sht_grid_analysis    !! spatial  -> spectral
       procedure :: lmidx     => sht_grid_lmidx       !! (l,m) -> coefficient index
+      procedure :: surface_integral => sht_grid_surface_integral  !! ∫ f dΩ
    end type sht_grid
 
 contains
@@ -82,15 +89,68 @@ contains
       self%nlat = info%nlat
       self%nphi = info%nphi
       self%nlm  = info%nlm
+
+      call cache_geometry(self, info)
    end subroutine sht_grid_init
 
+   subroutine cache_geometry(self, info)
+      !! Cache the physical grid coordinates and quadrature weights from SHTns.
+      class(sht_grid),  intent(inout) :: self
+      type(shtns_info), intent(in)    :: info
+      real(c_double), pointer     :: cos_theta(:)
+      real(c_double), allocatable :: wts_half(:)
+      integer :: j, nh
+
+      ! Colatitudes from the cos(theta) array SHTns exposes on its struct.
+      call c_f_pointer(info%ct, cos_theta, [self%nlat])
+      self%colat = acos(real(cos_theta, wp))
+
+      ! Uniform longitudes.
+      allocate(self%lon(self%nphi))
+      do j = 1, self%nphi
+         self%lon(j) = 2.0_wp*pi*real(j-1, wp)/real(self%nphi, wp)
+      end do
+
+      ! Gauss weights: SHTns returns one hemisphere (nlat_2); mirror to full grid.
+      nh = info%nlat_2
+      allocate(wts_half(nh))
+      call shtns_gauss_wts(self%cfg, wts_half)
+      allocate(self%gauss_w(self%nlat))
+      self%gauss_w(1:nh) = real(wts_half, wp)
+      self%gauss_w(self%nlat:self%nlat-nh+1:-1) = real(wts_half, wp)
+      deallocate(wts_half)
+   end subroutine cache_geometry
+
    subroutine sht_grid_destroy(self)
-      !! Release the SHTns configuration.
+      !! Release the SHTns configuration and cached geometry.
       class(sht_grid), intent(inout) :: self
       if (c_associated(self%cfg)) call shtns_destroy(self%cfg)
       self%cfg = c_null_ptr
       self%lmax = 0; self%mmax = 0; self%nlat = 0; self%nphi = 0; self%nlm = 0
+      if (allocated(self%colat))   deallocate(self%colat)
+      if (allocated(self%lon))     deallocate(self%lon)
+      if (allocated(self%gauss_w)) deallocate(self%gauss_w)
    end subroutine sht_grid_destroy
+
+   real(wp) function sht_grid_surface_integral(self, f) result(total)
+      !! Surface integral ∫ f dΩ over the unit sphere by Gauss-Legendre
+      !! quadrature in latitude and the uniform rule in longitude. Used for the
+      !! mass/area integrals the sea-level equation depends on; for f≡1 it
+      !! returns 4π.
+      class(sht_grid), intent(in) :: self
+      real(wp),        intent(in) :: f(:,:)   !! (nphi, nlat)
+      real(wp) :: dlon, row
+      integer  :: i, j
+      dlon  = 2.0_wp*pi/real(self%nphi, wp)
+      total = 0.0_wp
+      do j = 1, self%nlat
+         row = 0.0_wp
+         do i = 1, self%nphi
+            row = row + f(i, j)
+         end do
+         total = total + self%gauss_w(j)*row*dlon
+      end do
+   end function sht_grid_surface_integral
 
    subroutine sht_grid_synthesis(self, slm, sh)
       !! Spectral coefficients -> spatial field, shape (nphi, nlat).

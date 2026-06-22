@@ -10,10 +10,11 @@ program test_sht
    implicit none
 
    type(sht_grid) :: g
-   integer  :: lmax, l, m, lm
+   integer  :: lmax, l, m, lm, j
    real(wp),    allocatable :: sh(:,:)
    complex(wp), allocatable :: slm(:), slm0(:)
-   real(wp) :: err, tol
+   real(wp) :: err, tol, fourpi, area, integ, y10err
+   logical  :: ok
 
    lmax = 24
    call g%init(lmax, nlat=48, nphi=96)
@@ -43,14 +44,46 @@ program test_sht
 
    err = maxval(abs(slm - slm0))
    tol = 1.0e-11_wp
+   fourpi = 4.0_wp*acos(-1.0_wp)
+   ok = .true.
    print '(a,es12.4,a,es12.4)', ' round-trip max error = ', err, '   tol = ', tol
+   if (err >= tol) ok = .false.
+
+   ! --- Quadrature: surface integral of a uniform field must give 4*pi --------
+   sh   = 1.0_wp
+   area = g%surface_integral(sh)
+   print '(a,es22.14,a,es12.4)', ' area  ∫1 dΩ          = ', area, &
+        '   err = ', abs(area - fourpi)
+   if (abs(area - fourpi) >= 1.0e-11_wp) ok = .false.
+
+   ! --- Normalization: a unit Y00 coefficient is orthonormal, ∫ Y00^2 dΩ = 1 --
+   slm = (0.0_wp, 0.0_wp)
+   slm(g%lmidx(0,0)) = (1.0_wp, 0.0_wp)
+   call g%synthesis(slm, sh)
+   integ = g%surface_integral(sh*sh)
+   print '(a,es22.14,a,es12.4)', ' norm  ∫ Y00^2 dΩ     = ', integ, &
+        '   err = ', abs(integ - 1.0_wp)
+   if (abs(integ - 1.0_wp) >= 1.0e-11_wp) ok = .false.
+
+   ! --- Geometry + convention: Y(1,0) field = sqrt(3/4pi) * cos(colat) --------
+   ! Confirms orthonormal norm, no Condon-Shortley phase, and that g%colat
+   ! matches the spatial grid row ordering.
+   slm = (0.0_wp, 0.0_wp)
+   slm(g%lmidx(1,0)) = (1.0_wp, 0.0_wp)
+   call g%synthesis(slm, sh)
+   y10err = 0.0_wp
+   do j = 1, g%nlat
+      y10err = max(y10err, abs(sh(1,j) - sqrt(3.0_wp/fourpi)*cos(g%colat(j))))
+   end do
+   print '(a,es12.4)', ' Y(1,0) vs sqrt(3/4pi)cosθ max err = ', y10err
+   if (y10err >= 1.0e-12_wp) ok = .false.
 
    call g%destroy()
 
-   if (err < tol) then
-      print '(a)', ' PASS: SHTns synthesis/analysis round trip'
+   if (ok) then
+      print '(a)', ' PASS: SHTns transform, quadrature, normalization, geometry'
    else
-      print '(a)', ' FAIL: round-trip error exceeds tolerance'
+      print '(a)', ' FAIL: one or more SHT checks exceeded tolerance'
       error stop 1
    end if
 end program test_sht
