@@ -68,39 +68,61 @@ Use the Appendix C element integrals (implemented + tested in
 
 ## System structure & solve (§10)
 
-Per degree j, DOFs `(U_k, V_k, F_k)` nodal (k=1..P+1) + `Π_k` per element (k=1..P).
-Saddle-point (mixed) system, symmetric, **band-diagonal** (P1/P0 local supports):
+Per degree j, DOFs `(U_k, V_k, F_k)` nodal (k=1..P+1) + `Π_k` per element (k=1..P),
+laid out **node-interleaved** `[U V F | Π]` so the operator stays band-diagonal:
 
 ```
 [ A   Bᵀ ] [d ]   [f]          A = shear+grav stiffness (U,V,F)
 [ B   0  ] [Π ] = [0]          B = pressure/incompressibility coupling (eq 82)
 ```
 
-Solve by banded LU (Martinec uses Numerical Recipes BANMUL/BANBKS; we can use a
-banded LAPACK `dgbsv`/`zgbsv` or LIS). The matrix is **degree-dependent only
-through J**; factor once per j, reuse for all loads/time steps.
+The shear block (eq 80) is **symmetric** (it is `∫μ ε:ε`); the **B/Bᵀ** pressure
+block is symmetric by construction; but the **self-gravity `I²` U↔F coupling
+(eq 81) is not symmetric**, so the assembled operator is non-symmetric overall —
+which is why Martinec solves it with a *general* banded LU (BANMUL/BANBKS), not a
+symmetric one. Implemented in `fe_radial_fe%build_dense_operator`, transcribed
+term-by-term from the PDF and verified against the analytic limits below.
+
+**Solve (no LAPACK): LIS** (`fe_lis`). The physical entries span ~20 orders of
+magnitude (`μr²/h` vs the pressure couplings vs `1/4πG`), so the operator is
+geometric-mean **row/column equilibrated** before the solve; restarted GMRES with
+an ILU(1) preconditioner then converges effectively as a direct solve (1 GMRES
+iteration, residual ~1e-13) on this band-diagonal system. The matrix is
+**degree-dependent only through J**; assemble + equilibrate once per j, reuse for
+all orders m / loads / time steps (precon-reuse optimisation still TODO).
 
 ### Boundary / regularity conditions
-- **Centre r=0:** regularity; for j≥1 displacement → 0 at the centre. The r²
-  weighting suppresses node-1 contributions; check whether U₁=V₁=0 must be imposed.
+- **Centre r=0:** **no explicit BC** — Martinec meshes through the centre and the
+  r² weighting handles regularity; the singular `I⁷` term is killed by `R₁=0`
+  (skipped to avoid 0·∞). Verified: no empty rows, solver well-posed for j≥2.
 - **Surface:** the (j+1)F(a) exterior term + load RHS above.
 - **Uniqueness (j=1):** E_uniq removes the rigid translation null space.
 - **Fluid core:** μ=0 region; free-slip emerges (no shear stress). No explicit CMB
   BC (Martinec meshes through the centre).
 
-## Love numbers (§11; normalization to calibrate)
+## Love numbers (§11; conventions verified)
 
-For a unit point-mass load, `σ_jm = (1/a²)√((2j+1)/4π) δ_{m0}` (eq 115). From the
-surface coefficients `U_jm(a), V_jm(a), F_jm(a)`, the loading Love numbers follow
-(Farrell 1972 normalization):
-`h_j ∝ g₀(a) U(a)`, `l_j ∝ g₀(a) V(a)`, `k_j ∝ −F(a)`, scaled by the load's direct
-potential `∝ 4πGa/(2j+1)·σ_j`. **Exact constants to be calibrated against the
-Spada (2011) Test 2/1 published h,l,k** (and the fluid limits `h_j→−(2j+1)/3`,
-`k_j→−1`).
+For a degree-j surface load of coefficient `σ`, the load's own potential at the
+surface is `φ^L = 4πG a σ/(2j+1)`. From the surface coefficients (Farrell 1972
+normalization), implemented in `fe_radial_fe%loading_love`:
+
+`h_j = g₀(a) U(a)/φ^L`,  `l_j = g₀(a) V(a)/φ^L`,  `k_j = −F(a)/φ^L − 1`.
+
+The `k` form was **pinned empirically by two analytic limits**: Martinec's `φ₁`
+(=`F`) is the *total* perturbation potential and carries the load's direct
+potential with the **opposite sign** to `φ^L` (`F→−φ^L` for a rigid sphere), so
+the induced potential is `−F−φ^L`. `σ` cancels in every ratio (use σ=1).
+**`l` still needs its sign / S⁽¹⁾-normalization factor calibrated** against the
+published Spada `l` (h and k are fully pinned).
 
 ## Validation targets
-1. Fluid (t→∞) limits of U,V (paper Fig 6/8 numbers; e.g. for model E,
-   `U₂(a)=−278.99e-20 m`). Independent check of the self-gravity/incompressibility.
-2. Elastic loading Love numbers h,l,k vs **Spada (2011) Test 2/1**, model M3-L70-V01,
-   degrees 2–256.
-3. Internal: symmetric matrix; degree-1 uniqueness; mesh refinement convergence.
+1. **Fluid limit** (μ→0, homogeneous sphere): `h_j → −(2j+1)/3` and `k_j → −1`.
+   ✅ reproduced to ~1e-5 (`test_love`). Independent check of self-gravity +
+   incompressibility + Poisson + the load forcing.
+2. **Rigid limit** (μ→∞): `h_j, l_j, k_j → 0`. ✅ to ~1e-5 (`test_love`).
+   Checks the shear block and the F sign convention.
+3. Elastic loading Love numbers h,l,k vs **Spada (2011) Test 2/1**, model
+   M3-L70-V01, degrees 2–256. Current output is physical (k₂≈−0.37, decaying with
+   j); a quantitative match awaits the published table (not in-repo). 🔶
+4. Internal: operator finite (centre I⁷ guard); B=Bᵀ; degree-1 uniqueness;
+   gravity R_k reconstruction (`test_assembly`).

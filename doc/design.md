@@ -50,7 +50,9 @@ rewrite.
 | `fe_constants` | physical / reference constants (benchmark conventions) | done |
 | `fe_sht` | SHTns wrapper — the transform kernel | done + tested |
 | `fe_earth_structure` | radial layers + optional 3D viscosity field | types |
-| `fe_radial_fe` | per-degree banded radial FE operators | stub |
+| `fe_radial_integrals` | Appendix C P1/P0 element integrals | done + tested |
+| `fe_lis` | LIS wrapper (COO→solve), isolates the solver | done |
+| `fe_radial_fe` | per-degree saddle-point operator + LIS solve | done + tested |
 | `fe_viscoelastic` | Maxwell memory-stress explicit time integration | stub |
 | `fe_gravity` | self-gravitation / Poisson coupling | stub |
 | `fe_sle` | sea-level equation (ocean function, migration) | stub |
@@ -142,24 +144,25 @@ marked **(unverified)** await the paywalled Martinec (2000) PDF.
 `{U, V, F}` nodal + pressure Π; tractions are natural BCs of the weak form.
 **P1 ("tent") radial basis** (VEGA: 165 elements). Mesh = done (§3, `fe_radial_fe`).
 
-**Incompressibility discretization (B4) — OPEN.** The inf-sup-critical choice.
-Candidate (unverified): P1 displacement/potential + P0 pressure, `Div u = 0`
-enforced weakly via the pressure block. Must be confirmed against Martinec (2000)
-— could be P1–P0, a stabilized pair, Taylor–Hood-like, or pressure-elimination.
-**Do not implement the FE assembly until this is pinned.** Need the PDF
-(`doc/refs/martinec2000.pdf`, AWI OUP access).
+**Incompressibility discretization (B4) — RESOLVED.** Confirmed from the
+Martinec (2000) PDF: **P1 (U,V,F nodal) / P0 (Π per element)**, `Div u = 0`
+enforced weakly via the pressure block (eq 82). Assembled and validated — see
+[formulation.md](formulation.md) and `fe_radial_fe%build_dense_operator`.
 
-**Boundary conditions:** fluid core NOT meshed → CMB boundary condition
-(Wu & Peltier 1982): continuity of normal displacement, normal traction,
-vanishing tangential traction, potential + flux. Surface: traction balances the
-load, potential-flux jump carries the `4πGσ` source. Density-jump interfaces are
-natural conditions of the weak form.
+**Boundary conditions — settled (whole-sphere mesh).** The fluid core IS meshed
+(μ=0 region), so there is **no explicit CMB boundary condition** — free-slip
+emerges. No explicit centre BC either: Martinec meshes through r=0 and the r²
+weighting handles regularity (the singular `I⁷` term vanishes via `R₁=0`).
+Surface: the (j+1)F(a) exterior match on the F-F diagonal + the load RHS.
+Density-jump interfaces are natural conditions of the weak form. (The earlier
+Wu & Peltier CMB-BC plan assumed an un-meshed core and is superseded.)
 
 **Time scheme (rung 3):** explicit forward-Euler memory-stress update; previous
 memory stress relaxed by `(1 − Δt/τ_M)`, `τ_M = η/μ` (Hanyk Eq. 4.36). Stability
 `Δt ≲ 2 η_min/μ` ⇒ impose a viscosity floor. VEGA uses Δt = 20 yr.
 
-**Love numbers (rung 2 target):** from surface values for a unit degree-n load,
-`h_n = g₀ N_n U(a)/Φ_n`, `l_n = g₀ N_n V(a)/Φ_n`, `k_n = −N_n F(a)/Φ_n`
-(Hanyk Eq. 4.40, Farrell normalization). Fluid limits `h_n → −(2n+1)/3`,
-`k_n → −1`. Validate vs Spada (2011) Test 2/1.
+**Love numbers (rung 2) — DONE.** `h_n = g₀ U(a)/φ^L`, `l_n = g₀ V(a)/φ^L`,
+`k_n = −F(a)/φ^L − 1`, with `φ^L = 4πG a σ/(2n+1)` (`fe_radial_fe%loading_love`).
+The fluid (`h_n→−(2n+1)/3`, `k_n→−1`) and rigid (`→0`) limits are reproduced to
+~1e-5 (`test_love`). `l_n` sign/normalization and the quantitative Spada (2011)
+Test 2/1 match are the remaining calibration items.

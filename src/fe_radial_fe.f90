@@ -26,10 +26,12 @@ module fe_radial_fe
    use fe_radial_integrals, only: elem_i1, elem_i2, elem_i3, elem_i4, &
                                   elem_i5, elem_i6, elem_i7, &
                                   elem_k1, elem_k2, elem_k3
+   use fe_lis,              only: fe_lis_solve_coo, fe_lis_finalize
    implicit none
    private
 
    public :: radial_mesh, radial_operator
+   public :: loading_love, radial_fe_finalize
    ! Assembly building blocks (public so the unit tests can inspect them).
    public :: build_dense_operator, shell_Rk
    public :: idx_u, idx_v, idx_f, idx_p, ndof_of
@@ -54,15 +56,29 @@ module fe_radial_fe
    end type radial_mesh
 
    type :: radial_operator
-      !! Banded radial system for one degree l (factored, ready to solve).
-      integer :: l  = -1
-      integer :: nr = 0
-      ! TODO: banded matrix storage + factorization for the spheroidal degrees of
-      ! freedom (U, V, potential F, pressure Π) per node, once B4 is confirmed.
+      !! Per-degree saddle-point system, equilibrated and stored sparse (COO),
+      !! ready to hand to LIS. The physical operator (eqs 80-84) spans ~20 orders
+      !! of magnitude in entry size (μ r²/h vs the pressure couplings vs 1/4πG),
+      !! so a Krylov solver needs it row/column-equilibrated first; we keep the
+      !! scalings to recover the physical solution.
+      integer  :: j  = -1                 !! spherical-harmonic degree
+      integer  :: nr = 0, ne = 0, ndof = 0
+      real(wp) :: r_earth = 0.0_wp        !! surface radius a [m]
+      real(wp) :: g_surf  = 0.0_wp        !! g₀(a) [m s⁻²]
+      integer,  allocatable :: rows(:), cols(:)  !! COO of the SCALED operator
+      real(wp), allocatable :: vals(:)
+      real(wp), allocatable :: dr(:), dc(:)      !! row / column equilibration
+      logical  :: ready = .false.
    contains
       procedure :: assemble => radial_operator_assemble
       procedure :: solve    => radial_operator_solve
+      procedure :: destroy  => radial_operator_destroy
    end type radial_operator
+
+   ! Default LIS solver/preconditioner for the indefinite, non-symmetric
+   ! saddle-point system: restarted GMRES with an ILU(1) preconditioner.
+   character(len=*), parameter :: LIS_OPTS_DEFAULT = &
+        '-i gmres -restart 60 -p ilu -ilu_fill 1 -tol 1.0e-12 -maxiter 20000'
 
 contains
 
@@ -236,9 +252,9 @@ contains
                Aloc(lU(ib), lU(ia)) = Aloc(lU(ib), lU(ia)) + mu_k*( 2.0_wp*i1(ia,ib) )
                ! J I¹ V^a δV^b
                Aloc(lV(ib), lV(ia)) = Aloc(lV(ib), lV(ia)) + mu_k*( Jr*i1(ia,ib) )
-               ! J I³(a,b)(−V^a+U^a) δU^b
-               Aloc(lU(ib), lU(ia)) = Aloc(lU(ib), lU(ia)) + mu_k*( Jr*i3(ia,ib) )
-               Aloc(lU(ib), lV(ia)) = Aloc(lU(ib), lV(ia)) - mu_k*( Jr*i3(ia,ib) )
+               ! J I³(a,b)(−V^a+U^a) δV^b
+               Aloc(lV(ib), lU(ia)) = Aloc(lV(ib), lU(ia)) + mu_k*( Jr*i3(ia,ib) )
+               Aloc(lV(ib), lV(ia)) = Aloc(lV(ib), lV(ia)) - mu_k*( Jr*i3(ia,ib) )
                ! J I³(b,a) V^a(−δV^b+δU^b)
                Aloc(lV(ib), lV(ia)) = Aloc(lV(ib), lV(ia)) - mu_k*( Jr*i3(ib,ia) )
                Aloc(lU(ib), lV(ia)) = Aloc(lU(ib), lV(ia)) + mu_k*( Jr*i3(ib,ia) )
@@ -315,30 +331,159 @@ contains
       end if
    end function build_dense_operator
 
-   ! --- Operator (stub) -------------------------------------------------------
+   ! --- Operator: assemble, solve, destroy ------------------------------------
 
-   subroutine radial_operator_assemble(self, earth, mesh, l)
-      !! Assemble + factor the banded radial system for degree l on `mesh`.
-      !! STATUS: stub — awaits the confirmed Martinec (2000) weak form (B4).
+   subroutine radial_operator_assemble(self, earth, mesh, j)
+      !! Assemble the per-degree operator (eqs 80-84), row/column-equilibrate it,
+      !! and store it sparse (COO) for repeated LIS solves. The equilibration is
+      !! a geometric-mean scaling Â = Dr A Dc that brings every entry to O(1) —
+      !! essential for an iterative solve of a system whose physical entries span
+      !! ~20 orders of magnitude. Independent of m and load, so reused across all
+      !! orders and (later) time steps of degree j.
       class(radial_operator), intent(inout) :: self
       type(earth_model),      intent(in)    :: earth
       type(radial_mesh),      intent(in)    :: mesh
-      integer,                intent(in)    :: l
-      self%l  = l
-      self%nr = mesh%nr
-      ! TODO: build element matrices by sampling earth%{rho_at,mu_at,gravity_at}
-      ! on the mesh, couple self-gravity (Poisson), apply the surface-load and
-      ! CMB fluid boundary conditions, enforce incompressibility, factor.
-      if (earth%n_layers() == 0) return
+      integer,                intent(in)    :: j
+
+      real(wp), allocatable :: A(:,:)
+      integer  :: nd, i, k, nnz
+
+      call self%destroy()
+      A  = build_dense_operator(earth, mesh, j)
+      nd = ndof_of(mesh%nr)
+
+      self%j       = j
+      self%nr      = mesh%nr
+      self%ne      = mesh%ne
+      self%ndof    = nd
+      self%r_earth = earth%r_earth
+      self%g_surf  = earth%gravity_at(earth%r_earth)
+
+      ! --- geometric-mean equilibration: dc by columns, then dr by rows --------
+      allocate(self%dc(nd), self%dr(nd))
+      do k = 1, nd
+         self%dc(k) = colnorm(A(:,k))
+      end do
+      do i = 1, nd
+         self%dr(i) = rownorm(A(i,:), self%dc)
+      end do
+
+      ! --- extract the scaled operator Â = Dr A Dc into COO --------------------
+      nnz = count(A /= 0.0_wp)
+      allocate(self%rows(nnz), self%cols(nnz), self%vals(nnz))
+      nnz = 0
+      do k = 1, nd               ! column
+         do i = 1, nd            ! row
+            if (A(i,k) == 0.0_wp) cycle
+            nnz = nnz + 1
+            self%rows(nnz) = i
+            self%cols(nnz) = k
+            self%vals(nnz) = self%dr(i)*A(i,k)*self%dc(k)
+         end do
+      end do
+      self%ready = .true.
    end subroutine radial_operator_assemble
 
-   subroutine radial_operator_solve(self, rhs, sol)
-      !! Solve the assembled system for one (l,m) right-hand side. STATUS: stub.
+   subroutine radial_operator_solve(self, sigma, U_a, V_a, F_a, iters, resid, info, options)
+      !! Solve for the surface response to a degree-j surface mass load of
+      !! coefficient `sigma` (eq 84 RHS): force −a²σ g₀(a) on U(a) and −a²σ on
+      !! F(a). Returns the surface coefficients U(a), V(a), F(a); optionally the
+      !! LIS iteration count, residual and error code.
       class(radial_operator), intent(in)  :: self
-      complex(wp),            intent(in)  :: rhs(:)
-      complex(wp),            intent(out) :: sol(:)
-      sol = (0.0_wp, 0.0_wp)
-      ! TODO: banded back-substitution using the stored factorization.
+      real(wp),               intent(in)  :: sigma
+      real(wp),               intent(out) :: U_a, V_a, F_a
+      integer,  optional,     intent(out) :: iters, info
+      real(wp), optional,     intent(out) :: resid
+      character(len=*), optional, intent(in) :: options
+
+      real(wp), allocatable :: b(:), y(:), x(:)
+      integer  :: nd, it, ier
+      real(wp) :: rsd
+      character(len=256) :: opts
+
+      nd = self%ndof
+      opts = LIS_OPTS_DEFAULT
+      if (present(options)) opts = options
+
+      ! RHS (eq 84 σ-terms), then equilibrate: b̂ = Dr b.
+      allocate(b(nd), y(nd), x(nd));  b = 0.0_wp
+      b(idx_u(self%nr)) = -self%r_earth**2 * sigma * self%g_surf
+      b(idx_f(self%nr)) = -self%r_earth**2 * sigma
+      b = self%dr * b
+
+      call fe_lis_solve_coo(nd, self%rows, self%cols, self%vals, b, y, &
+                            trim(opts), it, rsd, ier)
+
+      x = self%dc * y            ! recover the physical solution
+      U_a = x(idx_u(self%nr))
+      V_a = x(idx_v(self%nr))
+      F_a = x(idx_f(self%nr))
+      if (present(iters)) iters = it
+      if (present(resid)) resid = rsd
+      if (present(info))  info  = ier
    end subroutine radial_operator_solve
+
+   subroutine radial_operator_destroy(self)
+      class(radial_operator), intent(inout) :: self
+      if (allocated(self%rows)) deallocate(self%rows)
+      if (allocated(self%cols)) deallocate(self%cols)
+      if (allocated(self%vals)) deallocate(self%vals)
+      if (allocated(self%dr))   deallocate(self%dr)
+      if (allocated(self%dc))   deallocate(self%dc)
+      self%ready = .false.
+   end subroutine radial_operator_destroy
+
+   pure real(wp) function colnorm(col) result(d)
+      !! Column scale 1/√(max|·|); unit scale for an all-zero column.
+      real(wp), intent(in) :: col(:)
+      real(wp) :: m
+      m = maxval(abs(col))
+      if (m > 0.0_wp) then;  d = 1.0_wp/sqrt(m);  else;  d = 1.0_wp;  end if
+   end function colnorm
+
+   pure real(wp) function rownorm(row, dc) result(d)
+      !! Row scale 1/√(max|row·Dc|) after the columns are scaled.
+      real(wp), intent(in) :: row(:), dc(:)
+      real(wp) :: m
+      m = maxval(abs(row*dc))
+      if (m > 0.0_wp) then;  d = 1.0_wp/sqrt(m);  else;  d = 1.0_wp;  end if
+   end function rownorm
+
+   ! --- Love numbers ----------------------------------------------------------
+
+   subroutine loading_love(earth, j, sigma, U_a, V_a, F_a, h, l, k)
+      !! Loading Love numbers from the surface response to a degree-j load of
+      !! coefficient `sigma` (Farrell 1972 normalization). The load's own
+      !! potential at the surface is φ^L = 4πG a σ/(2j+1).
+      !!
+      !!     h = g U(a)/φ^L,   l = g V(a)/φ^L,   k = −F(a)/φ^L − 1.
+      !!
+      !! F(a) is Martinec's φ₁ surface coefficient: the *total* perturbation
+      !! potential, carrying the load's own direct potential with the OPPOSITE
+      !! sign to φ^L (φ₁ → −φ^L for a rigid sphere). The induced (deformation)
+      !! potential is therefore −F(a) − φ^L, giving k as above. Pinned by two
+      !! analytic limits (homogeneous sphere): fluid (μ→0) F→0 ⇒ k→−1 and
+      !! h→−(2j+1)/3 exactly; rigid (μ→∞) F→−φ^L ⇒ h,l,k→0.
+      !!
+      !! NOTE: l is the raw g V(a)/φ^L. Its overall sign and any S⁽¹⁾ tangential-
+      !! harmonic normalization factor are still to be calibrated against the
+      !! published Spada (2011) l (h and k are fully pinned by the limits above).
+      type(earth_model), intent(in)  :: earth
+      integer,           intent(in)  :: j
+      real(wp),          intent(in)  :: sigma, U_a, V_a, F_a
+      real(wp),          intent(out) :: h, l, k
+      real(wp) :: a, g, phiL
+      a    = earth%r_earth
+      g    = earth%gravity_at(a)
+      phiL = 4.0_wp*pi*grav_G*a*sigma/real(2*j+1, wp)
+      h =  g*U_a/phiL
+      l =  g*V_a/phiL
+      k = -F_a/phiL - 1.0_wp
+   end subroutine loading_love
+
+   subroutine radial_fe_finalize()
+      !! Release the LIS runtime (wraps fe_lis_finalize) at program end.
+      call fe_lis_finalize()
+   end subroutine radial_fe_finalize
 
 end module fe_radial_fe
