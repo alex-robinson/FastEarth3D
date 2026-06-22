@@ -56,7 +56,9 @@ Use the Appendix C element integrals (implemented + tested in
 - `δE_grav` (81): self-gravity coupling among U,V,F. Uses I2,I4,I5,I7 (the I7/1/r
   term carries R_k; **skip when R_k=0**, i.e. innermost element) and `1/(4πG)` for
   the `∫|∇φ₁|²` block (I1,I6).
-- `δE_uniq` (83): degree-1 rigid-mode removal. Uses K2 (∫ψ r) on degree-1 dofs.
+- `δE_uniq` (83): degree-1 rigid-mode removal. The penalty weight w uses K3
+  (∫ψ r²) on the degree-1 (U,V) dofs (`uniq_weight`). Imposed sparsely as a KKT
+  constraint wᵀd=0, not as the dense penalty — see "degree-1" below.
 
 ### Surface forcing (eq 84)
 
@@ -96,7 +98,8 @@ all orders m / loads / time steps (precon-reuse optimisation still TODO).
   r² weighting handles regularity; the singular `I⁷` term is killed by `R₁=0`
   (skipped to avoid 0·∞). Verified: no empty rows, solver well-posed for j≥2.
 - **Surface:** the (j+1)F(a) exterior term + load RHS above.
-- **Uniqueness (j=1):** E_uniq removes the rigid translation null space.
+- **Uniqueness (j=1):** E_uniq removes the rigid translation null space — imposed
+  as a sparse KKT constraint wᵀd=0 (CM frame), not the dense penalty (see above).
 - **Fluid core:** μ=0 region; free-slip emerges (no shear stress). No explicit CMB
   BC (Martinec meshes through the centre).
 
@@ -128,10 +131,27 @@ matches in shape, but mine relaxes ~15% faster and sits ~10% high (elastic) /
 elastic disc, not a solver bug (the solver is exact at both analytic limits and
 `t_relax∝η` holds). Quantitative closure needs Spada's exact model / Love table.
 
-**Open — j=1 is dense:** `E_uniq` (eq 83) is a rank-1 fill, so the j=1 operator is
-dense → ILU + iterative solve is slow, impractical for time stepping. Fine for the
-elastic one-shot solve; the disc synthesis skips j=1 (≈0 contribution at the cap
-centre). Needs a special-cased j=1 (e.g. project out the rigid mode instead).
+**Degree-1 (sparse KKT, solved):** `E_uniq` (eq 83) is a rank-1 penalty
+`(4π/3) w wᵀ` over every degree-1 (U,V) dof, so adding it to the operator densifies
+it (~870×870 dense ILU + solve — impractical for the time stepper). Two facts let
+us keep it sparse: (i) `w` carries K³~∫ψr², so the penalty coefficient is ~1e16×
+the band, i.e. the penalty is already a hard constraint `wᵀd=0` (the CM/geocenter
+frame, Blewitt 2003) in all but name; (ii) a hard constraint borders the band with
+one row/col instead of filling it. So `radial_operator` imposes it as a KKT saddle
+point
+
+```
+[ A_band  w ] [d]   [f]
+[ wᵀ      0 ] [λ] = [0]   ⇒  A_band d + w λ = f,  wᵀ d = 0
+```
+
+(`with_uniq=.false.` builds the band; `uniq_weight` is the border). The solve runs
+at `ndof+1` internally but `load_rhs`/`solve_vec` keep their physical `ndof`
+interface, so `fe_viscoelastic` needs no j=1 special case. Converges in 2 GMRES
+iterations; `build_dense_operator` still adds the dense penalty as the reference
+operator. Validated in `test_love` (4) and `test_relax` (5); see the validation
+list below. (The disc synthesis no longer needs to skip j=1 — it is the physical
+geocenter signal.)
 
 ## Love numbers (§11; conventions verified)
 
@@ -157,5 +177,9 @@ published Spada `l` (h and k are fully pinned).
 3. Elastic loading Love numbers h,l,k vs **Spada (2011) Test 2/1**, model
    M3-L70-V01, degrees 2–256. Current output is physical (k₂≈−0.37, decaying with
    j); a quantitative match awaits the published table (not in-repo). 🔶
-4. Internal: operator finite (centre I⁷ guard); B=Bᵀ; degree-1 uniqueness;
-   gravity R_k reconstruction (`test_assembly`).
+4. Internal: operator finite (centre I⁷ guard); B=Bᵀ; gravity R_k reconstruction
+   (`test_assembly`). ✅
+5. **Degree-1 (sparse KKT):** the j=1 solve converges (non-singular), removes the
+   rigid mode (`wᵀd/|w||d|`~1e-23), satisfies the band operator off the gauge
+   direction (`‖r⊥w‖/‖r‖`~1e-11) and on the F rows, and gives a finite geocenter
+   response (`test_love` (4)); `ve_degree` steps stably at j=1 (`test_relax` (5)). ✅
