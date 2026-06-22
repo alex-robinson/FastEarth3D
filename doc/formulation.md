@@ -100,6 +100,39 @@ all orders m / loads / time steps (precon-reuse optimisation still TODO).
 - **Fluid core:** μ=0 region; free-slip emerges (no shear stress). No explicit CMB
   BC (Martinec meshes through the centre).
 
+## Viscoelastic time stepping (§3, §8-9; rung 3 — DONE 1-D)
+
+Explicit ω=1 Maxwell scheme (eqs 23-25): the total stress splits into the
+instantaneous elastic stress (the SAME operator above) plus a memory stress
+`τ^{V,i} = (1−M)τ^{V,i-1} − 2μ M ε^i`, `M = μΔt/η` (eq 17). The memory enters the
+RHS as the dissipative forcing `−∫ τ^{V,i}:δε dV` (eq 35); the LHS never changes,
+so it is assembled, equilibrated and ILU-factored **once** (`fe_lis_system`) and
+reused every step.
+
+1-D (radially symmetric η): the memory stress evolves directly on the tensor-SH
+coefficients (§9, eq 107) — no spatial grid. Per element it is stored as `A,B,C`
+for the four spheroidal tensor components λ ∈ {1,2,5,6} (eq 109); the strain
+coefficients `a,b,c` come from nodal `U,V` (eq 87, `ε = a/h + bψ_k/r + cψ_{k+1}/r`,
+eq 88). The dissipative RHS is a 2-point radial Gauss quadrature (eqs 94-95) of
+the spectral double-dot `Σ_λ ‖Z^λ‖² τ^{V,λ} δε^λ` with norms `{1, J/2, 2J², 2J(J−2)}`
+(eqs 110/B13). Implemented in `fe_viscoelastic%ve_degree`. Elastic layers (η→∞)
+freeze (M→0); fluid layers (μ=0) carry no memory. Stability `Δt ≲ 2η_min/μ`.
+
+**Validated** (`test_relax`): a held degree-2 load on a homogeneous Maxwell
+sphere relaxes from the elastic Love number (t=0) to the fluid limit `−(2j+1)/3`
+(t→∞) — the two limits already pinned below — smoothly and monotonically, with
+`t_relax ∝ η` (e-folding 0.76→1.53 kyr when η doubles). dt-converged (10 vs 50 yr
+agree). **Disc time series vs Spada (2011):** the M3-L70-V01 disc relaxation
+matches in shape, but mine relaxes ~15% faster and sits ~10% high (elastic) /
+~11% low (fully relaxed) — the SAME systematic model-spec offset seen in the
+elastic disc, not a solver bug (the solver is exact at both analytic limits and
+`t_relax∝η` holds). Quantitative closure needs Spada's exact model / Love table.
+
+**Open — j=1 is dense:** `E_uniq` (eq 83) is a rank-1 fill, so the j=1 operator is
+dense → ILU + iterative solve is slow, impractical for time stepping. Fine for the
+elastic one-shot solve; the disc synthesis skips j=1 (≈0 contribution at the cap
+centre). Needs a special-cased j=1 (e.g. project out the rigid mode instead).
+
 ## Love numbers (§11; conventions verified)
 
 For a degree-j surface load of coefficient `σ`, the load's own potential at the
