@@ -17,3 +17,7 @@
 # Editor / OS
 *~
 .DS_Store
+
+# Reference papers (copyrighted — never commit)
+*.pdf
+doc/refs/

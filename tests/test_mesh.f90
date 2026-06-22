@@ -1,8 +1,9 @@
 program test_mesh
-   !! Validate the radial mesh over the solid shell of M3-L70-V01: it must span
-   !! [r_core, r_earth] exactly, be strictly ascending, place a node on every
-   !! material interface (no element straddles a discontinuity), and honour the
-   !! VEGA element-size targets (5/10/40 km by depth).
+   !! Validate the radial mesh over the whole sphere of M3-L70-V01: it must span
+   !! [0, r_earth] exactly (Martinec 2000 meshes ⟨0,a⟩ through the centre), be
+   !! strictly ascending, place a node on every material interface — including
+   !! the CMB (no element straddles a discontinuity) — and honour the element-size
+   !! targets (5/10/40 km by depth).
    use fe_precision,       only: wp
    use fe_earth_structure, only: earth_model, build_M3L70V01
    use fe_radial_fe,       only: radial_mesh
@@ -15,8 +16,9 @@ program test_mesh
    real(wp) :: dr, depth_mid, rmid, target, hit
    real(wp), parameter :: km = 1.0e3_wp
    real(wp), parameter :: tolnode = 1.0_wp     ! 1 m
-   ! Interior solid interfaces that must be nodes [m].
-   real(wp), parameter :: interfaces(3) = [6301.0_wp, 5951.0_wp, 5701.0_wp]*km
+   ! Interior interfaces that must be nodes [m] (incl. the CMB at 3480 km).
+   real(wp), parameter :: interfaces(4) = [6301.0_wp, 5951.0_wp, 5701.0_wp, &
+                                           3480.0_wp]*km
 
    ok = .true.
    em = build_M3L70V01()
@@ -27,7 +29,7 @@ program test_mesh
 
    ! --- Node count consistency and bounds -------------------------------------
    if (mesh%nr /= mesh%ne + 1) ok = .false.
-   if (abs(mesh%r(1) - em%r_core)  > tolnode) ok = .false.
+   if (abs(mesh%r(1) - 0.0_wp)  > tolnode) ok = .false.
    if (abs(mesh%r(mesh%nr) - em%r_earth) > tolnode) ok = .false.
 
    ! --- Strictly ascending ----------------------------------------------------

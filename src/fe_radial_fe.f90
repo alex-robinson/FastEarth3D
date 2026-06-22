@@ -8,13 +8,18 @@ module fe_radial_fe
    !! memory-stress scheme means the angular orders never couple in the solve.
    !!
    !! This module provides:
-   !!   - radial_mesh:      the P1 mesh over the mantle shell [r_core, r_earth]
-   !!                       (the inviscid core is a CMB boundary condition, not
-   !!                       meshed — Wu & Peltier 1982 / VEGA, Martinec et al.
-   !!                       2018). VERIFIED and implemented.
-   !!   - radial_operator:  the per-degree banded system. STATUS: interface only;
-   !!                       the incompressible weak form awaits confirmation of
-   !!                       Martinec (2000)'s mixed element pair (see doc/design.md).
+   !!   - radial_mesh:      the P1 mesh over the WHOLE sphere [0, r_earth].
+   !!                       Martinec (2000) eq. (71) meshes the closed interval
+   !!                       ⟨0,a⟩ through the centre; the inviscid fluid core is
+   !!                       simply a region with μ=0 (it transmits no shear stress,
+   !!                       so free-slip at the CMB emerges automatically). The
+   !!                       1/r singularity at the centre is harmless: its
+   !!                       coefficient R₁=0 (no mass enclosed below the innermost
+   !!                       element, eq. 77). VERIFIED and implemented.
+   !!   - radial_operator:  the per-degree banded saddle-point system (mixed
+   !!                       P1 displacement+potential / P0 pressure, eqs 80-84,
+   !!                       111-112). STATUS: interface only; assembly is the next
+   !!                       step (see doc/formulation.md).
    use fe_precision, only: wp
    use fe_earth_structure, only: earth_model
    implicit none
@@ -70,11 +75,12 @@ contains
    end function dr_target
 
    subroutine radial_mesh_build(self, earth)
-      !! Build the radial mesh over the SOLID shell [r_core, r_earth]. The core
-      !! (a fluid layer reaching r=0) is excluded — it enters as a CMB boundary
-      !! condition. Each solid layer is subdivided into uniform elements no larger
-      !! than the depth-dependent target, with nodes pinned to every material
-      !! interface so no element straddles a density/rigidity jump.
+      !! Build the radial mesh over the WHOLE sphere [0, r_earth], following
+      !! Martinec (2000) eq. (71). Every layer — including the fluid core, which
+      !! carries μ=0 — is meshed; the innermost node sits at r=0. Each layer is
+      !! subdivided into uniform elements no larger than the depth-dependent
+      !! target, with nodes pinned to every material interface so no element
+      !! straddles a density/rigidity jump.
       class(radial_mesh), intent(inout) :: self
       type(earth_model),  intent(in)    :: earth
       real(wp), allocatable :: r(:)
@@ -82,32 +88,26 @@ contains
       integer :: i, k, ne_layer, ntot, off
       real(wp) :: r0, r1, depth_mid, dr, h
 
-      ! Count elements per solid layer first (a layer is "solid" if its top is
-      ! above the CMB; this excludes the fluid core layer).
+      ! Count elements per layer first.
       ntot = 0
       do i = 1, earth%n_layers()
          r0 = earth%layers(i)%r_bot
          r1 = earth%layers(i)%r_top
-         if (r1 <= earth%r_core) cycle            ! core (or below CMB): skip
-         r0 = max(r0, earth%r_core)               ! clip to the meshed shell
          depth_mid = earth%r_earth - 0.5_wp*(r0 + r1)
          dr = dr_target(depth_mid)
-         ne_layer = max(1, ceiling((r1 - r0)/dr))
-         ntot = ntot + ne_layer
+         ntot = ntot + max(1, ceiling((r1 - r0)/dr))
       end do
 
       self%ne = ntot
       self%nr = ntot + 1
       allocate(r(self%nr), lay(self%ne))
 
-      ! Lay down nodes layer by layer, sharing interface nodes between layers.
-      r(1) = earth%r_core
-      off  = 1            ! index of the last node placed
-      do i = earth%n_layers(), 1, -1   ! innermost solid layer first (ascending r)
+      ! Lay down nodes layer by layer (innermost first), sharing interface nodes.
+      r(1) = 0.0_wp           ! centre of the Earth
+      off  = 1                ! index of the last node placed
+      do i = earth%n_layers(), 1, -1   ! innermost layer (core) first, ascending r
          r0 = earth%layers(i)%r_bot
          r1 = earth%layers(i)%r_top
-         if (r1 <= earth%r_core) cycle
-         r0 = max(r0, earth%r_core)
          depth_mid = earth%r_earth - 0.5_wp*(r0 + r1)
          dr = dr_target(depth_mid)
          ne_layer = max(1, ceiling((r1 - r0)/dr))
