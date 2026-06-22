@@ -51,9 +51,9 @@ rewrite.
 | `fe_sht` | SHTns wrapper — the transform kernel | done + tested |
 | `fe_earth_structure` | radial layers + optional 3D viscosity field | types |
 | `fe_radial_integrals` | Appendix C P1/P0 element integrals | done + tested |
-| `fe_lis` | LIS wrapper (COO→solve), isolates the solver | done |
+| `fe_lis` | LIS wrapper (build-once, reuse matrix + ILU) | done |
 | `fe_radial_fe` | per-degree saddle-point operator + LIS solve | done + tested |
-| `fe_viscoelastic` | Maxwell memory-stress explicit time integration | stub |
+| `fe_viscoelastic` | Maxwell memory-stress explicit time stepping (1-D) | done + tested |
 | `fe_gravity` | self-gravitation / Poisson coupling | stub |
 | `fe_sle` | sea-level equation (ocean function, migration) | stub |
 | `fe_rotation` | rotational feedback / TPW | stub |
@@ -157,9 +157,15 @@ Surface: the (j+1)F(a) exterior match on the F-F diagonal + the load RHS.
 Density-jump interfaces are natural conditions of the weak form. (The earlier
 Wu & Peltier CMB-BC plan assumed an un-meshed core and is superseded.)
 
-**Time scheme (rung 3):** explicit forward-Euler memory-stress update; previous
-memory stress relaxed by `(1 − Δt/τ_M)`, `τ_M = η/μ` (Hanyk Eq. 4.36). Stability
-`Δt ≲ 2 η_min/μ` ⇒ impose a viscosity floor. VEGA uses Δt = 20 yr.
+**Time scheme (rung 3) — DONE (1-D).** Explicit ω=1 Maxwell scheme (Martinec
+2000 eqs 23-25), implemented in `fe_viscoelastic%ve_degree`. Memory stress
+`τ^{V,i} = (1−M)τ^{V,i-1} − 2μM ε^i`, `M = μΔt/η`; it enters the SAME elastic
+operator as the dissipative RHS forcing `−∫τ^V:δε dV` (radial Gauss-2 + the
+spectral double-dot over the four spheroidal tensor components, eqs 94/110).
+Elastic layers (η→∞) freeze, fluid layers (μ=0) carry no memory. Stability
+`Δt ≲ 2η_min/μ` ⇒ viscosity floor; VEGA Δt = 20 yr. The fixed operator is built
+and ILU-factored once (`fe_lis_system`) and reused every step (~70 µs/solve).
+Validated (`test_relax`): held load relaxes elastic→fluid, `t_relax ∝ η`.
 
 **Love numbers (rung 2) — DONE.** `h_n = g₀ U(a)/φ^L`, `l_n = g₀ V(a)/φ^L`,
 `k_n = −F(a)/φ^L − 1`, with `φ^L = 4πG a σ/(2n+1)` (`fe_radial_fe%loading_love`).

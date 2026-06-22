@@ -26,7 +26,7 @@ module fe_radial_fe
    use fe_radial_integrals, only: elem_i1, elem_i2, elem_i3, elem_i4, &
                                   elem_i5, elem_i6, elem_i7, &
                                   elem_k1, elem_k2, elem_k3
-   use fe_lis,              only: fe_lis_solve_coo, fe_lis_finalize
+   use fe_lis,              only: fe_lis_system, fe_lis_finalize
    implicit none
    private
 
@@ -65,8 +65,7 @@ module fe_radial_fe
       integer  :: nr = 0, ne = 0, ndof = 0
       real(wp) :: r_earth = 0.0_wp        !! surface radius a [m]
       real(wp) :: g_surf  = 0.0_wp        !! g₀(a) [m s⁻²]
-      integer,  allocatable :: rows(:), cols(:)  !! COO of the SCALED operator
-      real(wp), allocatable :: vals(:)
+      type(fe_lis_system)   :: sys               !! built+factored LIS system (reused)
       real(wp), allocatable :: dr(:), dc(:)      !! row / column equilibration
       logical  :: ready = .false.
    contains
@@ -370,19 +369,23 @@ contains
          self%dr(i) = rownorm(A(i,:), self%dc)
       end do
 
-      ! --- extract the scaled operator Â = Dr A Dc into COO --------------------
+      ! --- extract the scaled operator Â = Dr A Dc into COO, build LIS once ----
       nnz = count(A /= 0.0_wp)
-      allocate(self%rows(nnz), self%cols(nnz), self%vals(nnz))
-      nnz = 0
-      do k = 1, nd               ! column
-         do i = 1, nd            ! row
-            if (A(i,k) == 0.0_wp) cycle
-            nnz = nnz + 1
-            self%rows(nnz) = i
-            self%cols(nnz) = k
-            self%vals(nnz) = self%dr(i)*A(i,k)*self%dc(k)
+      block
+         integer,  allocatable :: rows(:), cols(:)
+         real(wp), allocatable :: vals(:)
+         integer :: p
+         allocate(rows(nnz), cols(nnz), vals(nnz))
+         p = 0
+         do k = 1, nd            ! column
+            do i = 1, nd         ! row
+               if (A(i,k) == 0.0_wp) cycle
+               p = p + 1
+               rows(p) = i;  cols(p) = k;  vals(p) = self%dr(i)*A(i,k)*self%dc(k)
+            end do
          end do
-      end do
+         call self%sys%build(nd, rows, cols, vals, LIS_OPTS_DEFAULT)
+      end block
       self%ready = .true.
    end subroutine radial_operator_assemble
 
@@ -407,22 +410,14 @@ contains
       real(wp),               intent(out) :: x(:)
       integer,  optional,     intent(out) :: iters, info
       real(wp), optional,     intent(out) :: resid
-      character(len=*), optional, intent(in) :: options
+      character(len=*), optional, intent(in) :: options  !! ignored (precon built at assemble)
       real(wp), allocatable :: bs(:), y(:)
-      integer  :: nd, it, ier
-      real(wp) :: rsd
-      character(len=256) :: opts
+      integer  :: nd
       nd = self%ndof
-      opts = LIS_OPTS_DEFAULT
-      if (present(options)) opts = options
       allocate(bs(nd), y(nd))
       bs = self%dr * b                          ! equilibrate: b̂ = Dr b
-      call fe_lis_solve_coo(nd, self%rows, self%cols, self%vals, bs, y, &
-                            trim(opts), it, rsd, ier)
+      call self%sys%solve(bs, y, iters, resid, info)   ! reuse matrix + ILU
       x = self%dc * y                           ! recover physical solution
-      if (present(iters)) iters = it
-      if (present(resid)) resid = rsd
-      if (present(info))  info  = ier
    end subroutine radial_operator_solve_vec
 
    subroutine radial_operator_solve(self, sigma, U_a, V_a, F_a, iters, resid, info, options)
@@ -444,9 +439,7 @@ contains
 
    subroutine radial_operator_destroy(self)
       class(radial_operator), intent(inout) :: self
-      if (allocated(self%rows)) deallocate(self%rows)
-      if (allocated(self%cols)) deallocate(self%cols)
-      if (allocated(self%vals)) deallocate(self%vals)
+      call self%sys%destroy()
       if (allocated(self%dr))   deallocate(self%dr)
       if (allocated(self%dc))   deallocate(self%dc)
       self%ready = .false.
