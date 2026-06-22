@@ -215,16 +215,32 @@ held degree-2 load reproduces the 1-D `ve_degree` history to ~1e-13 relative.
 End-to-end (`test_sle_ve`): a held 2 km ice cap → ocean mass conserved ~1e-16 per
 step, eustatic mean held, ~16 m of viscoelastic relaxation over 500 yr.
 
-**Degree-1 is skipped in the field driver** (`gu(1)=gn(1)=0`): the j=1 operator is
-dense/ill-conditioned and a nonzero-RHS solve every step does not converge.
-Degree-1 is geocenter motion / frame-dependent (§6 pitfall) — deferred to the
-CM-frame treatment, consistent with the disc-synthesis which also skips j=1.
+**Degree-1 is currently skipped in the field driver** (`gu(1)=gn(1)=0`, the
+`l < 2` guards in `fe_response`). This was a workaround for the *dense* j=1
+operator hanging the stepper — now **fixed at the source**: the sparse KKT
+degree-1 operator (merged from `degree1-sparse`) solves j=1 in ~2 GMRES iters in
+the CM frame, and `ve_degree` steps stably at j=1 (`test_love` case 4,
+`test_relax` case 5). So the guards can be lifted to carry the degree-1
+(geocenter) response — see "Open / next" (a). The `ve_response` solve path is
+unchanged for l ≥ 2.
 
-**Open / next:** (a) `fe_coupling` wiring (the CLIMBER-X contract: reference
-state, host-grid mapping) — a deliberate interface decision, not yet wired;
-(b) grounded-ice flotation in the ocean function (currently `topo<0` only);
-(c) the Martinec et al. (2018) cases A–E quantitative match (needs benchmark
-input data: ice history + present topography); (d) degree-1 / geocenter in the
-CM frame; (e) performance — `begin_step` does 2 real solves per (l,m) per step
-(~O(nlm) solves), fine for moderate `lmax` but the cost driver at VILMA
-resolution (lmax 170).
+**Open / next** (priority order for a fresh session):
+1. **Lift the degree-1 skip in `ve_response`.** The blocker is gone (sparse KKT
+   j=1). Change the `l < 2` guards (init / begin_step / apply / commit_step in
+   `src/fe_response.f90`) to `l < 1`, assemble `ops(1)`, drop the `gu(1)=gn(1)=0`
+   special case. Update `test_ve_response` (it currently *asserts* degree-1 is
+   zeroed) to instead check the j=1 field response vs the 1-D `ve_degree` at j=1.
+   Watch the geocenter/frame convention (CM frame, Blewitt 2003) — `N=−F/g` at
+   degree 1 is frame-dependent.
+2. **`fe_coupling` wiring** — the CLIMBER-X contract (reference state: z_bed_eq +
+   reference ice/topo; host-grid mapping). A deliberate interface decision; swap
+   the `visco(:)` member for a `ve_response`, drive `sle%solve` per Δt across the
+   coupling interval, return `z_bed = z_bed_eq − rsl`.
+3. **Grounded-ice flotation** in the ocean function (currently `topo < 0` only):
+   a cell is ocean only where it is below sea level AND ice does not ground
+   (`ρ_i I < −ρ_w·topo`).
+4. **Martinec et al. (2018) cases A–E** quantitative match — needs benchmark
+   input data (ice history + present topography), not yet in-repo.
+5. **Performance** — `begin_step` does 2 real solves per (l,m) per step
+   (~O(nlm) solves), fine for moderate `lmax` but the cost driver at VILMA
+   resolution (lmax 170); exploit small high-degree coefficients / parallelize.
