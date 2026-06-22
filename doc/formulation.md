@@ -126,10 +126,12 @@ sphere relaxes from the elastic Love number (t=0) to the fluid limit `−(2j+1)/
 (t→∞) — the two limits already pinned below — smoothly and monotonically, with
 `t_relax ∝ η` (e-folding 0.76→1.53 kyr when η doubles). dt-converged (10 vs 50 yr
 agree). **Disc time series vs Spada (2011):** the M3-L70-V01 disc relaxation
-matches in shape, but mine relaxes ~15% faster and sits ~10% high (elastic) /
-~11% low (fully relaxed) — the SAME systematic model-spec offset seen in the
-elastic disc, not a solver bug (the solver is exact at both analytic limits and
-`t_relax∝η` holds). Quantitative closure needs Spada's exact model / Love table.
+matches in shape, but mine sits ~10% high (elastic) / ~11% low (fully relaxed).
+**UPDATE:** this is now explained — it is the elastic low-degree solver bug above
+(NOT a model-spec offset, as previously assumed). The disc is dominated by low–
+intermediate degrees, where our elastic Love numbers are too soft; the fully-
+relaxed disc is governed by the fluid limit, which is exact, so the residual
+there is small/discretisation. Closing the disc match ⇐ fixing the elastic bug.
 
 **Degree-1 (sparse KKT, solved):** `E_uniq` (eq 83) is a rank-1 penalty
 `(4π/3) w wᵀ` over every degree-1 (U,V) dof, so adding it to the operator densifies
@@ -165,8 +167,37 @@ The `k` form was **pinned empirically by two analytic limits**: Martinec's `φ�
 (=`F`) is the *total* perturbation potential and carries the load's direct
 potential with the **opposite sign** to `φ^L` (`F→−φ^L` for a rigid sphere), so
 the induced potential is `−F−φ^L`. `σ` cancels in every ratio (use σ=1).
-**`l` still needs its sign / S⁽¹⁾-normalization factor calibrated** against the
-published Spada `l` (h and k are fully pinned).
+**`l` sign / S⁽¹⁾-normalization: RESOLVED.** The benchmark M3-L70-V01 fluid
+limit reproduces the table `l_f` to ~0.1 % at every degree 2–8 (`test_benchmark_love`),
+so `l = g V(a)/φ^L` is correct as written — no extra sign or normalization factor.
+
+## Elastic low-degree discrepancy (OPEN solver bug)
+
+With the benchmark table now in-repo (`data/benchmarks/love_M3-L70-V01/`,
+independently reproduced by TABOO NV=3/CODE=7), the M3-L70-V01 comparison splits
+cleanly (`test_benchmark_love`):
+
+- **Fluid (t→∞) limit: EXACT.** Fluidising the Maxwell layers (μ=0, lithosphere
+  stays elastic) and solving the *elastic* operator gives the relaxed state; it
+  matches the table `h_f, l_f, k_f` to <0.5 % at every degree. This validates the
+  layered self-gravity, the `R_k` interface buoyancy, the inviscid core,
+  incompressibility, the surface forcing and the `l` normalisation in one shot.
+- **Elastic (t=0): WRONG at low degree.** Our elastic `h, k` are too *soft* — too
+  much deformation — by ~50 % at j=2, shrinking monotonically to ~1 % by j≈40.
+  Confirmed a real bug against an *independent* oracle (TABOO + giapy both give
+  `h_e(2)=−0.454`; we give `−0.669`). NOT a model/load/frame/mesh issue and NOT a
+  uniform μ-scale error (the required correction is degree-dependent: ≈1.9× at
+  j=2 but ≈1.25× at j=4 — the spectrum's *shape* is wrong).
+
+**Why every other test misses it:** going fluid→elastic changes *only* the shear
+block (eq 80; grav/press/surface carry no μ). The shear block was verified
+term-by-term against the paper, and the element integrals are exact to machine
+precision, yet the result is wrong — so the error is subtle and structural, in how
+shear and self-gravity balance at long wavelength. It is invisible to the existing
+limits: μ→0 kills the shear block (homogeneous + M3 fluid limits exact), μ→∞ forces
+d→0 (rigid limit exact). The fix is the next rung-2 task; it needs a re-derivation
+of the spheroidal elastic balance (eqs 80–81 / the strain representation 85–86),
+not a coefficient tweak.
 
 ## Validation targets
 1. **Fluid limit** (μ→0, homogeneous sphere): `h_j → −(2j+1)/3` and `k_j → −1`.
@@ -174,9 +205,11 @@ published Spada `l` (h and k are fully pinned).
    incompressibility + Poisson + the load forcing.
 2. **Rigid limit** (μ→∞): `h_j, l_j, k_j → 0`. ✅ to ~1e-5 (`test_love`).
    Checks the shear block and the F sign convention.
-3. Elastic loading Love numbers h,l,k vs **Spada (2011) Test 2/1**, model
-   M3-L70-V01, degrees 2–256. Current output is physical (k₂≈−0.37, decaying with
-   j); a quantitative match awaits the published table (not in-repo). 🔶
+3. Elastic loading Love numbers h,l,k vs **benchmark M3-L70-V01 table**
+   (`data/benchmarks/love_M3-L70-V01/`, degrees 2–256; `test_benchmark_love`).
+   **Fluid limit ✅ (<0.5 %, all degrees) — also pins `l`.** **Elastic 🔴 known
+   bug:** too soft at low degree (~50 % at j=2 → ~1 % by j≈40); see "Elastic
+   low-degree discrepancy" above.
 4. Internal: operator finite (centre I⁷ guard); B=Bᵀ; gravity R_k reconstruction
    (`test_assembly`). ✅
 5. **Degree-1 (sparse KKT):** the j=1 solve converges (non-singular), removes the

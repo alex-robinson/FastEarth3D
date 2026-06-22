@@ -112,7 +112,12 @@ test_sle_ve: fastearth-static | $(bindir)
 		-o $(bindir)/test_sle_ve.x $(objdir)/libfastearth.a $(LFLAGS)
 	@echo "    $(bindir)/test_sle_ve.x is ready."
 
-TESTS = test_sht test_earth test_mesh test_integrals test_assembly test_love test_relax test_response test_sle test_ve_response test_sle_ve
+test_benchmark_love: fastearth-static | $(bindir)
+	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(testdir)/test_benchmark_love.f90 \
+		-o $(bindir)/test_benchmark_love.x $(objdir)/libfastearth.a $(LFLAGS)
+	@echo "    $(bindir)/test_benchmark_love.x is ready."
+
+TESTS = test_sht test_earth test_mesh test_integrals test_assembly test_love test_relax test_response test_sle test_ve_response test_sle_ve test_benchmark_love
 
 check: $(TESTS)
 	@echo ""
