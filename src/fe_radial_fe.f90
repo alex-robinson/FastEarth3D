@@ -29,15 +29,19 @@ module fe_radial_fe
 
 contains
 
-   subroutine radial_operator_assemble(self, earth, l)
-      !! Assemble + factor the banded radial system for degree l. STATUS: stub.
+   subroutine radial_operator_assemble(self, earth, l, nr)
+      !! Assemble + factor the banded radial system for degree l on an nr-node
+      !! radial mesh. STATUS: stub.
       class(radial_operator), intent(inout) :: self
       type(earth_model),      intent(in)    :: earth
       integer,                intent(in)    :: l
+      integer,                intent(in)    :: nr
       self%l  = l
-      self%nr = earth%nr
-      ! TODO: build element matrices from earth%{rho,mu}, apply self-gravity
-      ! coupling and surface/CMB boundary conditions, factor.
+      self%nr = nr
+      ! TODO: build element matrices by sampling earth%{rho_at,mu_at,gravity_at}
+      ! on the mesh, apply self-gravity coupling and surface/CMB boundary
+      ! conditions, enforce incompressibility (Martinec 2000), factor.
+      if (earth%n_layers() == 0) return
    end subroutine radial_operator_assemble
 
    subroutine radial_operator_solve(self, rhs, sol)

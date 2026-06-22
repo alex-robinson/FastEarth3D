@@ -52,7 +52,12 @@ test_sht: fastearth-static | $(bindir)
 		-o $(bindir)/test_sht.x $(objdir)/libfastearth.a $(LFLAGS)
 	@echo "    $(bindir)/test_sht.x is ready."
 
-TESTS = test_sht
+test_earth: fastearth-static | $(bindir)
+	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(testdir)/test_earth.f90 \
+		-o $(bindir)/test_earth.x $(objdir)/libfastearth.a $(LFLAGS)
+	@echo "    $(bindir)/test_earth.x is ready."
+
+TESTS = test_sht test_earth
 
 check: $(TESTS)
 	@echo ""
