@@ -72,11 +72,15 @@ module fe_radial_fe
       real(wp) :: g_surf  = 0.0_wp        !! g₀(a) [m s⁻²]
       type(fe_lis_system)   :: sys               !! built+factored LIS system (reused)
       real(wp), allocatable :: dr(:), dc(:)      !! row / column equilibration
-      ! Degree-1 only: the E_uniq penalty (4π/3) w wᵀ is densifying, so instead of
-      ! adding it to the band we border the band with one row/col reproducing it
-      ! EXACTLY (eliminate the multiplier μ ⇒ (A_band + UNIQ_COEFF w wᵀ) d = f).
+      ! Degree-1 only: the E_uniq penalty (4π/3) w wᵀ is densifying AND, because w
+      ! carries K³~∫ψr², ~1e16× the band — i.e. a de-facto hard constraint wᵀd=0
+      ! (the CM/geocenter frame, Blewitt 2003). We instead impose it exactly and
+      ! sparsely as a KKT saddle point: border the band with the constraint row
+      ! wᵀ and column w (zero corner), one Lagrange multiplier λ:
+      !     [ A_band  w ] [d]   [f]
+      !     [ wᵀ      0 ] [λ] = [0]   ⇒  A_band d + w λ = f,  wᵀ d = 0.
       logical               :: bordered = .false.
-      real(wp)              :: dr_b = 1.0_wp, dc_b = 1.0_wp  !! border row/col equilibration
+      real(wp), allocatable :: w(:)              !! degree-1 KKT constraint vector (ndof)
       logical  :: ready = .false.
    contains
       procedure :: assemble  => radial_operator_assemble
@@ -380,30 +384,55 @@ contains
       integer,                intent(in)    :: j
 
       real(wp), allocatable :: A(:,:)
-      integer  :: nd, i, k, nnz
+      real(wp) :: dr_b, dc_b           !! border row/col equilibration (transient)
+      integer  :: nd, ns, i, k, nnz
 
       call self%destroy()
-      A  = build_dense_operator(earth, mesh, j)
+      ! Build the BAND part only (no dense E_uniq fill). For j=1 the rigid-mode
+      ! removal is reinstated EXACTLY below as a sparse KKT constraint wᵀ d = 0
+      ! (bordering the band with row wᵀ / column w); for j≥2 with_uniq is a no-op,
+      ! so this matches the previous operator.
+      A  = build_dense_operator(earth, mesh, j, with_uniq=.false.)
       nd = ndof_of(mesh%nr)
 
-      self%j       = j
-      self%nr      = mesh%nr
-      self%ne      = mesh%ne
-      self%ndof    = nd
-      self%r_earth = earth%r_earth
-      self%g_surf  = earth%gravity_at(earth%r_earth)
+      self%j        = j
+      self%nr       = mesh%nr
+      self%ne       = mesh%ne
+      self%ndof     = nd
+      self%bordered = (j == 1)
+      self%r_earth  = earth%r_earth
+      self%g_surf   = earth%gravity_at(earth%r_earth)
 
-      ! --- geometric-mean equilibration: dc by columns, then dr by rows --------
+      ! --- degree-1 KKT border vector (the constraint direction w) -------------
+      ns = nd
+      if (self%bordered) then
+         self%w = uniq_weight(mesh)
+         ns = nd + 1
+      end if
+      self%ndof_solve = ns
+
+      ! --- geometric-mean equilibration of the (augmented) operator ------------
+      ! dc by columns, then dr by rows, folding the border row wᵀ (entry w(k) in
+      ! column k) and column w (entry w(i) in row i) into the maxima so every
+      ! scaled entry — band AND border — lands at O(1). The corner is 0.
       allocate(self%dc(nd), self%dr(nd))
+      dc_b = 1.0_wp;  dr_b = 1.0_wp
       do k = 1, nd
          self%dc(k) = colnorm(A(:,k))
+         if (self%bordered .and. abs(self%w(k)) > 1.0_wp/self%dc(k)**2) &
+            self%dc(k) = 1.0_wp/sqrt(abs(self%w(k)))
       end do
+      if (self%bordered) dc_b = colnorm(self%w)                 ! border column w
       do i = 1, nd
          self%dr(i) = rownorm(A(i,:), self%dc)
+         if (self%bordered .and. abs(self%w(i))*dc_b > 1.0_wp/self%dr(i)**2) &
+            self%dr(i) = 1.0_wp/sqrt(abs(self%w(i))*dc_b)
       end do
+      if (self%bordered) dr_b = rownorm(self%w, self%dc)        ! border row wᵀ
 
       ! --- extract the scaled operator Â = Dr A Dc into COO, build LIS once ----
       nnz = count(A /= 0.0_wp)
+      if (self%bordered) nnz = nnz + 2*count(self%w /= 0.0_wp)
       block
          integer,  allocatable :: rows(:), cols(:)
          real(wp), allocatable :: vals(:)
@@ -417,7 +446,22 @@ contains
                rows(p) = i;  cols(p) = k;  vals(p) = self%dr(i)*A(i,k)*self%dc(k)
             end do
          end do
-         call self%sys%build(nd, rows, cols, vals, LIS_OPTS_DEFAULT)
+         if (self%bordered) then
+            do i = 1, nd                                   ! border column: w
+               if (self%w(i) == 0.0_wp) cycle
+               p = p + 1
+               rows(p) = i;  cols(p) = ns
+               vals(p) = self%dr(i)*self%w(i)*dc_b
+            end do
+            do k = 1, nd                                   ! border row (constraint wᵀ d = 0)
+               if (self%w(k) == 0.0_wp) cycle
+               p = p + 1
+               rows(p) = ns;  cols(p) = k
+               vals(p) = dr_b*self%w(k)*self%dc(k)
+            end do
+            ! corner is 0 (KKT) — no entry.
+         end if
+         call self%sys%build(ns, rows, cols, vals, LIS_OPTS_DEFAULT)
       end block
       self%ready = .true.
    end subroutine radial_operator_assemble
@@ -445,12 +489,13 @@ contains
       real(wp), optional,     intent(out) :: resid
       character(len=*), optional, intent(in) :: options  !! ignored (precon built at assemble)
       real(wp), allocatable :: bs(:), y(:)
-      integer  :: nd
-      nd = self%ndof
-      allocate(bs(nd), y(nd))
-      bs = self%dr * b                          ! equilibrate: b̂ = Dr b
+      integer  :: nd, ns
+      nd = self%ndof;  ns = self%ndof_solve
+      allocate(bs(ns), y(ns))
+      bs = 0.0_wp                               ! border RHS (j=1 multiplier) is 0
+      bs(1:nd) = self%dr * b                     ! equilibrate physical rows: b̂ = Dr b
       call self%sys%solve(bs, y, iters, resid, info)   ! reuse matrix + ILU
-      x = self%dc * y                           ! recover physical solution
+      x = self%dc * y(1:nd)                      ! recover physical solution (drop μ)
    end subroutine radial_operator_solve_vec
 
    subroutine radial_operator_solve(self, sigma, U_a, V_a, F_a, iters, resid, info, options)
@@ -475,7 +520,10 @@ contains
       call self%sys%destroy()
       if (allocated(self%dr))   deallocate(self%dr)
       if (allocated(self%dc))   deallocate(self%dc)
-      self%ready = .false.
+      if (allocated(self%w))    deallocate(self%w)
+      self%bordered   = .false.
+      self%ndof_solve = 0
+      self%ready      = .false.
    end subroutine radial_operator_destroy
 
    pure real(wp) function colnorm(col) result(d)
