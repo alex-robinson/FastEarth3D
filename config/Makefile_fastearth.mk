@@ -21,7 +21,8 @@ $(objdir)/fe_constants.o:        $(objdir)/fe_precision.o
 $(objdir)/fe_sht.o:              $(objdir)/fe_precision.o
 $(objdir)/fe_earth_structure.o:  $(objdir)/fe_precision.o $(objdir)/fe_constants.o
 $(objdir)/fe_radial_integrals.o: $(objdir)/fe_precision.o
-$(objdir)/fe_radial_fe.o:        $(objdir)/fe_earth_structure.o $(objdir)/fe_radial_integrals.o
+$(objdir)/fe_radial_fe.o:        $(objdir)/fe_constants.o $(objdir)/fe_earth_structure.o \
+                                 $(objdir)/fe_radial_integrals.o
 $(objdir)/fe_viscoelastic.o:     $(objdir)/fe_radial_fe.o $(objdir)/fe_sht.o
 $(objdir)/fe_gravity.o:          $(objdir)/fe_earth_structure.o
 $(objdir)/fe_sle.o:              $(objdir)/fe_sht.o $(objdir)/fe_constants.o
@@ -69,7 +70,12 @@ test_integrals: fastearth-static | $(bindir)
 		-o $(bindir)/test_integrals.x $(objdir)/libfastearth.a $(LFLAGS)
 	@echo "    $(bindir)/test_integrals.x is ready."
 
-TESTS = test_sht test_earth test_mesh test_integrals
+test_assembly: fastearth-static | $(bindir)
+	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(testdir)/test_assembly.f90 \
+		-o $(bindir)/test_assembly.x $(objdir)/libfastearth.a $(LFLAGS)
+	@echo "    $(bindir)/test_assembly.x is ready."
+
+TESTS = test_sht test_earth test_mesh test_integrals test_assembly
 
 check: $(TESTS)
 	@echo ""

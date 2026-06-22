@@ -21,11 +21,18 @@ module fe_radial_fe
    !!                       111-112). STATUS: interface only; assembly is the next
    !!                       step (see doc/formulation.md).
    use fe_precision, only: wp
+   use fe_constants, only: pi, grav_G
    use fe_earth_structure, only: earth_model
+   use fe_radial_integrals, only: elem_i1, elem_i2, elem_i3, elem_i4, &
+                                  elem_i5, elem_i6, elem_i7, &
+                                  elem_k1, elem_k2, elem_k3
    implicit none
    private
 
    public :: radial_mesh, radial_operator
+   ! Assembly building blocks (public so the unit tests can inspect them).
+   public :: build_dense_operator, shell_Rk
+   public :: idx_u, idx_v, idx_f, idx_p, ndof_of
 
    ! Default radial element-size targets [m], after VEGA (Martinec et al. 2018):
    ! 5 km in the lithosphere, 10 km in the upper mantle, 40 km in the lower
@@ -123,6 +130,190 @@ contains
       call move_alloc(r,   self%r)
       call move_alloc(lay, self%elem_layer)
    end subroutine radial_mesh_build
+
+   ! --- Degree-of-freedom layout ----------------------------------------------
+   !
+   ! Per spherical-harmonic degree j the spheroidal unknowns are the nodal
+   ! scalars U_k, V_k, F_k (k = 1..nr, piecewise-linear ψ_k, eq 72) and the
+   ! per-element pressure Π_e (e = 1..ne, piecewise-constant ξ_e, eq 73). They
+   ! are laid out NODE-INTERLEAVED so the operator stays band-diagonal (tight
+   ! bandwidth → cheap ILU for the LIS solve):
+   !
+   !     node 1            node 2                       node nr
+   !   [U V F | Π_1] [U V F | Π_2] ... [U V F | Π_ne] [U V F]
+   !     1 2 3   4     5 6 7   8                         4nr-3 .. 4nr-1
+   !
+   ! so dof(field, node) = 4(k-1)+{1,2,3} and dof(Π, elem) = 4e. Total 4nr-1.
+
+   pure integer function idx_u(k) result(i); integer, intent(in) :: k; i = 4*(k-1)+1; end function
+   pure integer function idx_v(k) result(i); integer, intent(in) :: k; i = 4*(k-1)+2; end function
+   pure integer function idx_f(k) result(i); integer, intent(in) :: k; i = 4*(k-1)+3; end function
+   pure integer function idx_p(e) result(i); integer, intent(in) :: e; i = 4*e;       end function
+
+   pure integer function ndof_of(nr) result(n)
+      integer, intent(in) :: nr
+      n = 4*nr - 1
+   end function ndof_of
+
+   ! --- Radial profile of the enclosed mass anomaly R_k (eq 77) ---------------
+
+   function shell_Rk(earth, mesh) result(Rk)
+      !! R_k for every element (eq 77): R_1 = 0,
+      !! R_k = Σ_{i=2}^{k} (ρ_{i−1} − ρ_i) r_i³, the accumulated density-jump
+      !! moment below element k. With the element density ρ_k it reconstructs the
+      !! unperturbed gravity g₀(r) = (4πG/3)(ρ_k r + R_k/r²) (eq 76) — verified
+      !! against earth%gravity_at in the assembly test.
+      type(earth_model), intent(in) :: earth
+      type(radial_mesh), intent(in) :: mesh
+      real(wp), allocatable :: Rk(:)
+      integer :: k
+      real(wp) :: rho_k, rho_km1
+      allocate(Rk(mesh%ne))
+      Rk(1) = 0.0_wp
+      do k = 2, mesh%ne
+         rho_k   = earth%layers(mesh%elem_layer(k))%rho
+         rho_km1 = earth%layers(mesh%elem_layer(k-1))%rho
+         Rk(k) = Rk(k-1) + (rho_km1 - rho_k)*mesh%r(k)**3
+      end do
+   end function shell_Rk
+
+   ! --- Per-degree operator assembly (dense; eqs 80-84) -----------------------
+
+   function build_dense_operator(earth, mesh, j) result(A)
+      !! Assemble the per-degree saddle-point operator A (dense) for degree j≥1,
+      !! exactly as written in Martinec (2000) eqs 80-84 with the toroidal W
+      !! block dropped (spheroidal-only 1-D loading). Each bilinear term
+      !! `coeff · trial^α · δtest^β` lands at A(dof(test,β), dof(trial,α)); the
+      !! matrix is band-diagonal and NON-symmetric (the I² self-gravity coupling
+      !! and the I³ shear coupling break symmetry — Martinec solves it with a
+      !! general banded LU, here LIS). Dense here for clarity and testability;
+      !! the LIS path keeps only the nonzeros (see radial_operator).
+      type(earth_model), intent(in) :: earth
+      type(radial_mesh), intent(in) :: mesh
+      integer,           intent(in) :: j
+      real(wp), allocatable :: A(:,:)
+
+      real(wp), allocatable :: Rk(:)
+      real(wp) :: i1(2,2), i2(2,2), i3(2,2), i4(2,2), i5(2,2), i6(2,2), i7(2,2)
+      real(wp) :: k1(2), k2(2), k3(2)
+      real(wp) :: Aloc(7,7)
+      integer  :: gmap(7)
+      real(wp) :: rlo, rhi, mu_k, rho_k, Jr, fourpiG, gg
+      real(wp), allocatable :: w(:)
+      integer  :: e, ia, ib, nr, ne, nd, lay
+      ! Local element dof order: [U1 V1 F1 U2 V2 F2 Π] -> 1..7.
+      integer, parameter :: lU(2) = [1, 4], lV(2) = [2, 5], lF(2) = [3, 6], lP = 7
+
+      nr = mesh%nr;  ne = mesh%ne;  nd = ndof_of(nr)
+      Jr = real(j, wp)*real(j+1, wp)          ! J = j(j+1), real (overflows int at high j)
+      fourpiG = 4.0_wp*pi*grav_G
+      allocate(A(nd, nd));  A = 0.0_wp
+      Rk = shell_Rk(earth, mesh)
+
+      do e = 1, ne
+         rlo = mesh%r(e);  rhi = mesh%r(e+1)
+         lay = mesh%elem_layer(e)
+         mu_k  = earth%layers(lay)%mu
+         rho_k = earth%layers(lay)%rho
+
+         i1 = elem_i1(rlo, rhi);  i2 = elem_i2(rlo, rhi);  i3 = elem_i3(rlo, rhi)
+         i4 = elem_i4(rlo, rhi);  i5 = elem_i5(rlo, rhi);  i6 = elem_i6(rlo, rhi)
+         ! I7 ~ ∫ψψ/r is singular at r=0; it only ever enters multiplied by R_k,
+         ! and R_1 = 0 for the innermost element (eq 77), so skip it there to
+         ! avoid 0·∞ = NaN. Elsewhere rlo > 0 and it is finite.
+         if (Rk(e) /= 0.0_wp) then
+            i7 = elem_i7(rlo, rhi)
+         else
+            i7 = 0.0_wp
+         end if
+         k1 = elem_k1(rlo, rhi);  k2 = elem_k2(rlo, rhi);  k3 = elem_k3(rlo, rhi)
+
+         Aloc = 0.0_wp
+         do ia = 1, 2          ! trial node (α)
+            do ib = 1, 2       ! test node (β)
+               ! --- δE_shear (eq 80), factor μ_k, W dropped --------------------
+               ! 2 I¹ U^a δU^b
+               Aloc(lU(ib), lU(ia)) = Aloc(lU(ib), lU(ia)) + mu_k*( 2.0_wp*i1(ia,ib) )
+               ! J I¹ V^a δV^b
+               Aloc(lV(ib), lV(ia)) = Aloc(lV(ib), lV(ia)) + mu_k*( Jr*i1(ia,ib) )
+               ! J I³(a,b)(−V^a+U^a) δU^b
+               Aloc(lU(ib), lU(ia)) = Aloc(lU(ib), lU(ia)) + mu_k*( Jr*i3(ia,ib) )
+               Aloc(lU(ib), lV(ia)) = Aloc(lU(ib), lV(ia)) - mu_k*( Jr*i3(ia,ib) )
+               ! J I³(b,a) V^a(−δV^b+δU^b)
+               Aloc(lV(ib), lV(ia)) = Aloc(lV(ib), lV(ia)) - mu_k*( Jr*i3(ib,ia) )
+               Aloc(lU(ib), lV(ia)) = Aloc(lU(ib), lV(ia)) + mu_k*( Jr*i3(ib,ia) )
+               ! J I⁶(−V^a+U^a)(−δV^b+δU^b)
+               Aloc(lU(ib), lU(ia)) = Aloc(lU(ib), lU(ia)) + mu_k*( Jr*i6(ia,ib) )
+               Aloc(lU(ib), lV(ia)) = Aloc(lU(ib), lV(ia)) - mu_k*( Jr*i6(ia,ib) )
+               Aloc(lV(ib), lU(ia)) = Aloc(lV(ib), lU(ia)) - mu_k*( Jr*i6(ia,ib) )
+               Aloc(lV(ib), lV(ia)) = Aloc(lV(ib), lV(ia)) + mu_k*( Jr*i6(ia,ib) )
+               ! I⁶(2U^a−J V^a)(2δU^b−J δV^b)
+               Aloc(lU(ib), lU(ia)) = Aloc(lU(ib), lU(ia)) + mu_k*( 4.0_wp*i6(ia,ib) )
+               Aloc(lV(ib), lU(ia)) = Aloc(lV(ib), lU(ia)) - mu_k*( 2.0_wp*Jr*i6(ia,ib) )
+               Aloc(lU(ib), lV(ia)) = Aloc(lU(ib), lV(ia)) - mu_k*( 2.0_wp*Jr*i6(ia,ib) )
+               Aloc(lV(ib), lV(ia)) = Aloc(lV(ib), lV(ia)) + mu_k*( Jr*Jr*i6(ia,ib) )
+               ! J(J−2) I⁶ V^a δV^b
+               Aloc(lV(ib), lV(ia)) = Aloc(lV(ib), lV(ia)) + mu_k*( Jr*(Jr-2.0_wp)*i6(ia,ib) )
+
+               ! --- δE_grav (eq 81), factor ρ_k -------------------------------
+               gg = (fourpiG/3.0_wp)*( rho_k*i4(ia,ib) + Rk(e)*i7(ia,ib) )
+               ! δU^b: gg(−4U^a+J V^a) + I² F^a + 4πG ρ_k I⁴ U^a
+               Aloc(lU(ib), lU(ia)) = Aloc(lU(ib), lU(ia)) + rho_k*( -4.0_wp*gg + fourpiG*rho_k*i4(ia,ib) )
+               Aloc(lU(ib), lV(ia)) = Aloc(lU(ib), lV(ia)) + rho_k*( Jr*gg )
+               Aloc(lU(ib), lF(ia)) = Aloc(lU(ib), lF(ia)) + rho_k*( i2(ia,ib) )
+               ! δV^b: J[ gg U^a + I⁵ F^a ]
+               Aloc(lV(ib), lU(ia)) = Aloc(lV(ib), lU(ia)) + rho_k*( Jr*gg )
+               Aloc(lV(ib), lF(ia)) = Aloc(lV(ib), lF(ia)) + rho_k*( Jr*i5(ia,ib) )
+               ! δF^b: (1/4πGρ_k)(I¹+J I⁶) F^a + I² U^a + J I⁵ V^a   (ρ_k cancels in F-F)
+               Aloc(lF(ib), lF(ia)) = Aloc(lF(ib), lF(ia)) + ( i1(ia,ib) + Jr*i6(ia,ib) )/fourpiG
+               Aloc(lF(ib), lU(ia)) = Aloc(lF(ib), lU(ia)) + rho_k*( i2(ia,ib) )
+               Aloc(lF(ib), lV(ia)) = Aloc(lF(ib), lV(ia)) + rho_k*( Jr*i5(ia,ib) )
+            end do
+         end do
+
+         ! --- δE_press (eq 82): incompressibility coupling B / Bᵀ --------------
+         ! Π^e ↔ (K¹+2K²) U^a − J K² V^a, symmetric (B and its transpose).
+         do ia = 1, 2
+            Aloc(lP, lU(ia)) = Aloc(lP, lU(ia)) + ( k1(ia) + 2.0_wp*k2(ia) )
+            Aloc(lU(ia), lP) = Aloc(lU(ia), lP) + ( k1(ia) + 2.0_wp*k2(ia) )
+            Aloc(lP, lV(ia)) = Aloc(lP, lV(ia)) - ( Jr*k2(ia) )
+            Aloc(lV(ia), lP) = Aloc(lV(ia), lP) - ( Jr*k2(ia) )
+         end do
+
+         ! --- scatter the 7×7 element block into the global operator -----------
+         gmap = [ idx_u(e),   idx_v(e),   idx_f(e),   &
+                  idx_u(e+1), idx_v(e+1), idx_f(e+1), idx_p(e) ]
+         A(gmap, gmap) = A(gmap, gmap) + Aloc
+      end do
+
+      ! --- Surface forcing, bilinear part (eq 84) -----------------------------
+      ! The exterior-potential match −(a/4πG)(j+1)F(a)δF(a) moves to the LHS as
+      ! a positive F–F entry at the surface node (the σ terms are the RHS load,
+      ! built per-load in radial_operator_solve).
+      A(idx_f(nr), idx_f(nr)) = A(idx_f(nr), idx_f(nr)) &
+                                + earth%r_earth/fourpiG*real(j+1, wp)
+
+      ! --- δE_uniq (eq 83): remove the degree-1 rigid-translation null space ---
+      ! Rank-1 term (4π/3) w wᵀ over the degree-1 (U,V) dofs, w_U(k)=Σ K³,
+      ! w_V(k)=2 w_U(k). Dense for j=1 only; harmless for the band at j≥2.
+      if (j == 1) then
+         allocate(w(nd));  w = 0.0_wp
+         do e = 1, ne
+            k3 = elem_k3(mesh%r(e), mesh%r(e+1))
+            w(idx_u(e))   = w(idx_u(e))   +        k3(1)
+            w(idx_u(e+1)) = w(idx_u(e+1)) +        k3(2)
+            w(idx_v(e))   = w(idx_v(e))   + 2.0_wp*k3(1)
+            w(idx_v(e+1)) = w(idx_v(e+1)) + 2.0_wp*k3(2)
+         end do
+         do ib = 1, nd
+            if (w(ib) == 0.0_wp) cycle
+            do ia = 1, nd
+               if (w(ia) == 0.0_wp) cycle
+               A(ib, ia) = A(ib, ia) + (4.0_wp*pi/3.0_wp)*w(ib)*w(ia)
+            end do
+         end do
+      end if
+   end function build_dense_operator
 
    ! --- Operator (stub) -------------------------------------------------------
 
