@@ -18,7 +18,7 @@ module fe_coupling
    use fe_constants,       only: kyr
    use fe_sht,             only: sht_grid
    use fe_earth_structure, only: earth_model
-   use fe_viscoelastic,    only: viscoelastic_state
+   use fe_viscoelastic,    only: ve_degree
    use fe_sle,             only: sle_solver
    use fe_rotation,        only: rotation_state
    implicit none
@@ -29,7 +29,7 @@ module fe_coupling
    type :: solid_earth
       type(sht_grid)           :: sht       !! horizontal transform engine
       type(earth_model)        :: earth     !! radial (+ optional 3D) structure
-      type(viscoelastic_state) :: visco     !! time-domain relaxation state
+      type(ve_degree), allocatable :: visco(:)  !! per-degree relaxation state
       type(sle_solver)         :: sle       !! sea-level equation
       type(rotation_state)     :: rotation  !! TPW feedback (off by default)
       real(wp), allocatable    :: z_bed_eq(:,:)  !! relaxed bedrock [m] (nphi,nlat)

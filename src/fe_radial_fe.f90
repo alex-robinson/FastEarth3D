@@ -70,9 +70,11 @@ module fe_radial_fe
       real(wp), allocatable :: dr(:), dc(:)      !! row / column equilibration
       logical  :: ready = .false.
    contains
-      procedure :: assemble => radial_operator_assemble
-      procedure :: solve    => radial_operator_solve
-      procedure :: destroy  => radial_operator_destroy
+      procedure :: assemble  => radial_operator_assemble
+      procedure :: solve     => radial_operator_solve
+      procedure :: solve_vec  => radial_operator_solve_vec
+      procedure :: load_rhs   => radial_operator_load_rhs
+      procedure :: destroy   => radial_operator_destroy
    end type radial_operator
 
    ! Default LIS solver/preconditioner for the indefinite, non-symmetric
@@ -384,43 +386,60 @@ contains
       self%ready = .true.
    end subroutine radial_operator_assemble
 
+   function radial_operator_load_rhs(self, sigma) result(b)
+      !! Build the physical RHS for a degree-j surface mass load of coefficient
+      !! `sigma` (eq 84 σ-terms): force −a²σ g₀(a) on U(a) and −a²σ on F(a).
+      class(radial_operator), intent(in) :: self
+      real(wp),               intent(in) :: sigma
+      real(wp), allocatable :: b(:)
+      allocate(b(self%ndof));  b = 0.0_wp
+      b(idx_u(self%nr)) = -self%r_earth**2 * sigma * self%g_surf
+      b(idx_f(self%nr)) = -self%r_earth**2 * sigma
+   end function radial_operator_load_rhs
+
+   subroutine radial_operator_solve_vec(self, b, x, iters, resid, info, options)
+      !! Solve A x = b for an arbitrary physical RHS b (length ndof), returning
+      !! the full physical solution x. Applies the stored row/column
+      !! equilibration around the LIS solve. The viscoelastic time stepper uses
+      !! this with b = load + dissipative memory forcing.
+      class(radial_operator), intent(in)  :: self
+      real(wp),               intent(in)  :: b(:)
+      real(wp),               intent(out) :: x(:)
+      integer,  optional,     intent(out) :: iters, info
+      real(wp), optional,     intent(out) :: resid
+      character(len=*), optional, intent(in) :: options
+      real(wp), allocatable :: bs(:), y(:)
+      integer  :: nd, it, ier
+      real(wp) :: rsd
+      character(len=256) :: opts
+      nd = self%ndof
+      opts = LIS_OPTS_DEFAULT
+      if (present(options)) opts = options
+      allocate(bs(nd), y(nd))
+      bs = self%dr * b                          ! equilibrate: b̂ = Dr b
+      call fe_lis_solve_coo(nd, self%rows, self%cols, self%vals, bs, y, &
+                            trim(opts), it, rsd, ier)
+      x = self%dc * y                           ! recover physical solution
+      if (present(iters)) iters = it
+      if (present(resid)) resid = rsd
+      if (present(info))  info  = ier
+   end subroutine radial_operator_solve_vec
+
    subroutine radial_operator_solve(self, sigma, U_a, V_a, F_a, iters, resid, info, options)
-      !! Solve for the surface response to a degree-j surface mass load of
-      !! coefficient `sigma` (eq 84 RHS): force −a²σ g₀(a) on U(a) and −a²σ on
-      !! F(a). Returns the surface coefficients U(a), V(a), F(a); optionally the
-      !! LIS iteration count, residual and error code.
+      !! Convenience elastic solve: degree-j surface load of coefficient `sigma`,
+      !! returning the surface coefficients U(a), V(a), F(a).
       class(radial_operator), intent(in)  :: self
       real(wp),               intent(in)  :: sigma
       real(wp),               intent(out) :: U_a, V_a, F_a
       integer,  optional,     intent(out) :: iters, info
       real(wp), optional,     intent(out) :: resid
       character(len=*), optional, intent(in) :: options
-
-      real(wp), allocatable :: b(:), y(:), x(:)
-      integer  :: nd, it, ier
-      real(wp) :: rsd
-      character(len=256) :: opts
-
-      nd = self%ndof
-      opts = LIS_OPTS_DEFAULT
-      if (present(options)) opts = options
-
-      ! RHS (eq 84 σ-terms), then equilibrate: b̂ = Dr b.
-      allocate(b(nd), y(nd), x(nd));  b = 0.0_wp
-      b(idx_u(self%nr)) = -self%r_earth**2 * sigma * self%g_surf
-      b(idx_f(self%nr)) = -self%r_earth**2 * sigma
-      b = self%dr * b
-
-      call fe_lis_solve_coo(nd, self%rows, self%cols, self%vals, b, y, &
-                            trim(opts), it, rsd, ier)
-
-      x = self%dc * y            ! recover the physical solution
+      real(wp), allocatable :: x(:)
+      allocate(x(self%ndof))
+      call self%solve_vec(self%load_rhs(sigma), x, iters, resid, info, options)
       U_a = x(idx_u(self%nr))
       V_a = x(idx_v(self%nr))
       F_a = x(idx_f(self%nr))
-      if (present(iters)) iters = it
-      if (present(resid)) resid = rsd
-      if (present(info))  info  = ier
    end subroutine radial_operator_solve
 
    subroutine radial_operator_destroy(self)

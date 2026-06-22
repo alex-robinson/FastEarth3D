@@ -7,7 +7,7 @@ module fastearth
    use fe_sht,             only: sht_grid
    use fe_earth_structure, only: earth_model
    use fe_radial_fe,       only: radial_operator
-   use fe_viscoelastic,    only: viscoelastic_state
+   use fe_viscoelastic,    only: ve_degree
    use fe_gravity,         only: potential_perturbation
    use fe_sle,             only: sle_solver
    use fe_rotation,        only: rotation_state
