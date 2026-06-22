@@ -33,8 +33,12 @@ program test_ve_response
    call elastic_limit(ok)
 
    write(*,'(a)') ''
-   write(*,'(a)') ' (2) held degree-2 load reproduces the 1-D ve_degree stepper'
-   call stepper_agreement(ok)
+   write(*,'(a)') ' (2) held single-degree load reproduces the 1-D ve_degree stepper'
+   write(*,'(a)') '     j = 1 (geocenter, CM frame):'
+   call stepper_agreement(1, ok)
+   write(*,'(a)') ''
+   write(*,'(a)') '     j = 2:'
+   call stepper_agreement(2, ok)
 
    write(*,'(a)') ''
    if (ok) then
@@ -58,28 +62,29 @@ contains
       real(wp) :: du, dn, dmax
       call ve%init(e, sht, dt)
       call el%init(e, lmax=LMAX)
-      ! The field driver carries degrees l>=2 (degree 0/1 handled separately:
-      ! degree-1 deformation is deferred to the CM-frame treatment), so compare
-      ! the gains there.
+      ! The field driver carries degrees l>=1 (degree 1 in the CM frame via the
+      ! sparse KKT border; degree 0 is the monopole geoid only), so compare the
+      ! gains over the full deforming range.
       dmax = 0.0_wp
-      do l = 2, LMAX
+      do l = 1, LMAX
          du = abs(ve%gu(l) - el%ugain(l))
          dn = abs(ve%gn(l) - el%ngain(l))
          dmax = max(dmax, du, dn)
       end do
-      write(*,'(a,es11.2)') '      max |gain difference| (l>=2) =', dmax
+      write(*,'(a,es11.2)') '      max |gain difference| (l>=1) =', dmax
       if (dmax > 1.0e-12_wp) then
          write(*,'(a)') '      FAIL: ve gains differ from the elastic response'
          ok = .false.
       end if
-      if (ve%gu(1) /= 0.0_wp .or. ve%gn(1) /= 0.0_wp) then
-         write(*,'(a)') '      FAIL: degree-1 deformation should be zeroed'
+      if (ve%gu(1) == 0.0_wp) then
+         write(*,'(a)') '      FAIL: degree-1 deformation should be nonzero'
          ok = .false.
       end if
       call ve%destroy();  call el%destroy()
    end subroutine elastic_limit
 
-   subroutine stepper_agreement(ok)
+   subroutine stepper_agreement(j, ok)
+      integer, intent(in)    :: j
       logical, intent(inout) :: ok
       type(ve_response)  :: ve
       type(ve_degree)    :: vd
@@ -91,14 +96,14 @@ contains
       real(wp) :: emax_u, emax_f, ref_u
 
       sigma = 1.0_wp
-      ! reference: validated 1-D stepper at degree 2
+      ! reference: validated 1-D stepper at degree j
       call mesh%build(e)
-      call vd%init(e, mesh, j=2, dt=dt)
+      call vd%init(e, mesh, j=j, dt=dt)
 
-      ! field driver, single held (l=2,m=0) coefficient
+      ! field driver, single held (l=j,m=0) coefficient
       call ve%init(e, sht, dt)
       g  = ve%g
-      lm = sht%lmidx(2, 0)
+      lm = sht%lmidx(j, 0)
       allocate(slm(sht%nlm), ulm(sht%nlm), nlm(sht%nlm))
       slm = (0.0_wp, 0.0_wp);  slm(lm) = cmplx(sigma, 0.0_wp, wp)
 

@@ -21,3 +21,4 @@
 # Reference papers (copyrighted — never commit)
 *.pdf
 doc/refs/
+.claude/worktrees/

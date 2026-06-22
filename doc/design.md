@@ -215,32 +215,32 @@ held degree-2 load reproduces the 1-D `ve_degree` history to ~1e-13 relative.
 End-to-end (`test_sle_ve`): a held 2 km ice cap → ocean mass conserved ~1e-16 per
 step, eustatic mean held, ~16 m of viscoelastic relaxation over 500 yr.
 
-**Degree-1 is currently skipped in the field driver** (`gu(1)=gn(1)=0`, the
-`l < 2` guards in `fe_response`). This was a workaround for the *dense* j=1
-operator hanging the stepper — now **fixed at the source**: the sparse KKT
-degree-1 operator (merged from `degree1-sparse`) solves j=1 in ~2 GMRES iters in
-the CM frame, and `ve_degree` steps stably at j=1 (`test_love` case 4,
-`test_relax` case 5). So the guards can be lifted to carry the degree-1
-(geocenter) response — see "Open / next" (a). The `ve_response` solve path is
-unchanged for l ≥ 2.
+**Degree-1 (geocenter) is now carried in the field driver — DONE.** Previously
+skipped (`gu(1)=gn(1)=0`, `l < 2` guards) as a workaround for the *dense* j=1
+operator hanging the stepper. The sparse KKT degree-1 operator (merged from
+`degree1-sparse`) fixed that at the source — j=1 solves in ~2 GMRES iters in the
+CM frame (wᵀd = 0 rigid-translation removal, Blewitt 2003). The `l < 2` guards
+in `fe_response` are now `l < 1`: degree 1 joins the unit-load loop in
+`ve_response_init` (assembles `ops(1)`, real gains + nodal fields like any
+degree), and carries memory drift through begin/apply/commit; only degree 0
+(monopole geoid, no deformation, no operator) stays special. Validated
+(`test_ve_response`): degree-1 first-step gains == `elastic_response` exactly
+(0.0 diff), and the held (1,0) field response reproduces the 1-D `ve_degree` at
+j=1 to ~1e-11 relative; `test_sle_ve` mass conservation unchanged (~6.6e-16).
+The frame is inherited from the operator (same CM frame as `elastic_response`
+and `ve_degree`), so the SLE's `N=−F/g` at degree 1 is self-consistent with the
+displacement `u`.
 
 **Open / next** (priority order for a fresh session):
-1. **Lift the degree-1 skip in `ve_response`.** The blocker is gone (sparse KKT
-   j=1). Change the `l < 2` guards (init / begin_step / apply / commit_step in
-   `src/fe_response.f90`) to `l < 1`, assemble `ops(1)`, drop the `gu(1)=gn(1)=0`
-   special case. Update `test_ve_response` (it currently *asserts* degree-1 is
-   zeroed) to instead check the j=1 field response vs the 1-D `ve_degree` at j=1.
-   Watch the geocenter/frame convention (CM frame, Blewitt 2003) — `N=−F/g` at
-   degree 1 is frame-dependent.
-2. **`fe_coupling` wiring** — the CLIMBER-X contract (reference state: z_bed_eq +
+1. **`fe_coupling` wiring** — the CLIMBER-X contract (reference state: z_bed_eq +
    reference ice/topo; host-grid mapping). A deliberate interface decision; swap
    the `visco(:)` member for a `ve_response`, drive `sle%solve` per Δt across the
    coupling interval, return `z_bed = z_bed_eq − rsl`.
-3. **Grounded-ice flotation** in the ocean function (currently `topo < 0` only):
+2. **Grounded-ice flotation** in the ocean function (currently `topo < 0` only):
    a cell is ocean only where it is below sea level AND ice does not ground
    (`ρ_i I < −ρ_w·topo`).
-4. **Martinec et al. (2018) cases A–E** quantitative match — needs benchmark
+3. **Martinec et al. (2018) cases A–E** quantitative match — needs benchmark
    input data (ice history + present topography), not yet in-repo.
-5. **Performance** — `begin_step` does 2 real solves per (l,m) per step
+4. **Performance** — `begin_step` does 2 real solves per (l,m) per step
    (~O(nlm) solves), fine for moderate `lmax` but the cost driver at VILMA
    resolution (lmax 170); exploit small high-degree coefficients / parallelize.
