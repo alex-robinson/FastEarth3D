@@ -30,7 +30,8 @@ $(objdir)/fe_viscoelastic.o:     $(objdir)/fe_radial_fe.o $(objdir)/fe_earth_str
 $(objdir)/fe_response.o:         $(objdir)/fe_radial_fe.o $(objdir)/fe_earth_structure.o \
                                  $(objdir)/fe_sht.o $(objdir)/fe_constants.o
 $(objdir)/fe_gravity.o:          $(objdir)/fe_earth_structure.o
-$(objdir)/fe_sle.o:              $(objdir)/fe_sht.o $(objdir)/fe_constants.o
+$(objdir)/fe_sle.o:              $(objdir)/fe_sht.o $(objdir)/fe_constants.o \
+                                 $(objdir)/fe_response.o
 $(objdir)/fe_rotation.o:         $(objdir)/fe_sht.o $(objdir)/fe_constants.o
 $(objdir)/fe_coupling.o:         $(objdir)/fe_viscoelastic.o $(objdir)/fe_gravity.o \
                                  $(objdir)/fe_sle.o $(objdir)/fe_rotation.o
@@ -95,7 +96,12 @@ test_response: fastearth-static | $(bindir)
 		-o $(bindir)/test_response.x $(objdir)/libfastearth.a $(LFLAGS)
 	@echo "    $(bindir)/test_response.x is ready."
 
-TESTS = test_sht test_earth test_mesh test_integrals test_assembly test_love test_relax test_response
+test_sle: fastearth-static | $(bindir)
+	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(testdir)/test_sle.f90 \
+		-o $(bindir)/test_sle.x $(objdir)/libfastearth.a $(LFLAGS)
+	@echo "    $(bindir)/test_sle.x is ready."
+
+TESTS = test_sht test_earth test_mesh test_integrals test_assembly test_love test_relax test_response test_sle
 
 check: $(TESTS)
 	@echo ""

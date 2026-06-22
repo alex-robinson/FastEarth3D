@@ -30,7 +30,7 @@ module fe_response
    implicit none
    private
 
-   public :: response_operator, elastic_response
+   public :: response_operator, elastic_response, null_response
 
    type, abstract :: response_operator
       !! Maps a spectral surface load to surface displacement + geoid.
@@ -64,7 +64,25 @@ module fe_response
       procedure :: destroy => elastic_response_destroy
    end type elastic_response
 
+   type, extends(response_operator) :: null_response
+      !! Rigid, non-self-gravitating Earth: u ≡ 0 and N ≡ 0. The SLE then
+      !! reduces to a uniform (eustatic/barystatic) ocean response, which is the
+      !! textbook limit used to check mass conservation and the uniform term.
+   contains
+      procedure :: apply => null_response_apply
+   end type null_response
+
 contains
+
+   subroutine null_response_apply(self, sht, sigma_lm, u_lm, n_lm)
+      class(null_response), intent(inout) :: self
+      type(sht_grid),       intent(in)    :: sht
+      complex(wp),          intent(in)    :: sigma_lm(:)
+      complex(wp),          intent(out)   :: u_lm(:)
+      complex(wp),          intent(out)   :: n_lm(:)
+      u_lm = (0.0_wp, 0.0_wp)
+      n_lm = (0.0_wp, 0.0_wp)
+   end subroutine null_response_apply
 
    subroutine elastic_response_init(self, earth, lmax)
       !! Precompute the per-degree elastic surface gains for degrees 0..lmax.
