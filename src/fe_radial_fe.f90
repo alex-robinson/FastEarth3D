@@ -33,7 +33,7 @@ module fe_radial_fe
    public :: radial_mesh, radial_operator
    public :: loading_love, radial_fe_finalize
    ! Assembly building blocks (public so the unit tests can inspect them).
-   public :: build_dense_operator, shell_Rk
+   public :: build_dense_operator, shell_Rk, uniq_weight
    public :: idx_u, idx_v, idx_f, idx_p, ndof_of
 
    ! Default radial element-size targets [m], after VEGA (Martinec et al. 2018):
@@ -44,6 +44,10 @@ module fe_radial_fe
    real(wp), parameter :: DR_LOWER = 40.0e3_wp
    real(wp), parameter :: DEPTH_LITHO =  70.0e3_wp   !! lithosphere base depth
    real(wp), parameter :: DEPTH_UPPER = 670.0e3_wp   !! upper/lower mantle divide
+
+   ! Degree-1 rigid-translation (E_uniq) penalty coefficient, Martinec (2000)
+   ! eq 83: the removal term is UNIQ_COEFF · w wᵀ over the degree-1 (U,V) dofs.
+   real(wp), parameter :: UNIQ_COEFF = 4.0_wp*pi/3.0_wp
 
    type :: radial_mesh
       !! Piecewise-linear radial mesh over the meshed (solid) shell.
@@ -63,10 +67,16 @@ module fe_radial_fe
       !! scalings to recover the physical solution.
       integer  :: j  = -1                 !! spherical-harmonic degree
       integer  :: nr = 0, ne = 0, ndof = 0
+      integer  :: ndof_solve = 0          !! solved dimension (ndof, or ndof+1 if bordered)
       real(wp) :: r_earth = 0.0_wp        !! surface radius a [m]
       real(wp) :: g_surf  = 0.0_wp        !! g₀(a) [m s⁻²]
       type(fe_lis_system)   :: sys               !! built+factored LIS system (reused)
       real(wp), allocatable :: dr(:), dc(:)      !! row / column equilibration
+      ! Degree-1 only: the E_uniq penalty (4π/3) w wᵀ is densifying, so instead of
+      ! adding it to the band we border the band with one row/col reproducing it
+      ! EXACTLY (eliminate the multiplier μ ⇒ (A_band + UNIQ_COEFF w wᵀ) d = f).
+      logical               :: bordered = .false.
+      real(wp)              :: dr_b = 1.0_wp, dc_b = 1.0_wp  !! border row/col equilibration
       logical  :: ready = .false.
    contains
       procedure :: assemble  => radial_operator_assemble
@@ -196,7 +206,7 @@ contains
 
    ! --- Per-degree operator assembly (dense; eqs 80-84) -----------------------
 
-   function build_dense_operator(earth, mesh, j) result(A)
+   function build_dense_operator(earth, mesh, j, with_uniq) result(A)
       !! Assemble the per-degree saddle-point operator A (dense) for degree j≥1,
       !! exactly as written in Martinec (2000) eqs 80-84 with the toroidal W
       !! block dropped (spheroidal-only 1-D loading). Each bilinear term
@@ -205,22 +215,31 @@ contains
       !! and the I³ shear coupling break symmetry — Martinec solves it with a
       !! general banded LU, here LIS). Dense here for clarity and testability;
       !! the LIS path keeps only the nonzeros (see radial_operator).
+      !!
+      !! `with_uniq` (default .true.) controls the degree-1 E_uniq term (eq 83):
+      !! when .true. the dense rank-1 penalty is added (the reference operator);
+      !! when .false. only the band is returned, so the radial_operator path can
+      !! reproduce the penalty cheaply by bordering the band (uniq_weight).
       type(earth_model), intent(in) :: earth
       type(radial_mesh), intent(in) :: mesh
       integer,           intent(in) :: j
+      logical, optional, intent(in) :: with_uniq
       real(wp), allocatable :: A(:,:)
 
       real(wp), allocatable :: Rk(:)
       real(wp) :: i1(2,2), i2(2,2), i3(2,2), i4(2,2), i5(2,2), i6(2,2), i7(2,2)
-      real(wp) :: k1(2), k2(2), k3(2)
+      real(wp) :: k1(2), k2(2)
       real(wp) :: Aloc(7,7)
       integer  :: gmap(7)
       real(wp) :: rlo, rhi, mu_k, rho_k, Jr, fourpiG, gg
       real(wp), allocatable :: w(:)
+      logical  :: add_uniq
       integer  :: e, ia, ib, nr, ne, nd, lay
       ! Local element dof order: [U1 V1 F1 U2 V2 F2 Π] -> 1..7.
       integer, parameter :: lU(2) = [1, 4], lV(2) = [2, 5], lF(2) = [3, 6], lP = 7
 
+      add_uniq = .true.
+      if (present(with_uniq)) add_uniq = with_uniq
       nr = mesh%nr;  ne = mesh%ne;  nd = ndof_of(nr)
       Jr = real(j, wp)*real(j+1, wp)          ! J = j(j+1), real (overflows int at high j)
       fourpiG = 4.0_wp*pi*grav_G
@@ -243,7 +262,7 @@ contains
          else
             i7 = 0.0_wp
          end if
-         k1 = elem_k1(rlo, rhi);  k2 = elem_k2(rlo, rhi);  k3 = elem_k3(rlo, rhi)
+         k1 = elem_k1(rlo, rhi);  k2 = elem_k2(rlo, rhi)
 
          Aloc = 0.0_wp
          do ia = 1, 2          ! trial node (α)
@@ -311,26 +330,40 @@ contains
                                 + earth%r_earth/fourpiG*real(j+1, wp)
 
       ! --- δE_uniq (eq 83): remove the degree-1 rigid-translation null space ---
-      ! Rank-1 term (4π/3) w wᵀ over the degree-1 (U,V) dofs, w_U(k)=Σ K³,
-      ! w_V(k)=2 w_U(k). Dense for j=1 only; harmless for the band at j≥2.
-      if (j == 1) then
-         allocate(w(nd));  w = 0.0_wp
-         do e = 1, ne
-            k3 = elem_k3(mesh%r(e), mesh%r(e+1))
-            w(idx_u(e))   = w(idx_u(e))   +        k3(1)
-            w(idx_u(e+1)) = w(idx_u(e+1)) +        k3(2)
-            w(idx_v(e))   = w(idx_v(e))   + 2.0_wp*k3(1)
-            w(idx_v(e+1)) = w(idx_v(e+1)) + 2.0_wp*k3(2)
-         end do
+      ! Rank-1 term UNIQ_COEFF w wᵀ over the degree-1 (U,V) dofs (uniq_weight).
+      ! Dense for j=1 only; harmless (absent) for the band at j≥2. The LIS path
+      ! instead borders the band with w to keep the operator sparse.
+      if (j == 1 .and. add_uniq) then
+         w = uniq_weight(mesh)
          do ib = 1, nd
             if (w(ib) == 0.0_wp) cycle
             do ia = 1, nd
                if (w(ia) == 0.0_wp) cycle
-               A(ib, ia) = A(ib, ia) + (4.0_wp*pi/3.0_wp)*w(ib)*w(ia)
+               A(ib, ia) = A(ib, ia) + UNIQ_COEFF*w(ib)*w(ia)
             end do
          end do
       end if
    end function build_dense_operator
+
+   function uniq_weight(mesh) result(w)
+      !! Degree-1 rigid-translation weight vector w (Martinec 2000 eq 83): the
+      !! E_uniq penalty is UNIQ_COEFF·w wᵀ over the degree-1 (U,V) dofs, with
+      !! w_U(k)=Σ_e K³, w_V(k)=2 w_U(k) (K³=∫ψ r² dr, elem_k3). Nonzero on every
+      !! node, so the outer product densifies the operator — the radial_operator
+      !! path borders the band with this vector (same penalty, kept sparse).
+      type(radial_mesh), intent(in) :: mesh
+      real(wp), allocatable :: w(:)
+      real(wp) :: k3(2)
+      integer  :: e
+      allocate(w(ndof_of(mesh%nr)));  w = 0.0_wp
+      do e = 1, mesh%ne
+         k3 = elem_k3(mesh%r(e), mesh%r(e+1))
+         w(idx_u(e))   = w(idx_u(e))   +        k3(1)
+         w(idx_u(e+1)) = w(idx_u(e+1)) +        k3(2)
+         w(idx_v(e))   = w(idx_v(e))   + 2.0_wp*k3(1)
+         w(idx_v(e+1)) = w(idx_v(e+1)) + 2.0_wp*k3(2)
+      end do
+   end function uniq_weight
 
    ! --- Operator: assemble, solve, destroy ------------------------------------
 
