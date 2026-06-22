@@ -124,3 +124,42 @@ fesm-utils' `build.py` as a first-class component (serial + OpenMP variants).
 - Martinec et al. (2018), *GJI* 215:389 — SLE benchmark.
 - Mitrovica et al. (2005), *GJI* 161:491 — revised rotation theory.
 - Blewitt (2003), *JGR* 108:2103 — degree-1 / reference frames.
+
+## 9. Radial solver formulation (rung 2) — working notes
+
+Verified from Martinec's *Continuum Mechanics* lecture notes (Ch. 9), the Hanyk
+PhD thesis, and the VEGA benchmark description (Martinec et al. 2018). Items
+marked **(unverified)** await the paywalled Martinec (2000) PDF.
+
+**Governing equations** (incompressible, self-gravitating, quasi-static):
+- Incremental momentum balance `Div t^L + ρ₀ f^L + ρ^L f₀ + (pre-stress) = 0`,
+  body force `f^L = −∇φ₁ + ∇u·∇φ₀` (Martinec Eq. 9.32, 9.152).
+- Poisson via advected density: `∇²φ₁ = 4πG ρ₁`, `ρ₁ = −∇·(ρ₀u)` (Eq. 9.98).
+- Incompressibility `Div u = 0`; isotropic stress Π is the Lagrange multiplier
+  (K→∞), deviatoric part `τ^dev = 2μ ε^dev` (Maxwell in time, §D below).
+
+**Spectral/radial:** spheroidal-only for 1D loading. Radial scalar set per degree
+`{U, V, F}` nodal + pressure Π; tractions are natural BCs of the weak form.
+**P1 ("tent") radial basis** (VEGA: 165 elements). Mesh = done (§3, `fe_radial_fe`).
+
+**Incompressibility discretization (B4) — OPEN.** The inf-sup-critical choice.
+Candidate (unverified): P1 displacement/potential + P0 pressure, `Div u = 0`
+enforced weakly via the pressure block. Must be confirmed against Martinec (2000)
+— could be P1–P0, a stabilized pair, Taylor–Hood-like, or pressure-elimination.
+**Do not implement the FE assembly until this is pinned.** Need the PDF
+(`doc/refs/martinec2000.pdf`, AWI OUP access).
+
+**Boundary conditions:** fluid core NOT meshed → CMB boundary condition
+(Wu & Peltier 1982): continuity of normal displacement, normal traction,
+vanishing tangential traction, potential + flux. Surface: traction balances the
+load, potential-flux jump carries the `4πGσ` source. Density-jump interfaces are
+natural conditions of the weak form.
+
+**Time scheme (rung 3):** explicit forward-Euler memory-stress update; previous
+memory stress relaxed by `(1 − Δt/τ_M)`, `τ_M = η/μ` (Hanyk Eq. 4.36). Stability
+`Δt ≲ 2 η_min/μ` ⇒ impose a viscosity floor. VEGA uses Δt = 20 yr.
+
+**Love numbers (rung 2 target):** from surface values for a unit degree-n load,
+`h_n = g₀ N_n U(a)/Φ_n`, `l_n = g₀ N_n V(a)/Φ_n`, `k_n = −N_n F(a)/Φ_n`
+(Hanyk Eq. 4.40, Farrell normalization). Fluid limits `h_n → −(2n+1)/3`,
+`k_n → −1`. Validate vs Spada (2011) Test 2/1.
