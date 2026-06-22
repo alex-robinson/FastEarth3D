@@ -28,6 +28,9 @@ module fe_viscoelastic
    private
 
    public :: ve_degree
+   ! Per-element Maxwell kernel, shared with the field driver (fe_response):
+   public :: NLAM, strain_coeffs, ve_strain_constants, dissipative_rhs, &
+             advance_memory
 
    ! Spheroidal strain keeps four tensor-harmonic components; LAM maps the local
    ! index 1..4 to Martinec's λ ∈ {1,2,5,6} (λ=3,4 are toroidal, dropped).
@@ -86,17 +89,11 @@ contains
          end if
       end do
 
-      ! Z^λ:Z^λ orthogonality norms (eqs B13/110) for λ = 1,2,5,6.
+      ! Z^λ:Z^λ orthogonality norms (eqs B13/110) and the strain coefficients of
+      ! the four unit test dofs (δU_k, δU_{k+1}, δV_k, δV_{k+1}); both r-
+      ! independent, so precompute once. Shared with the field driver.
       allocate(self%norm(NLAM))
-      self%norm = [ 1.0_wp, 0.5_wp*self%Jr, 2.0_wp*self%Jr**2, &
-                    2.0_wp*self%Jr*(self%Jr - 2.0_wp) ]
-
-      ! Strain coefficients of the four unit test dofs (δU_k, δU_{k+1}, δV_k,
-      ! δV_{k+1}); the eq-87 map is r-independent, so precompute once.
-      call strain_coeffs(1.0_wp,0.0_wp,0.0_wp,0.0_wp, self%Jr, self%sa(1,:), self%sb(1,:), self%sc(1,:))
-      call strain_coeffs(0.0_wp,1.0_wp,0.0_wp,0.0_wp, self%Jr, self%sa(2,:), self%sb(2,:), self%sc(2,:))
-      call strain_coeffs(0.0_wp,0.0_wp,1.0_wp,0.0_wp, self%Jr, self%sa(3,:), self%sb(3,:), self%sc(3,:))
-      call strain_coeffs(0.0_wp,0.0_wp,0.0_wp,1.0_wp, self%Jr, self%sa(4,:), self%sb(4,:), self%sc(4,:))
+      call ve_strain_constants(self%Jr, self%norm, self%sa, self%sb, self%sc)
 
       allocate(self%Am(NLAM,self%ne), self%Bm(NLAM,self%ne), self%Cm(NLAM,self%ne))
       self%Am = 0.0_wp;  self%Bm = 0.0_wp;  self%Cm = 0.0_wp
@@ -133,7 +130,25 @@ contains
 
    ! --- internals -------------------------------------------------------------
 
-   subroutine strain_coeffs(u1, u2, v1, v2, Jr, a, b, c)
+   subroutine add_dissipative(self, f)
+      !! Add the dissipative memory forcing −∫ τ^{V}:δε dV to this degree's RHS.
+      class(ve_degree), intent(in)    :: self
+      real(wp),         intent(inout) :: f(:)
+      call dissipative_rhs(self%ne, self%r, self%sa, self%sb, self%sc, &
+                           self%norm, self%Am, self%Bm, self%Cm, f)
+   end subroutine add_dissipative
+
+   subroutine update_memory(self)
+      !! Explicit Maxwell update of this degree's memory stress from the new
+      !! nodal strain.
+      class(ve_degree), intent(inout) :: self
+      call advance_memory(self%ne, self%mu, self%Mk, self%Un, self%Vn, &
+                          self%Jr, self%Am, self%Bm, self%Cm)
+   end subroutine update_memory
+
+   ! --- shared per-element Maxwell kernel (reused by the field driver) --------
+
+   pure subroutine strain_coeffs(u1, u2, v1, v2, Jr, a, b, c)
       !! Spheroidal strain-tensor coefficients (a,b,c) for the four kept tensor
       !! components λ = 1,2,5,6 in terms of an element's nodal U,V (Martinec eq
       !! 87, W dropped). The strain is ε = a/h + b ψ_k/r + c ψ_{k+1}/r (eq 88).
@@ -145,33 +160,48 @@ contains
       a(4) = 0.0_wp;          b(4) = 0.5_wp*v1;         c(4) = 0.5_wp*v2        ! λ=6
    end subroutine strain_coeffs
 
-   subroutine add_dissipative(self, f)
-      !! Add the dissipative memory forcing −∫ τ^{V}:δε dV to the RHS f. Per
-      !! element: 2-point radial Gauss quadrature (eqs 94-95) of the spectral
-      !! double-dot Σ_λ norm_λ τ^{V,λ}(r) δε^λ(r) (eq 110), τ^{V,λ} from the
-      !! stored memory coefficients (eq 109).
-      class(ve_degree), intent(in)    :: self
-      real(wp),         intent(inout) :: f(:)
+   pure subroutine ve_strain_constants(Jr, norm, sa, sb, sc)
+      !! Per-degree, r-independent constants: the Z^λ:Z^λ norms (eqs B13/110) and
+      !! the strain coefficients of the four unit test dofs.
+      real(wp), intent(in)  :: Jr
+      real(wp), intent(out) :: norm(NLAM), sa(4,NLAM), sb(4,NLAM), sc(4,NLAM)
+      norm = [ 1.0_wp, 0.5_wp*Jr, 2.0_wp*Jr**2, 2.0_wp*Jr*(Jr - 2.0_wp) ]
+      call strain_coeffs(1.0_wp,0.0_wp,0.0_wp,0.0_wp, Jr, sa(1,:), sb(1,:), sc(1,:))
+      call strain_coeffs(0.0_wp,1.0_wp,0.0_wp,0.0_wp, Jr, sa(2,:), sb(2,:), sc(2,:))
+      call strain_coeffs(0.0_wp,0.0_wp,1.0_wp,0.0_wp, Jr, sa(3,:), sb(3,:), sc(3,:))
+      call strain_coeffs(0.0_wp,0.0_wp,0.0_wp,1.0_wp, Jr, sa(4,:), sb(4,:), sc(4,:))
+   end subroutine ve_strain_constants
+
+   pure subroutine dissipative_rhs(ne, r, sa, sb, sc, norm, Am, Bm, Cm, f)
+      !! Accumulate the dissipative memory forcing −∫ τ^{V}:δε dV into the RHS f
+      !! (length ndof). Per element: 2-point radial Gauss quadrature (eqs 94-95)
+      !! of the spectral double-dot Σ_λ norm_λ τ^{V,λ}(r) δε^λ(r) (eq 110), with
+      !! τ^{V,λ} from the stored memory coefficients (eq 109). Operates on plain
+      !! arrays so both the 1-D stepper and the per-(l,m) field driver share it.
+      integer,  intent(in)    :: ne
+      real(wp), intent(in)    :: r(:), sa(:,:), sb(:,:), sc(:,:), norm(:)
+      real(wp), intent(in)    :: Am(:,:), Bm(:,:), Cm(:,:)   !! (NLAM, ne)
+      real(wp), intent(inout) :: f(:)
       real(wp), parameter :: xg = 0.5773502691896257_wp   ! 1/√3
       real(wp) :: gp(2)
       real(wp) :: rk, rk1, h, ra, psik, psik1, tauV(NLAM), deps, D, floc(4)
       integer  :: e, ig, t, m
       gp = [ -xg, xg ]
-      do e = 1, self%ne
-         rk = self%r(e);  rk1 = self%r(e+1);  h = rk1 - rk
+      do e = 1, ne
+         rk = r(e);  rk1 = r(e+1);  h = rk1 - rk
          floc = 0.0_wp
          do ig = 1, 2
             ra    = 0.5_wp*(h*gp(ig) + rk + rk1)        ! Gauss node (eq 95)
             psik  = (rk1 - ra)/h
             psik1 = (ra - rk)/h
             do m = 1, NLAM                               ! τ^{V,λ}(ra) (eq 109)
-               tauV(m) = self%Am(m,e)/h + self%Bm(m,e)*psik/ra + self%Cm(m,e)*psik1/ra
+               tauV(m) = Am(m,e)/h + Bm(m,e)*psik/ra + Cm(m,e)*psik1/ra
             end do
             do t = 1, 4                                  ! the 4 local test dofs
                D = 0.0_wp
                do m = 1, NLAM
-                  deps = self%sa(t,m)/h + self%sb(t,m)*psik/ra + self%sc(t,m)*psik1/ra
-                  D = D + self%norm(m)*tauV(m)*deps
+                  deps = sa(t,m)/h + sb(t,m)*psik/ra + sc(t,m)*psik1/ra
+                  D = D + norm(m)*tauV(m)*deps
                end do
                floc(t) = floc(t) - D*ra*ra*h*0.5_wp      ! −D r² h/2 (eq 94, w=1)
             end do
@@ -181,27 +211,28 @@ contains
          f(idx_v(e))   = f(idx_v(e))   + floc(3)
          f(idx_v(e+1)) = f(idx_v(e+1)) + floc(4)
       end do
-   end subroutine add_dissipative
+   end subroutine dissipative_rhs
 
-   subroutine update_memory(self)
+   pure subroutine advance_memory(ne, mu, Mk, Un, Vn, Jr, Am, Bm, Cm)
       !! Explicit Maxwell update of the memory stress from the new nodal strain
       !! (eq 102/107): [A,B,C] ← (1−M)[A,B,C] − 2μM [a,b,c](uⁱ). At the first
       !! step the memory starts at 0, so this sets τ^{V,0} = −2μM ε⁰ (eq 25).
-      class(ve_degree), intent(inout) :: self
+      integer,  intent(in)    :: ne
+      real(wp), intent(in)    :: mu(:), Mk(:), Un(:), Vn(:), Jr
+      real(wp), intent(inout) :: Am(:,:), Bm(:,:), Cm(:,:)   !! (NLAM, ne)
       real(wp) :: a(NLAM), b(NLAM), c(NLAM), om, two_muM
       integer  :: e, m
-      do e = 1, self%ne
-         call strain_coeffs(self%Un(e), self%Un(e+1), self%Vn(e), self%Vn(e+1), &
-                            self%Jr, a, b, c)
-         om      = 1.0_wp - self%Mk(e)
-         two_muM = 2.0_wp*self%mu(e)*self%Mk(e)
+      do e = 1, ne
+         call strain_coeffs(Un(e), Un(e+1), Vn(e), Vn(e+1), Jr, a, b, c)
+         om      = 1.0_wp - Mk(e)
+         two_muM = 2.0_wp*mu(e)*Mk(e)
          do m = 1, NLAM
-            self%Am(m,e) = om*self%Am(m,e) - two_muM*a(m)
-            self%Bm(m,e) = om*self%Bm(m,e) - two_muM*b(m)
-            self%Cm(m,e) = om*self%Cm(m,e) - two_muM*c(m)
+            Am(m,e) = om*Am(m,e) - two_muM*a(m)
+            Bm(m,e) = om*Bm(m,e) - two_muM*b(m)
+            Cm(m,e) = om*Cm(m,e) - two_muM*c(m)
          end do
       end do
-   end subroutine update_memory
+   end subroutine advance_memory
 
    subroutine ve_destroy(self)
       class(ve_degree), intent(inout) :: self

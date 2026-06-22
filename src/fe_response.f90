@@ -25,17 +25,30 @@ module fe_response
    use fe_precision,       only: wp
    use fe_constants,       only: pi, grav_G
    use fe_earth_structure, only: earth_model
-   use fe_radial_fe,       only: radial_mesh, radial_operator
+   use fe_radial_fe,       only: radial_mesh, radial_operator, &
+                                 idx_u, idx_v, idx_f, ndof_of
+   use fe_viscoelastic,    only: NLAM, ve_strain_constants, dissipative_rhs, &
+                                 advance_memory
    use fe_sht,             only: sht_grid
    implicit none
    private
 
-   public :: response_operator, elastic_response, null_response
+   public :: response_operator, elastic_response, null_response, ve_response
 
    type, abstract :: response_operator
       !! Maps a spectral surface load to surface displacement + geoid.
+      !!
+      !! Stateful (viscoelastic) responses are AFFINE in the current load at a
+      !! fixed time: apply() returns gain(l)·σ_lm + drift_lm, where drift_lm is
+      !! frozen from the past-relaxation memory. The SLE fixed point may call
+      !! apply() many times per time step with different trial loads (safe,
+      !! pure); the surrounding step is bracketed by begin_step (freeze the
+      !! drift) and commit_step (advance the memory with the converged load).
+      !! For elastic / null responses these brackets are no-ops.
    contains
       procedure(apply_if), deferred :: apply
+      procedure :: begin_step  => response_begin_default
+      procedure :: commit_step => response_commit_default
    end type response_operator
 
    abstract interface
@@ -72,7 +85,60 @@ module fe_response
       procedure :: apply => null_response_apply
    end type null_response
 
+   type, extends(response_operator) :: ve_response
+      !! Viscoelastic field driver. Holds one per-degree saddle-point operator
+      !! (assembled + factored once) shared across all orders m, plus an
+      !! independent Maxwell memory-stress history per spectral coefficient
+      !! (l,m) — each (l,m) load has its own time history, so memory cannot be
+      !! collapsed across m. Because the operator and the M = μΔt/η factors are
+      !! real, each complex (l,m) history is two real histories (re/im).
+      !!
+      !! The per-step response is affine: solving the unit load once per degree
+      !! gives the elastic gains gu(l), gn(l) AND the nodal field used to update
+      !! memory; begin_step solves the frozen memory forcing per (l,m) for the
+      !! drift; apply combines them; commit_step advances the memory.
+      integer  :: lmax = 0, nr = 0, ne = 0, ndof = 0, nlm = 0
+      real(wp) :: g = 0.0_wp, a = 0.0_wp, dt = 0.0_wp, time = 0.0_wp
+      type(radial_operator), allocatable :: ops(:)      !! (1:lmax) per-degree operator
+      ! degree-independent element fields
+      real(wp), allocatable :: r(:)                     !! node radii (nr)
+      real(wp), allocatable :: mu(:), Mk(:)             !! (ne) shear, M=μΔt/η
+      ! per-degree constants and unit-load response
+      real(wp), allocatable :: Jr(:)                    !! (1:lmax) l(l+1)
+      real(wp), allocatable :: nrmc(:,:)                !! (NLAM,1:lmax) Z:Z norms
+      real(wp), allocatable :: sa(:,:,:), sb(:,:,:), sc(:,:,:)  !! (4,NLAM,1:lmax)
+      real(wp), allocatable :: gu(:), gn(:)             !! (0:lmax) elastic gains
+      real(wp), allocatable :: xUn(:,:), xVn(:,:)       !! (nr,1:lmax) unit-load nodal U,V
+      ! per-(l,m) memory stress, split into real/imag (NLAM,ne,nlm)
+      real(wp), allocatable :: Are(:,:,:), Aim(:,:,:)
+      real(wp), allocatable :: Bre(:,:,:), Bim(:,:,:)
+      real(wp), allocatable :: Cre(:,:,:), Cim(:,:,:)
+      ! frozen per-step drift (from the memory), set by begin_step
+      complex(wp), allocatable :: dUa(:), dFa(:)        !! (nlm) surface drift
+      real(wp), allocatable :: dUn_re(:,:), dUn_im(:,:) !! (nr,nlm) nodal drift U
+      real(wp), allocatable :: dVn_re(:,:), dVn_im(:,:) !! (nr,nlm) nodal drift V
+      integer, allocatable :: deg(:)                    !! (nlm) degree of each coeff
+   contains
+      procedure :: init        => ve_response_init
+      procedure :: begin_step  => ve_response_begin
+      procedure :: apply       => ve_response_apply
+      procedure :: commit_step => ve_response_commit
+      procedure :: destroy     => ve_response_destroy
+   end type ve_response
+
 contains
+
+   subroutine response_begin_default(self, sht)
+      !! No-op step bracket for stateless responses.
+      class(response_operator), intent(inout) :: self
+      type(sht_grid),           intent(in)    :: sht
+   end subroutine response_begin_default
+
+   subroutine response_commit_default(self, sht, sigma_lm)
+      class(response_operator), intent(inout) :: self
+      type(sht_grid),           intent(in)    :: sht
+      complex(wp),              intent(in)    :: sigma_lm(:)
+   end subroutine response_commit_default
 
    subroutine null_response_apply(self, sht, sigma_lm, u_lm, n_lm)
       class(null_response), intent(inout) :: self
@@ -148,5 +214,209 @@ contains
       if (allocated(self%ngain)) deallocate(self%ngain)
       self%lmax = 0
    end subroutine elastic_response_destroy
+
+   ! --- viscoelastic field driver ---------------------------------------------
+
+   subroutine ve_response_init(self, earth, sht, dt)
+      !! Assemble the per-degree operators, precompute the unit-load response and
+      !! Maxwell constants, and zero the per-(l,m) memory. Tied to the grid sht
+      !! (sets lmax = sht%lmax and the coefficient layout).
+      class(ve_response), intent(inout) :: self
+      type(earth_model),  intent(in)    :: earth
+      type(sht_grid),     intent(in)    :: sht
+      real(wp),           intent(in)    :: dt
+      type(radial_mesh) :: mesh
+      real(wp), allocatable :: x(:)
+      real(wp) :: eta_e
+      integer  :: l, m, e, lay, node
+
+      call self%destroy()
+      call mesh%build(earth)
+      self%lmax = sht%lmax;  self%nlm = sht%nlm
+      self%nr = mesh%nr;  self%ne = mesh%ne;  self%ndof = ndof_of(mesh%nr)
+      self%dt = dt;  self%time = 0.0_wp
+      self%a  = earth%r_earth;  self%g = earth%gravity_at(earth%r_earth)
+
+      ! degree-independent element fields: node radii, shear, Maxwell factor
+      allocate(self%r(self%nr));  self%r = mesh%r
+      allocate(self%mu(self%ne), self%Mk(self%ne))
+      do e = 1, self%ne
+         lay = mesh%elem_layer(e)
+         self%mu(e) = earth%layers(lay)%mu
+         eta_e      = earth%layers(lay)%eta
+         if (eta_e > 0.0_wp) then
+            self%Mk(e) = self%mu(e)*dt/eta_e
+         else
+            self%Mk(e) = 0.0_wp
+         end if
+      end do
+
+      ! per-degree constants, operators, and unit-load response
+      allocate(self%Jr(self%lmax), self%nrmc(NLAM,self%lmax))
+      allocate(self%sa(4,NLAM,self%lmax), self%sb(4,NLAM,self%lmax), &
+               self%sc(4,NLAM,self%lmax))
+      allocate(self%gu(0:self%lmax), self%gn(0:self%lmax))
+      allocate(self%xUn(self%nr,self%lmax), self%xVn(self%nr,self%lmax))
+      allocate(self%ops(self%lmax), x(self%ndof))
+
+      ! degree 0: monopole geoid, no deformation, no memory
+      self%gu(0) = 0.0_wp
+      self%gn(0) = 4.0_wp*pi*grav_G*self%a/self%g
+
+      do l = 1, self%lmax
+         self%Jr(l) = real(l, wp)*real(l+1, wp)
+         call ve_strain_constants(self%Jr(l), self%nrmc(:,l), &
+                                  self%sa(:,:,l), self%sb(:,:,l), self%sc(:,:,l))
+         call self%ops(l)%assemble(earth, mesh, l)
+         call self%ops(l)%solve_vec(self%ops(l)%load_rhs(1.0_wp), x)
+         self%gu(l) = x(idx_u(self%nr))
+         self%gn(l) = -x(idx_f(self%nr))/self%g
+         do node = 1, self%nr
+            self%xUn(node,l) = x(idx_u(node))
+            self%xVn(node,l) = x(idx_v(node))
+         end do
+      end do
+
+      ! per-(l,m) memory (zeroed) and the degree map of each coefficient
+      allocate(self%Are(NLAM,self%ne,self%nlm), self%Aim(NLAM,self%ne,self%nlm))
+      allocate(self%Bre(NLAM,self%ne,self%nlm), self%Bim(NLAM,self%ne,self%nlm))
+      allocate(self%Cre(NLAM,self%ne,self%nlm), self%Cim(NLAM,self%ne,self%nlm))
+      self%Are = 0.0_wp; self%Aim = 0.0_wp; self%Bre = 0.0_wp
+      self%Bim = 0.0_wp; self%Cre = 0.0_wp; self%Cim = 0.0_wp
+      allocate(self%dUa(self%nlm), self%dFa(self%nlm))
+      allocate(self%dUn_re(self%nr,self%nlm), self%dUn_im(self%nr,self%nlm))
+      allocate(self%dVn_re(self%nr,self%nlm), self%dVn_im(self%nr,self%nlm))
+      self%dUa = (0.0_wp,0.0_wp); self%dFa = (0.0_wp,0.0_wp)
+      self%dUn_re = 0.0_wp; self%dUn_im = 0.0_wp
+      self%dVn_re = 0.0_wp; self%dVn_im = 0.0_wp
+
+      allocate(self%deg(self%nlm));  self%deg = -1
+      do m = 0, sht%mmax*sht%mres, sht%mres
+         do l = m, self%lmax
+            self%deg(sht%lmidx(l,m)) = l
+         end do
+      end do
+   end subroutine ve_response_init
+
+   subroutine ve_response_begin(self, sht)
+      !! Freeze the per-(l,m) drift: solve the (real & imag) memory forcing
+      !! −∫τ^V:δε with the load held at zero, storing surface + nodal drift.
+      class(ve_response), intent(inout) :: self
+      type(sht_grid),     intent(in)    :: sht
+      real(wp), allocatable :: fre(:), fim(:), xre(:), xim(:)
+      integer :: lm, l, node
+
+      allocate(fre(self%ndof), fim(self%ndof), xre(self%ndof), xim(self%ndof))
+      do lm = 1, self%nlm
+         l = self%deg(lm)
+         if (l < 1) cycle                       ! degree 0: no memory drift
+         fre = 0.0_wp;  fim = 0.0_wp
+         call dissipative_rhs(self%ne, self%r, self%sa(:,:,l), self%sb(:,:,l), &
+              self%sc(:,:,l), self%nrmc(:,l), self%Are(:,:,lm), self%Bre(:,:,lm), &
+              self%Cre(:,:,lm), fre)
+         call dissipative_rhs(self%ne, self%r, self%sa(:,:,l), self%sb(:,:,l), &
+              self%sc(:,:,l), self%nrmc(:,l), self%Aim(:,:,lm), self%Bim(:,:,lm), &
+              self%Cim(:,:,lm), fim)
+         call self%ops(l)%solve_vec(fre, xre)
+         call self%ops(l)%solve_vec(fim, xim)
+         self%dUa(lm) = cmplx(xre(idx_u(self%nr)), xim(idx_u(self%nr)), wp)
+         self%dFa(lm) = cmplx(xre(idx_f(self%nr)), xim(idx_f(self%nr)), wp)
+         do node = 1, self%nr
+            self%dUn_re(node,lm) = xre(idx_u(node))
+            self%dUn_im(node,lm) = xim(idx_u(node))
+            self%dVn_re(node,lm) = xre(idx_v(node))
+            self%dVn_im(node,lm) = xim(idx_v(node))
+         end do
+      end do
+   end subroutine ve_response_begin
+
+   subroutine ve_response_apply(self, sht, sigma_lm, u_lm, n_lm)
+      !! Affine response at the frozen time: u = gu(l)·σ + drift_U,
+      !! N = gn(l)·σ − drift_F/g.
+      class(ve_response), intent(inout) :: self
+      type(sht_grid),     intent(in)    :: sht
+      complex(wp),        intent(in)    :: sigma_lm(:)
+      complex(wp),        intent(out)   :: u_lm(:)
+      complex(wp),        intent(out)   :: n_lm(:)
+      integer :: lm, l
+
+      u_lm = (0.0_wp,0.0_wp);  n_lm = (0.0_wp,0.0_wp)
+      do lm = 1, self%nlm
+         l = self%deg(lm)
+         if (l < 0) cycle
+         if (l == 0) then
+            u_lm(lm) = self%gu(0)*sigma_lm(lm)
+            n_lm(lm) = self%gn(0)*sigma_lm(lm)
+         else
+            u_lm(lm) = self%gu(l)*sigma_lm(lm) + self%dUa(lm)
+            n_lm(lm) = self%gn(l)*sigma_lm(lm) - self%dFa(lm)/self%g
+         end if
+      end do
+   end subroutine ve_response_apply
+
+   subroutine ve_response_commit(self, sht, sigma_lm)
+      !! Advance the memory with the converged load: total nodal strain =
+      !! σ·(unit-load nodal) + drift, then the Maxwell update per (l,m). Advances
+      !! time by Δt.
+      class(ve_response), intent(inout) :: self
+      type(sht_grid),     intent(in)    :: sht
+      complex(wp),        intent(in)    :: sigma_lm(:)
+      real(wp), allocatable :: Ure(:), Uim(:), Vre(:), Vim(:)
+      real(wp) :: sre, sim
+      integer  :: lm, l, node
+
+      allocate(Ure(self%nr), Uim(self%nr), Vre(self%nr), Vim(self%nr))
+      do lm = 1, self%nlm
+         l = self%deg(lm)
+         if (l < 1) cycle
+         sre = real(sigma_lm(lm), wp);  sim = aimag(sigma_lm(lm))
+         do node = 1, self%nr
+            Ure(node) = sre*self%xUn(node,l) + self%dUn_re(node,lm)
+            Uim(node) = sim*self%xUn(node,l) + self%dUn_im(node,lm)
+            Vre(node) = sre*self%xVn(node,l) + self%dVn_re(node,lm)
+            Vim(node) = sim*self%xVn(node,l) + self%dVn_im(node,lm)
+         end do
+         call advance_memory(self%ne, self%mu, self%Mk, Ure, Vre, self%Jr(l), &
+              self%Are(:,:,lm), self%Bre(:,:,lm), self%Cre(:,:,lm))
+         call advance_memory(self%ne, self%mu, self%Mk, Uim, Vim, self%Jr(l), &
+              self%Aim(:,:,lm), self%Bim(:,:,lm), self%Cim(:,:,lm))
+      end do
+      self%time = self%time + self%dt
+   end subroutine ve_response_commit
+
+   subroutine ve_response_destroy(self)
+      class(ve_response), intent(inout) :: self
+      integer :: l
+      if (allocated(self%ops)) then
+         do l = 1, size(self%ops);  call self%ops(l)%destroy();  end do
+         deallocate(self%ops)
+      end if
+      if (allocated(self%r))      deallocate(self%r)
+      if (allocated(self%mu))     deallocate(self%mu)
+      if (allocated(self%Mk))     deallocate(self%Mk)
+      if (allocated(self%Jr))     deallocate(self%Jr)
+      if (allocated(self%nrmc))   deallocate(self%nrmc)
+      if (allocated(self%sa))     deallocate(self%sa)
+      if (allocated(self%sb))     deallocate(self%sb)
+      if (allocated(self%sc))     deallocate(self%sc)
+      if (allocated(self%gu))     deallocate(self%gu)
+      if (allocated(self%gn))     deallocate(self%gn)
+      if (allocated(self%xUn))    deallocate(self%xUn)
+      if (allocated(self%xVn))    deallocate(self%xVn)
+      if (allocated(self%Are))    deallocate(self%Are)
+      if (allocated(self%Aim))    deallocate(self%Aim)
+      if (allocated(self%Bre))    deallocate(self%Bre)
+      if (allocated(self%Bim))    deallocate(self%Bim)
+      if (allocated(self%Cre))    deallocate(self%Cre)
+      if (allocated(self%Cim))    deallocate(self%Cim)
+      if (allocated(self%dUa))    deallocate(self%dUa)
+      if (allocated(self%dFa))    deallocate(self%dFa)
+      if (allocated(self%dUn_re)) deallocate(self%dUn_re)
+      if (allocated(self%dUn_im)) deallocate(self%dUn_im)
+      if (allocated(self%dVn_re)) deallocate(self%dVn_re)
+      if (allocated(self%dVn_im)) deallocate(self%dVn_im)
+      if (allocated(self%deg))    deallocate(self%deg)
+      self%lmax = 0;  self%nlm = 0
+   end subroutine ve_response_destroy
 
 end module fe_response

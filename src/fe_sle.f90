@@ -82,6 +82,10 @@ contains
       S = 0.0_wp
       res%n_inner_last = 0;  res%resid = 0.0_wp;  res%n_outer_done = 0
 
+      ! Freeze the response's relaxation drift for this time step; for elastic /
+      ! null responses this is a no-op.
+      call resp%begin_step(sht)
+
       do io = 1, self%n_outer
          ! migrate the coastline: ocean where the current solid surface is below
          ! the (reference) sea surface, topo0 − S < 0.
@@ -111,6 +115,12 @@ contains
 
          res%n_outer_done = io
       end do
+
+      ! Commit the relaxation memory using the converged total load (no-op for
+      ! elastic / null), advancing the response by one time step.
+      load = rho_ice*d_ice + rho_water*(C*S)
+      call sht%analysis(load, load_lm)
+      call resp%commit_step(sht, load_lm)
 
       ! diagnostics
       Cs_int = sht%surface_integral(C*S)
