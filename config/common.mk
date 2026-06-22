@@ -28,6 +28,14 @@ SHTNSROOT = fesm-utils/shtns-serial
 INC_SHTNS = -I$(SHTNSROOT)/include
 LIB_SHTNS = -L$(SHTNSROOT)/lib -lshtns
 
+# --- LIS (Library of Iterative Solvers; provides lisf.h + liblis.a) ----------
+# Backs the per-degree banded saddle-point solve in fe_radial_fe. The Fortran
+# interface is the preprocessor header lisf.h (needs -cpp, set as CPPFLAGS_PP);
+# INC_LIS is what lets `#include "lisf.h"` resolve. Real-scalar build.
+LISROOT = fesm-utils/lis-serial
+INC_LIS = -I$(LISROOT)/include
+LIB_LIS = -L$(LISROOT)/lib -llis
+
 # --- OpenMP variants ---------------------------------------------------------
 # `make openmp=1`: swap the serial dependency builds for their OpenMP variants.
 # Note the differing library names (libshtns.a vs libshtns_omp.a, matching FFTW).
@@ -42,14 +50,21 @@ ifeq ($(openmp),1)
 	SHTNSROOT = fesm-utils/shtns-omp
 	INC_SHTNS = -I$(SHTNSROOT)/include
 	LIB_SHTNS = -L$(SHTNSROOT)/lib -lshtns_omp
+
+	# LIS built with OpenMP (same -llis name, parallel internals); the degree
+	# loop will thread over independent systems, LIS stays serial per solve.
+	LISROOT = fesm-utils/lis-omp
+	INC_LIS = -I$(LISROOT)/include
+	LIB_LIS = -L$(LISROOT)/lib -llis
 endif
 
 # --- Final flag sets ---------------------------------------------------------
 # MODFLAGS (-I/-J objdir) and FFLAGS_BASE come from the compiler fragment.
 # INC_SHTNS is what lets `include 'shtns.f03'` in src/fe_sht.f90 be found.
 CPPFLAGS_FE = $(CPPFLAGS_PP)
-FFLAGS_FE   = $(FFLAGS_BASE) $(MODFLAGS) $(INC_NC) $(INC_FESMUTILS) $(INC_FFTW) $(INC_SHTNS)
+FFLAGS_FE   = $(FFLAGS_BASE) $(MODFLAGS) $(INC_NC) $(INC_FESMUTILS) $(INC_FFTW) $(INC_SHTNS) $(INC_LIS)
 
 # Static archives resolve left-to-right, so a library must precede the libraries
 # it depends on: SHTns before FFTW (SHTns calls FFTW), fesm-utils before netCDF.
-LFLAGS_FE   = $(LIB_FESMUTILS) $(LIB_SHTNS) $(LIB_FFTW) $(LIB_NC) $(LFLAGS_EXTRA)
+# LIS is self-contained (only needs libm, already pulled in by FFTW/system).
+LFLAGS_FE   = $(LIB_FESMUTILS) $(LIB_SHTNS) $(LIB_FFTW) $(LIB_LIS) $(LIB_NC) $(LFLAGS_EXTRA)
