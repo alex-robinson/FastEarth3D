@@ -225,6 +225,20 @@ the CM frame, and `ve_degree` steps stably at j=1 (`test_love` case 4,
 unchanged for l ≥ 2.
 
 **Open / next** (priority order for a fresh session):
+0. **Fix the elastic low-degree Love-number bug (rung 2).** Benchmark data is now
+   in-repo (`data/benchmarks/love_M3-L70-V01/`; `test_benchmark_love`). The M3
+   FLUID limit is exact (<0.5%, all degrees) — self-gravity, `R_k` buoyancy, core,
+   incompressibility and the `l` normalisation are all validated (the old `l`-sign
+   question is closed). But the ELASTIC loading Love numbers are too soft at low
+   degree (~50% at j=2 → ~1% by j≈40), confirmed a real bug against an independent
+   oracle (TABOO NV=3/CODE=7 + giapy both give `h_e(2)=−0.454`; we give `−0.669`).
+   NOT model/load/frame/mesh, NOT a uniform μ-scale (degree-dependent correction).
+   Operator (eqs 80–84) verified term-by-term, integrals exact — so the error is
+   structural in the elastic shear↔self-gravity balance, hidden from every
+   μ→0/μ→∞ limit test. Needs a re-derivation of the spheroidal elastic balance
+   (eqs 80–81 + strain representation 85–86). See doc/formulation.md "Elastic
+   low-degree discrepancy". **This also closes the disc-offset and the rung-3
+   viscoelastic disc match** (same root cause).
 1. **Lift the degree-1 skip in `ve_response`.** The blocker is gone (sparse KKT
    j=1). Change the `l < 2` guards (init / begin_step / apply / commit_step in
    `src/fe_response.f90`) to `l < 1`, assemble `ops(1)`, drop the `gu(1)=gn(1)=0`
@@ -239,8 +253,12 @@ unchanged for l ≥ 2.
 3. **Grounded-ice flotation** in the ocean function (currently `topo < 0` only):
    a cell is ocean only where it is below sea level AND ice does not ground
    (`ρ_i I < −ρ_w·topo`).
-4. **Martinec et al. (2018) cases A–E** quantitative match — needs benchmark
-   input data (ice history + present topography), not yet in-repo.
+4. **Martinec et al. (2018) cases A–E** quantitative match — the REFERENCE
+   output curves are now in-repo (`data/benchmarks/sle_martinec2018/`, cases
+   A/C2/D3/E2/F1, figs 10–13: u, v_θ, v_φ, F, sea-surface, SLE). The load/topo
+   SPEC is analytic (giapy `tests/sle_test.py`: ice L1–L3 at (θ₀,φ₀,h₀), topo
+   B0–B3 exponential basins, time T1–T3) — build these inputs and compare. NOTE:
+   gated by item 0 (the elastic bug propagates into the SLE response).
 5. **Performance** — `begin_step` does 2 real solves per (l,m) per step
    (~O(nlm) solves), fine for moderate `lmax` but the cost driver at VILMA
    resolution (lmax 170); exploit small high-degree coefficients / parallelize.
