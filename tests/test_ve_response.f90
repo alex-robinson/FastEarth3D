@@ -58,15 +58,22 @@ contains
       real(wp) :: du, dn, dmax
       call ve%init(e, sht, dt)
       call el%init(e, lmax=LMAX)
+      ! The field driver carries degrees l>=2 (degree 0/1 handled separately:
+      ! degree-1 deformation is deferred to the CM-frame treatment), so compare
+      ! the gains there.
       dmax = 0.0_wp
-      do l = 1, LMAX
+      do l = 2, LMAX
          du = abs(ve%gu(l) - el%ugain(l))
          dn = abs(ve%gn(l) - el%ngain(l))
          dmax = max(dmax, du, dn)
       end do
-      write(*,'(a,es11.2)') '      max |gain difference| =', dmax
+      write(*,'(a,es11.2)') '      max |gain difference| (l>=2) =', dmax
       if (dmax > 1.0e-12_wp) then
          write(*,'(a)') '      FAIL: ve gains differ from the elastic response'
+         ok = .false.
+      end if
+      if (ve%gu(1) /= 0.0_wp .or. ve%gn(1) /= 0.0_wp) then
+         write(*,'(a)') '      FAIL: degree-1 deformation should be zeroed'
          ok = .false.
       end if
       call ve%destroy();  call el%destroy()

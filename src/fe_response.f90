@@ -259,11 +259,20 @@ contains
       allocate(self%xUn(self%nr,self%lmax), self%xVn(self%nr,self%lmax))
       allocate(self%ops(self%lmax), x(self%ndof))
 
-      ! degree 0: monopole geoid, no deformation, no memory
+      ! degree 0: monopole geoid, no deformation, no memory.
+      ! degree 1: geocenter motion — frame-dependent and the per-degree operator
+      ! is dense/ill-conditioned for stepping (see doc/design.md pitfalls and the
+      ! disc-synthesis which also skips j=1). Deferred until the CM-frame
+      ! treatment lands; the field driver carries NO degree-1 deformation.
       self%gu(0) = 0.0_wp
       self%gn(0) = 4.0_wp*pi*grav_G*self%a/self%g
+      self%gu(1) = 0.0_wp;  self%gn(1) = 0.0_wp
+      self%xUn(:,1) = 0.0_wp;  self%xVn(:,1) = 0.0_wp
+      self%Jr(1) = 2.0_wp
+      call ve_strain_constants(self%Jr(1), self%nrmc(:,1), &
+                               self%sa(:,:,1), self%sb(:,:,1), self%sc(:,:,1))
 
-      do l = 1, self%lmax
+      do l = 2, self%lmax
          self%Jr(l) = real(l, wp)*real(l+1, wp)
          call ve_strain_constants(self%Jr(l), self%nrmc(:,l), &
                                   self%sa(:,:,l), self%sb(:,:,l), self%sc(:,:,l))
@@ -309,7 +318,7 @@ contains
       allocate(fre(self%ndof), fim(self%ndof), xre(self%ndof), xim(self%ndof))
       do lm = 1, self%nlm
          l = self%deg(lm)
-         if (l < 1) cycle                       ! degree 0: no memory drift
+         if (l < 2) cycle                       ! degree 0/1: no memory drift
          fre = 0.0_wp;  fim = 0.0_wp
          call dissipative_rhs(self%ne, self%r, self%sa(:,:,l), self%sb(:,:,l), &
               self%sc(:,:,l), self%nrmc(:,l), self%Are(:,:,lm), self%Bre(:,:,lm), &
@@ -344,9 +353,9 @@ contains
       do lm = 1, self%nlm
          l = self%deg(lm)
          if (l < 0) cycle
-         if (l == 0) then
-            u_lm(lm) = self%gu(0)*sigma_lm(lm)
-            n_lm(lm) = self%gn(0)*sigma_lm(lm)
+         if (l < 2) then                        ! degree 0/1: gain only, no drift
+            u_lm(lm) = self%gu(l)*sigma_lm(lm)
+            n_lm(lm) = self%gn(l)*sigma_lm(lm)
          else
             u_lm(lm) = self%gu(l)*sigma_lm(lm) + self%dUa(lm)
             n_lm(lm) = self%gn(l)*sigma_lm(lm) - self%dFa(lm)/self%g
@@ -368,7 +377,7 @@ contains
       allocate(Ure(self%nr), Uim(self%nr), Vre(self%nr), Vim(self%nr))
       do lm = 1, self%nlm
          l = self%deg(lm)
-         if (l < 1) cycle
+         if (l < 2) cycle
          sre = real(sigma_lm(lm), wp);  sim = aimag(sigma_lm(lm))
          do node = 1, self%nr
             Ure(node) = sre*self%xUn(node,l) + self%dUn_re(node,lm)
