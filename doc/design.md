@@ -53,9 +53,10 @@ rewrite.
 | `fe_radial_integrals` | Appendix C P1/P0 element integrals | done + tested |
 | `fe_lis` | LIS wrapper (build-once, reuse matrix + ILU) | done |
 | `fe_radial_fe` | per-degree saddle-point operator + LIS solve | done + tested |
-| `fe_viscoelastic` | Maxwell memory-stress explicit time stepping (1-D) | done + tested |
+| `fe_viscoelastic` | Maxwell memory-stress explicit time stepping (1-D) + shared kernel | done + tested |
+| `fe_response` | surface-load → (uplift, geoid) operator: elastic + viscoelastic field driver | done + tested |
 | `fe_gravity` | self-gravitation / Poisson coupling | stub |
-| `fe_sle` | sea-level equation (ocean function, migration) | stub |
+| `fe_sle` | sea-level equation (ocean function, migration) | done + tested (elastic + VE) |
 | `fe_rotation` | rotational feedback / TPW | stub |
 | `fe_coupling` | CLIMBER-X-compatible init/update/finalize API | stub |
 | `fastearth` | umbrella re-export | done |
@@ -172,3 +173,58 @@ Validated (`test_relax`): held load relaxes elastic→fluid, `t_relax ∝ η`.
 The fluid (`h_n→−(2n+1)/3`, `k_n→−1`) and rigid (`→0`) limits are reproduced to
 ~1e-5 (`test_love`). `l_n` sign/normalization and the quantitative Spada (2011)
 Test 2/1 match are the remaining calibration items.
+
+## 10. Sea-level equation (rung 4) — working notes
+
+**Response operator (`fe_response`).** The SLE is built on an abstraction:
+`response_operator%apply(σ_lm) → (u_lm, N_lm)` maps a spectral surface mass load
+to surface uplift `u` and geoid height `N`, so the elastic and viscoelastic Earth
+responses are swappable. **Geoid mapping: `N(a) = −F(a)/g`** (Bruns' formula; the
+geopotential perturbation is `−F` since Martinec's `φ₁ = F → −φ^L` rigid). This
+uses only `U` and `F`, *not* the unresolved horizontal Love number `l`, so the
+SLE is not blocked by that open item. Three implementations:
+- `elastic_response` — per-degree gains `gu(l)=U(a)`, `gn(l)=−F(a)/g` precomputed
+  once from a unit-load solve;
+- `null_response` — `u≡N≡0` (rigid, non-self-gravitating) → eustatic baseline;
+- `ve_response` — viscoelastic field driver (below).
+
+**SLE fixed point (`fe_sle`) — DONE.** Pseudo-spectral (KMM 2005): the load →
+response convolution is spectral, the ocean-function product `C·S` is pointwise on
+the Gauss grid (kills coastline Gibbs ringing). For a fixed coastline,
+`S = C·(N − u + Δφ)`, `N,u` = response to `L = ρ_i ΔI + ρ_w C·S`, and the spatial
+constant `Δφ` is fixed *each iteration* by ocean-mass conservation
+`ρ_w ∫C·S dA = −ρ_i ∫ΔI dA` ⇒ mass conserved to machine precision by construction.
+Inner loop iterates `S`; outer loop migrates the coastline from `topo0 − S`.
+Validated (`test_sle`): eustatic limit → uniform barystatic rise (mass resid
+~4e-16); self-gravitating elastic M3 → mass resid 0, fixed point converges, real
+spatial structure.
+
+**Viscoelastic field driver (`ve_response`) — DONE.** The SLE needs a *field*
+load with an **independent memory history per (l,m)** (each coefficient has its
+own load time-series). Key insight: the response at a fixed time is **affine** in
+the current load, `u_lm = gu(l)·σ_lm + drift_lm`, where `drift_lm` comes from the
+*frozen* past-relaxation memory — so the SLE fixed point can call `apply()`
+repeatedly without corrupting state. The step is bracketed: `begin_step` freezes
+the drift (one memory-forcing solve per (l,m)), `commit_step` advances the Maxwell
+memory with the converged load. Each complex (l,m) history is two real histories
+(re/im) since the operator and `M = μΔt/η` are real. The per-element Maxwell
+kernel (`strain_coeffs`, `ve_strain_constants`, `dissipative_rhs`,
+`advance_memory`) is shared with the 1-D stepper — no duplicated algorithm.
+Validated (`test_ve_response`): first-step gains == `elastic_response` exactly; a
+held degree-2 load reproduces the 1-D `ve_degree` history to ~1e-13 relative.
+End-to-end (`test_sle_ve`): a held 2 km ice cap → ocean mass conserved ~1e-16 per
+step, eustatic mean held, ~16 m of viscoelastic relaxation over 500 yr.
+
+**Degree-1 is skipped in the field driver** (`gu(1)=gn(1)=0`): the j=1 operator is
+dense/ill-conditioned and a nonzero-RHS solve every step does not converge.
+Degree-1 is geocenter motion / frame-dependent (§6 pitfall) — deferred to the
+CM-frame treatment, consistent with the disc-synthesis which also skips j=1.
+
+**Open / next:** (a) `fe_coupling` wiring (the CLIMBER-X contract: reference
+state, host-grid mapping) — a deliberate interface decision, not yet wired;
+(b) grounded-ice flotation in the ocean function (currently `topo<0` only);
+(c) the Martinec et al. (2018) cases A–E quantitative match (needs benchmark
+input data: ice history + present topography); (d) degree-1 / geocenter in the
+CM frame; (e) performance — `begin_step` does 2 real solves per (l,m) per step
+(~O(nlm) solves), fine for moderate `lmax` but the cost driver at VILMA
+resolution (lmax 170).
