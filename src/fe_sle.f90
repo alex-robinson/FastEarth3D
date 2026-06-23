@@ -53,14 +53,22 @@ module fe_sle
 
 contains
 
-   subroutine sle_solve(self, sht, resp, d_ice, topo0, S, C, res)
+   subroutine sle_solve(self, sht, resp, d_ice, ice, topo0, S, C, res)
       !! Solve for the relative-sea-level change S [m] driven by a grounded-ice
       !! thickness change d_ice [m], on a reference topography topo0 [m] (solid
       !! surface relative to the reference sea surface; ocean where < 0).
+      !!
+      !! The absolute grounded-ice thickness ice [m] is passed alongside the
+      !! change d_ice: d_ice drives the surface load, while ice enters the
+      !! coastline test in ocean_function so that ice thick enough to ground on
+      !! the bed is excluded from the ocean (it bears on the solid surface, it
+      !! does not float). Both are needed because the load is incremental but
+      !! flotation is an absolute condition.
       class(sle_solver),        intent(inout) :: self
       type(sht_grid),           intent(in)    :: sht
       class(response_operator), intent(inout) :: resp
-      real(wp),                 intent(in)    :: d_ice(:,:)  !! (nphi,nlat) [m]
+      real(wp),                 intent(in)    :: d_ice(:,:)  !! ice CHANGE [m] (load)
+      real(wp),                 intent(in)    :: ice(:,:)    !! abs. ice [m] (flotation)
       real(wp),                 intent(in)    :: topo0(:,:)  !! (nphi,nlat) [m]
       real(wp),                 intent(out)   :: S(:,:)      !! (nphi,nlat) [m]
       real(wp),                 intent(out)   :: C(:,:)      !! (nphi,nlat) ocean fn
@@ -88,8 +96,9 @@ contains
 
       do io = 1, self%n_outer
          ! migrate the coastline: ocean where the current solid surface is below
-         ! the (reference) sea surface, topo0 − S < 0.
-         call ocean_function(topo0 - S, C)
+         ! the (reference) sea surface, topo0 − S < 0, AND the ice there floats
+         ! rather than grounds.
+         call ocean_function(topo0 - S, ice, C)
          C_int = sht%surface_integral(C)
          if (C_int <= 0.0_wp) exit          ! no ocean: nothing to redistribute
 
@@ -132,13 +141,20 @@ contains
       end if
    end subroutine sle_solve
 
-   subroutine ocean_function(topo, C)
-      !! Migrating-coastline ocean function: C = 1 where the solid surface is
-      !! below the sea surface (topo < 0), else 0. (Ice grounding is a later
-      !! refinement; grounded ice belongs to the bedrock load, not the ocean.)
-      real(wp), intent(in)  :: topo(:,:)
+   subroutine ocean_function(topo, ice, C)
+      !! Migrating-coastline ocean function with grounded-ice flotation. A cell
+      !! is ocean (C = 1) only where BOTH
+      !!   (a) the solid surface is below the sea surface, topo < 0, and
+      !!   (b) the ice column is thin enough to float rather than ground:
+      !!       ρ_i·I < −ρ_w·topo  (−topo > 0 is the water depth; the inequality
+      !!       compares the ice draft to the column it would displace).
+      !! Where ice grounds (ρ_i·I ≥ −ρ_w·topo) the cell is land (C = 0): the ice
+      !! rests on and bears on the bed, so that column is not free ocean. With
+      !! ice = 0 this reduces to the bare bathymetry test topo < 0.
+      real(wp), intent(in)  :: topo(:,:)   !! solid surface vs. sea surface [m]
+      real(wp), intent(in)  :: ice(:,:)    !! absolute grounded-ice thickness [m]
       real(wp), intent(out) :: C(:,:)
-      where (topo < 0.0_wp)
+      where (topo < 0.0_wp .and. rho_ice*ice < -rho_water*topo)
          C = 1.0_wp
       elsewhere
          C = 0.0_wp
