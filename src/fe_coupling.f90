@@ -94,6 +94,13 @@ contains
       self%dt_step   = dt_step
       self%time      = 0.0_wp
 
+      ! Warm-start the SLE fixed point across sub-steps and coupling intervals:
+      ! self%rsl persists (seeded to 0 below), and between adjacent Maxwell steps
+      ! the coastline barely moves, so the previous solution is a near-converged
+      ! seed — sharply cutting the inner iteration count (the dominant per-step
+      ! cost is the SLE's spherical-harmonic transforms, ~linear in that count).
+      self%sle%warm_start = .true.
+
       ! reference (equilibrium) state; z_bed_eq doubles as the SLE topo0
       allocate(self%z_bed_eq,  source=z_bed_eq)
       allocate(self%h_ice_ref, source=h_ice_ref)

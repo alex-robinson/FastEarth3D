@@ -65,6 +65,17 @@ module fe_sle
       !! wherever C = 1, a sharp coastline), kept for comparison; it agrees with
       !! subgrid when the coastline does not move (deep basins, fixed_ocean).
       logical  :: subgrid = .true.
+      !! Warm start. .false. (default) zeroes rsl at the top of every solve (a
+      !! cold start — what the benchmarks expect). .true. reuses the incoming rsl
+      !! as the initial guess for the fixed point. For transient runs the coastline
+      !! and RSL change very little between adjacent time steps, so the previous
+      !! step's converged solution is a near-converged seed and the inner loop
+      !! exits in far fewer iterations (often 1–2). The converged fixed point is
+      !! unique (the SLE is a Fredholm equation of the 2nd kind → a contraction)
+      !! and mass is rebalanced every iteration via Δφ, so the ANSWER is unchanged
+      !! to tolerance — only the iteration count drops. The caller must keep rsl
+      !! alive across calls (the coupling driver does; it turns this on at init).
+      logical  :: warm_start = .false.
    contains
       procedure :: solve => sle_solve
    end type sle_solver
@@ -97,7 +108,9 @@ contains
       real(wp),                 intent(in)    :: d_ice(:,:)  !! ice CHANGE [m] (load)
       real(wp),                 intent(in)    :: ice(:,:)    !! abs. ice [m] (flotation)
       real(wp),                 intent(in)    :: topo0(:,:)  !! (nphi,nlat) [m]
-      real(wp),                 intent(out)   :: rsl(:,:)    !! full RSL change [m]
+      !! intent(inout): zeroed here on a cold start, or reused as the initial
+      !! guess when self%warm_start (see the type definition).
+      real(wp),                 intent(inout) :: rsl(:,:)    !! full RSL change [m]
       real(wp),                 intent(out)   :: C(:,:)      !! (nphi,nlat) ocean fn
       type(sle_result),         intent(out)   :: res
 
@@ -113,7 +126,10 @@ contains
       allocate(load_lm(sht%nlm), u_lm(sht%nlm), N_lm(sht%nlm))
 
       rho_ratio = rho_ice/rho_water
-      rsl = 0.0_wp;  u = 0.0_wp;  N = 0.0_wp;  dphi = 0.0_wp;  ice_int = 0.0_wp
+      ! Cold start zeroes rsl; warm start keeps the incoming field as the initial
+      ! guess (the caller's previous converged solution — see %warm_start).
+      if (.not. self%warm_start) rsl = 0.0_wp
+      u = 0.0_wp;  N = 0.0_wp;  dphi = 0.0_wp;  ice_int = 0.0_wp
       zeta_int = 0.0_wp;  wcorr = 0.0_wp
       res%n_inner_last = 0;  res%resid = 0.0_wp;  res%n_outer_done = 0
 

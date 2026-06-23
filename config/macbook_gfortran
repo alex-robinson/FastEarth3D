@@ -20,10 +20,17 @@ MODFLAGS = -I$(objdir) -J$(objdir)
 FFLAGS_BASE   = -ffree-line-length-none
 FFLAGS_OPENMP = -fopenmp
 
-DFLAGS_NODEBUG = -O2
+# -mcpu=native is the aarch64 (Apple Silicon) idiom for "tune+ISA for this host"
+# (the x86 -march=native equivalent); it enables NEON vectorization of the tight
+# element/band-solve kernels. -ffast-math matches the CLIMBER-X production build
+# (the host turns it on, and we cannot reliably configure the coupled build
+# differently), so we keep it on here for parity — NOTE it relaxes IEEE
+# semantics, so re-run `make check` on the target machine to confirm the SLE
+# mass-conservation tests (~1e-16) still pass after a toolchain/flag change.
+DFLAGS_NODEBUG = -O3 -mcpu=native -funroll-loops -ffast-math
 DFLAGS_DEBUG   = -g -O0 -fbacktrace -fcheck=all \
                  -ffpe-trap=invalid,zero,overflow -finit-real=snan -Wall
-DFLAGS_PROFILE = -O2 -pg -g
+DFLAGS_PROFILE = -O3 -mcpu=native -pg -g
 
 # --- Link extras -------------------------------------------------------------
 # macOS ld rejects the -Wl,-zmuldefs trick used on Linux to tolerate duplicate
