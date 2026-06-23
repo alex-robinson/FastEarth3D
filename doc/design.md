@@ -258,6 +258,22 @@ displacement `u`.
    SPEC is analytic (giapy `tests/sle_test.py`: ice L1–L3 at (θ₀,φ₀,h₀), topo
    B0–B3 exponential basins, time T1–T3) — build these inputs and compare. The
    elastic bug (item 0) that fed the SLE response is now fixed, so this is unblocked.
-4. **Performance** — `begin_step` does 2 real solves per (l,m) per step
-   (~O(nlm) solves), fine for moderate `lmax` but the cost driver at VILMA
-   resolution (lmax 170); exploit small high-degree coefficients / parallelize.
+4. **Performance — DONE.** `begin_step` does 2 real solves per (l,m) per step
+   (~O(nlm) solves), the cost driver at VILMA resolution. Four changes, all exact
+   (results unchanged) except the threshold-controlled skip:
+   - **Banded LU** (`fe_band`) replaces GMRES+ILU on the per-degree solve for j≥2.
+     The operator is banded (half-bandwidth ~6) and the equilibrated system is
+     effectively direct (1 GMRES iter), so a pivoted band LU — factor once at
+     assemble, band solve per RHS — is far faster (~20 µs vs ~700 µs/solve) and
+     cache-light (no ILU fill to evict). Pivoting is required (zero pressure
+     (Π,Π) block). j=1 (dense KKT border) keeps LIS. Dependency-free, **re-entrant**.
+   - **GMRES restart 60→8** + reusable solve workspace (for the j=1 LIS path and
+     general robustness).
+   - **Degree-grouped storage** of the per-(l,m) Maxwell memory/drift (slot `k`,
+     `lm↔k` map) so the loop is contiguous and per-degree.
+   - **Skip-negligible**: coefficients whose memory is < `skip_tol`×max are not
+     solved (drift ≈ 0); ~2× for a localized cap.
+   - **OpenMP** over the degree loop (`make openmp=1`, serial deps + `-fopenmp`);
+     safe via the re-entrant band LU. ~5.4× at 8 threads.
+   Net: `begin_step` at lmax 128 ≈ 7.9 s (orig LIS, lmax 64 extrapolated ~30 s) →
+   ~58 ms (8 threads) — well over 100× single-thread from the band LU alone.
