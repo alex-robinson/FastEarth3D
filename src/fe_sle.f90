@@ -117,9 +117,14 @@ contains
       zeta_int = 0.0_wp;  wcorr = 0.0_wp
       res%n_inner_last = 0;  res%resid = 0.0_wp;  res%n_outer_done = 0
 
-      ! Initial ocean function O⁽⁰⁾ = (ζ⁽⁰⁾ < 0), the reference coastline against
-      ! which the subgrid sloping-coast term measures newly flooded / emerged cells.
-      where (topo0 < 0.0_wp);  C0 = 1.0_wp;  elsewhere;  C0 = 0.0_wp;  end where
+      ! Initial ocean function O⁽⁰⁾ — the reference (t0) coastline against which the
+      ! subgrid term measures newly flooded / emerged cells, and the held coastline
+      ! in fixed-ocean mode. It is the flotation-aware ocean function of the
+      ! reference state: bathymetry ζ⁽⁰⁾ = topo0 (rsl = 0 at t0) and the reference
+      ! ice ice − d_ice (= 0 for an ice-free reference ⇒ O⁽⁰⁾ = (topo0 < 0); = ice
+      ! when d_ice = 0 ⇒ grounded reference ice is excluded, so a no-change solve
+      ! leaves C ≡ C⁽⁰⁾ and the subgrid term vanishes).
+      call ocean_function(topo0, ice - d_ice, C0)
 
       ! Freeze the response's relaxation drift for this time step; for elastic /
       ! null responses this is a no-op.
@@ -127,12 +132,9 @@ contains
 
       do io = 1, self%n_outer
          if (self%fixed_ocean) then
-            ! Fixed ocean geometry (Martinec 2018 §2.1, eq 1): O⁽⁰⁾ = (ζ⁽⁰⁾ < 0),
-            ! the bare initial bathymetry, held for all time. Ice never extends to
-            ! the ocean here, so there is no flotation term. Computed once.
-            if (io == 1) then
-               where (topo0 < 0.0_wp);  C = 1.0_wp;  elsewhere;  C = 0.0_wp;  end where
-            end if
+            ! Fixed ocean geometry (Martinec 2018 §2.1): hold the coastline at the
+            ! reference O⁽⁰⁾ for all time (no migration). Computed once.
+            if (io == 1) C = C0
          else
             ! migrate the coastline using the current (full-field) sea level: ocean
             ! where the deformed solid surface topo0 − rsl is below the sea surface
