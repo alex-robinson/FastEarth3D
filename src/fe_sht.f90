@@ -44,6 +44,7 @@ module fe_sht
       procedure :: destroy   => sht_grid_destroy
       procedure :: synthesis => sht_grid_synthesis   !! spectral -> spatial
       procedure :: analysis  => sht_grid_analysis    !! spatial  -> spectral
+      procedure :: eval_point => sht_grid_eval_point !! scalar field at (colat,lon)
       procedure :: lmidx     => sht_grid_lmidx       !! (l,m) -> coefficient index
       procedure :: surface_integral => sht_grid_surface_integral  !! ∫ f dΩ
    end type sht_grid
@@ -168,6 +169,23 @@ contains
       complex(wp),     intent(out)   :: slm(:)   !! length nlm
       call spat_to_SH(self%cfg, sh, slm)
    end subroutine sht_grid_analysis
+
+   subroutine sht_grid_eval_point(self, f_lm, colat, lon, val)
+      !! Evaluate a scalar field (spectral coefficients f_lm) at an ARBITRARY point
+      !! (colat, lon) [rad] -- not restricted to a grid node. Uses SHTns'
+      !! SHqst_to_point with zero spheroidal/toroidal parts, so the normalization
+      !! matches analysis/synthesis exactly. Used to sample model fields along the
+      !! Martinec-2018 benchmark profiles (circles of constant lon or lat).
+      class(sht_grid), intent(in) :: self
+      complex(wp),     intent(in) :: f_lm(:)    !! length nlm
+      real(wp),        intent(in) :: colat, lon !! [rad]
+      real(wp),        intent(out):: val
+      complex(wp) :: q(self%nlm), s(self%nlm), t(self%nlm)
+      real(wp)    :: vr(1), vt(1), vp(1)
+      q = f_lm;  s = (0.0_wp, 0.0_wp);  t = (0.0_wp, 0.0_wp)
+      call SHqst_to_point(self%cfg, q, s, t, cos(colat), lon, vr, vt, vp)
+      val = vr(1)
+   end subroutine sht_grid_eval_point
 
    integer function sht_grid_lmidx(self, l, m) result(lm)
       !! 1-based index into the spectral array for harmonic (l, m).
