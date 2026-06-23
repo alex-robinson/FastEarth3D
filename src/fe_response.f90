@@ -184,6 +184,14 @@ contains
          self%ngain(l) = -fa / self%g
          call op%destroy()
       end do
+
+      ! degree-1 geoid frame: the per-degree solve fixes the displacement gauge
+      ! (wᵀd=0, geocenter/CE-like, h₁≈0), but the geoid (sea surface) is referenced
+      ! to the CM frame, in which the degree-1 external potential vanishes ⇒ N₁≡0.
+      ! (The benchmark M3-L70-V01 table has k₁=−1 exactly, i.e. N₁=(1+k₁)φ^L/g=0;
+      ! validated against the Spada-2011 disc n_disc, which matches once N₁ is
+      ! dropped.) Displacement degree-1 (ugain(1)) is left as solved.
+      if (lmax >= 1) self%ngain(1) = 0.0_wp
    end subroutine elastic_response_init
 
    subroutine elastic_response_apply(self, sht, sigma_lm, u_lm, n_lm)
@@ -281,6 +289,12 @@ contains
          end do
       end do
 
+      ! degree-1 geoid frame (see elastic_response_init): the geoid is referenced
+      ! to the CM frame ⇒ N₁≡0. Zero the degree-1 geoid gain here; the degree-1
+      ! relaxation drift is likewise zeroed in begin_step. Displacement (gu(1),
+      ! xUn/xVn) is left as solved (CE-like geocenter, h₁≈0).
+      if (self%lmax >= 1) self%gn(1) = 0.0_wp
+
       ! per-(l,m) memory (zeroed) and the degree map of each coefficient
       allocate(self%Are(NLAM,self%ne,self%nlm), self%Aim(NLAM,self%ne,self%nlm))
       allocate(self%Bre(NLAM,self%ne,self%nlm), self%Bim(NLAM,self%ne,self%nlm))
@@ -325,6 +339,7 @@ contains
          call self%ops(l)%solve_vec(fim, xim)
          self%dUa(lm) = cmplx(xre(idx_u(self%nr)), xim(idx_u(self%nr)), wp)
          self%dFa(lm) = cmplx(xre(idx_f(self%nr)), xim(idx_f(self%nr)), wp)
+         if (l == 1) self%dFa(lm) = (0.0_wp, 0.0_wp)   ! N₁≡0 (CM frame; see init)
          do node = 1, self%nr
             self%dUn_re(node,lm) = xre(idx_u(node))
             self%dUn_im(node,lm) = xim(idx_u(node))
