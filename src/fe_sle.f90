@@ -50,6 +50,12 @@ module fe_sle
       integer  :: n_outer = 3          !! paleotopography / coastline iterations
       integer  :: n_inner = 20         !! water-load fixed-point iterations
       real(wp) :: tol     = 1.0e-7_wp  !! inner convergence on max|ΔS| / max|S| [-]
+      !! Ocean geometry. .false. (default) = time-varying: the coastline migrates
+      !! each outer pass from the deformed surface topo0 − rsl (Martinec 2018 §2.2,
+      !! the SLE2 suite). .true. = fixed: the ocean function is held at the initial
+      !! O⁽⁰⁾ = (topo0 < 0) throughout (§2.1, eq 1, the SLE1 suite) — no coastline
+      !! migration, so a single outer pass converges the inner water load.
+      logical  :: fixed_ocean = .false.
    contains
       procedure :: solve => sle_solve
    end type sle_solver
@@ -104,11 +110,20 @@ contains
       call resp%begin_step(sht)
 
       do io = 1, self%n_outer
-         ! migrate the coastline using the current (full-field) sea level: ocean
-         ! where the deformed solid surface topo0 − rsl is below the sea surface
-         ! AND the ice there floats rather than grounds (grounded ice keeps a
-         ! subsided cell as land).
-         call ocean_function(topo0 - rsl, ice, C)
+         if (self%fixed_ocean) then
+            ! Fixed ocean geometry (Martinec 2018 §2.1, eq 1): O⁽⁰⁾ = (ζ⁽⁰⁾ < 0),
+            ! the bare initial bathymetry, held for all time. Ice never extends to
+            ! the ocean here, so there is no flotation term. Computed once.
+            if (io == 1) then
+               where (topo0 < 0.0_wp);  C = 1.0_wp;  elsewhere;  C = 0.0_wp;  end where
+            end if
+         else
+            ! migrate the coastline using the current (full-field) sea level: ocean
+            ! where the deformed solid surface topo0 − rsl is below the sea surface
+            ! AND the ice there floats rather than grounds (grounded ice keeps a
+            ! subsided cell as land).
+            call ocean_function(topo0 - rsl, ice, C)
+         end if
          C_int = sht%surface_integral(C)
          if (C_int <= 0.0_wp) exit          ! no ocean: nothing to redistribute
 
@@ -142,6 +157,7 @@ contains
          end do
 
          res%n_outer_done = io
+         if (self%fixed_ocean) exit         ! C is fixed: one coastline pass converges
       end do
 
       ! Commit the relaxation memory using the converged total load (no-op for
