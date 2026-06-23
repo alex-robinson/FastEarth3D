@@ -1,0 +1,72 @@
+---
+title: "FastEarth3D"
+subtitle: "A fast, open-source, time-domain spectral–finite-element solid-Earth model"
+toc: false
+---
+
+**FastEarth3D** is a state-of-the-art but deliberately simple and fast **3D
+solid-Earth model**: a self-gravitating, incompressible, Maxwell-viscoelastic
+deformation model coupled to a self-consistent **sea-level equation** with
+migrating coastlines. It is designed as an **open-source replacement for
+VILMA** within the [CLIMBER-X](https://doi.org/10.5194/gmd-15-5905-2022) Earth
+system model [@Willeit2022], and more broadly as a reusable glacial isostatic
+adjustment (GIA) engine for ice-sheet and sea-level work.
+
+The numerical method is a clean-room reimplementation of the
+**spectral–finite-element, time-domain** approach of @Martinec2000: spherical
+harmonics horizontally, finite elements radially, and an explicit
+memory-stress integration of the Maxwell rheology in time. It is built
+**3D-ready from the start** — laterally varying viscosity costs nothing extra
+in the solver — yet validated first in 1D against the published GIA community
+benchmarks [@Spada2011; @Martinec2018].
+
+::: {.callout-note title="A clean-room implementation"}
+FastEarth3D reproduces the *physics* of VILMA — an incompressible,
+self-gravitating, Maxwell sphere with rotational feedback and a full
+migrating-coastline sea-level equation [@Albrecht2024; @Bagge2021] — entirely
+from the **published literature**. No VILMA source code is read or used. Where
+this documentation says "Martinec (2000), eq. (80)", that equation was
+transcribed from the paper and re-derived independently.
+:::
+
+## Why this method
+
+The decisive structural fact behind the method is that, with an **explicit**
+Maxwell time scheme, the stiffness solve has **no angular coupling**: each
+spherical-harmonic degree $\ell$ decouples into an independent, small,
+banded radial system. This makes the solver embarrassingly parallel and cheap,
+and — crucially — makes lateral (3D) viscosity *free*: it never couples the
+harmonics in the solve, entering only through the explicitly-known memory
+stress, which is evaluated pointwise on the Gauss–Legendre grid and transformed
+back to spectral space each step (a pseudo-spectral treatment). The **1D and 3D
+code paths are therefore the same solver**.
+
+| Method family | Examples | 3D viscosity | Speed | Fit for purpose |
+|---|---|:---:|:---:|---|
+| Normal-mode + Love numbers + SLE | SELEN, TABOO, ALMA3 | no (1D only) | fast (1D) | dead end for 3D |
+| **Time-domain spectral–FE** | **VILMA** [@Martinec2000] | **yes** | **fast** | **chosen** |
+| Full 3D FE/FV | CitcomSVE, ASPECT, Elmer | yes | slow, heavy | too complex |
+
+## What is in these docs
+
+- **[Physics](physics/governing-equations.qmd)** — the governing equations
+  (momentum, Poisson, incompressibility), the Maxwell rheology and its memory
+  stress, the sea-level equation, and rotational feedback.
+- **[Discretization](discretization/spectral.qmd)** — the spectral reduction,
+  the P1/P0 radial finite-element operator, the explicit time scheme, and the
+  banded direct solver.
+- **[Benchmarks](benchmarks/index.qmd)** — a summary table of validation
+  results, with one page per benchmark (Love numbers, the disc-load response,
+  and the sea-level-equation intercomparison).
+- **[Implementation](implementation.qmd)** — the libraries we build on (SHTns,
+  FFTW), the codebases that informed the validation, and the attribution and
+  clean-room policy.
+
+## Status
+
+The solver core, the viscoelastic time stepping, the response operator, and the
+sea-level equation are implemented and validated in 1D against the Spada et al.
+(2011) and Martinec et al. (2018) benchmarks. Rotational feedback and the full
+3D (laterally varying viscosity) validation are the next rungs of the
+[validation ladder](benchmarks/index.qmd). The public API and installation
+workflow are still evolving and are intentionally left light here.

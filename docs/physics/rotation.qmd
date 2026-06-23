@@ -1,0 +1,44 @@
+---
+title: "Rotational feedback (planned)"
+---
+
+::: {.callout-important title="Status: not yet implemented"}
+Rotational feedback is rung 5 of the [validation ladder](../benchmarks/index.qmd)
+and is not yet in the code. This page records the intended physics and the
+design constraints so the implementation is shaped correctly from the start.
+:::
+
+A redistribution of surface mass (ice, ocean water) and the resulting solid-Earth
+deformation change the planet's inertia tensor, which perturbs the rotation
+vector — **true polar wander** and length-of-day changes. The shifted rotation
+in turn alters the centrifugal potential, which is itself a **degree-2** surface
+load that drives further deformation and sea-level change. This two-way coupling
+is the *rotational feedback*.
+
+## Intended formulation
+
+FastEarth3D will follow the **time-domain** rotational theory of
+@MartinecHagedoorn2014, which is consistent with the explicit memory-stress
+machinery already in place: the centrifugal potential perturbation is assembled
+as an extra degree-2 forcing on the same per-degree operator, and the Liouville
+equation for the rotation vector is integrated alongside the Maxwell memory.
+This avoids the linearized, normal-mode rotational treatments that do not
+compose with a time-domain, 3D-viscosity solver.
+
+## Design constraints to honour
+
+- **Degree-2, tidal Love numbers.** The rotational deformation uses *tidal*
+  (not loading) Love numbers; the centrifugal forcing is purely degree 2.
+- **Fix the fluid Love number $k_f$ from the observed flattening**
+  [@Mitrovica2005]. Computing $k_f$ from the assumed lithosphere thickness leads
+  to the well-known "lithosphere-thickness paradox" in rotational stability;
+  pinning $k_f$ to the observed hydrostatic flattening avoids it.
+- **Couple through the SLE.** The rotational potential is a load like any other,
+  so it enters the [sea-level equation](sea-level.qmd) self-consistently rather
+  than as a bolt-on correction.
+
+## Validation target
+
+Spada et al. (2011) test 3/2 (polar motion) is the planned benchmark
+[@Spada2011], cross-checked against the rotational cases of the GIA
+intercomparison.

@@ -1,0 +1,89 @@
+---
+title: "Implementation and attribution"
+---
+
+FastEarth3D is a **clean-room reimplementation** of published GIA physics in
+modern Fortran, built on a small set of well-established numerical libraries.
+This page records what it is built on, what informed it, and the attribution
+policy.
+
+## A clean-room implementation
+
+FastEarth3D reproduces the *physics* of **VILMA** — an incompressible,
+self-gravitating, Maxwell-viscoelastic sphere with rotational feedback and a
+full migrating-coastline sea-level equation — entirely from the **published
+literature**. VILMA's character is documented in @Albrecht2024 and @Bagge2021;
+the numerical method is that of @Martinec2000, with rotation from
+@MartinecHagedoorn2014 and the sea-level equation from @KMM2005 and @Martinec2018.
+
+::: {.callout-important title="Clean-room policy"}
+**No VILMA source code is read or used.** Every equation is transcribed from the
+published papers and re-derived independently — in several cases (e.g. the
+self-gravity $U$–$F$ coupling) the re-derivation from the *continuous* form was
+what caught a discretization error. The model is an independent implementation of
+the same physics, not a port.
+:::
+
+The implementation is deliberately **modern and minimal**: a small, dependency-light
+Fortran codebase organized as single-purpose modules (`fe_*`), validated
+rung-by-rung against the community benchmarks, and built **3D-ready from the
+start** (laterally varying viscosity costs nothing extra in the solver) while
+validated first in 1D.
+
+## Libraries we build on
+
+| Library | Role | Reference |
+|---|---|---|
+| **[SHTns](https://nschaeffer.name/?lang=en&page=shtns)** | fast spherical-harmonic transforms (forward/inverse, quadrature, point & gradient evaluation) | @Schaeffer2013 |
+| **[FFTW3](https://www.fftw.org/)** | the longitudinal FFTs underlying SHTns | @FrigoJohnson2005 |
+| **netCDF** | restart and output I/O | — |
+| **fesm-utils** | shared build system + helper library (precision, ncio, namelists) | — |
+
+The **fast Fourier transform and spherical-harmonic transform are central**, not
+incidental: a pseudo-spectral method moves between grid and spectral space many
+times per step (the SLE forms its ocean-function product on the grid and its
+load–response convolution in spectral space). Using SHTns/FFTW for that kernel —
+rather than a hand-rolled transform — is what keeps the model fast at the
+resolutions of interest. The transform convention (orthonormal, no
+Condon–Shortley phase, Gauss grid) is pinned across the whole code; see
+[Spectral reduction](discretization/spectral.qmd).
+
+The **linear solver, by contrast, is hand-rolled** — a dependency-free, re-entrant
+pivoted banded LU (`fe_band`) — precisely to *avoid* an external dependency (LIS,
+LAPACK) that would complicate linking into an OpenMP host. See
+[Solver](discretization/solver.qmd).
+
+## Codebases that informed the validation
+
+These are used as **independent oracles and reference data**, not as sources of
+implementation:
+
+- **[giapy](https://github.com/skachuck/giapy)** (S. B. Kachuck, MIT) — source of
+  the vendored M3–L70–V01 Love-number table, the SBK sea-level reference curves,
+  and the analytic load/basin specifications for the Martinec (2018) cases.
+- **[TABOO](https://github.com/danielemelini/TABOO)** (D. Melini, GPLv3) — a
+  normal-mode code used as an independent oracle to regenerate the M3–L70–V01
+  Love numbers (NV=3, CODE=7).
+- **[isostasy_data](https://github.com/JanJereczek/isostasy_data)** /
+  **FastIsostasy.jl** (J. Jereczek) — source of the Spada (2011) disc-load
+  spatial-response reference.
+
+Full provenance and licensing of every vendored dataset is in the repository's
+`data/benchmarks/PROVENANCE.md`.
+
+## Build and host coupling
+
+The model uses a `configme`-style build (a machine fragment inserted into a
+Makefile template), with dependencies provided through a `fesm-utils` checkout
+(FFTW, SHTns) plus system netCDF. The host-coupling contract (designed for
+CLIMBER-X) is intentionally narrow: the host passes **ice thickness** in and
+receives **relative sea level** and **bedrock** out, with all spherical-harmonic
+transforms kept inside the model. The public API and installation workflow are
+still evolving and are intentionally kept light in these docs at this stage.
+
+## License and citation
+
+See the repository for the current license. When citing the *method*, cite the
+primary sources — above all @Martinec2000 for the spectral–finite-element
+approach, and @Spada2011 and @Martinec2018 for the benchmarks against which
+FastEarth3D is validated.
