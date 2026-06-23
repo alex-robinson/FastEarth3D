@@ -99,6 +99,13 @@ module fe_response
       !! drift; apply combines them; commit_step advances the memory.
       integer  :: lmax = 0, nr = 0, ne = 0, ndof = 0, nlm = 0
       real(wp) :: g = 0.0_wp, a = 0.0_wp, dt = 0.0_wp, time = 0.0_wp
+      !! begin_step skips the drift solve for a coefficient whose Maxwell memory is
+      !! below skip_tol × (the largest memory over all coefficients): its drift is
+      !! negligible, so it is set to zero rather than solved. Self-consistent (all
+      !! memory is zero at t=0 ⇒ all skipped ⇒ exact elastic first step) and cheap
+      !! to gate. skip_tol = 0 disables skipping (solve every coefficient).
+      real(wp) :: skip_tol = 1.0e-4_wp
+      real(wp), allocatable :: mnorm(:)                 !! (nk) max|memory| per slot
       type(radial_operator), allocatable :: ops(:)      !! (1:lmax) per-degree operator
       ! degree-independent element fields
       real(wp), allocatable :: r(:)                     !! node radii (nr)
@@ -333,9 +340,11 @@ contains
       allocate(self%dUa(self%nk), self%dFa(self%nk))
       allocate(self%dUn_re(self%nr,self%nk), self%dUn_im(self%nr,self%nk))
       allocate(self%dVn_re(self%nr,self%nk), self%dVn_im(self%nr,self%nk))
+      allocate(self%mnorm(self%nk))
       self%dUa = (0.0_wp,0.0_wp); self%dFa = (0.0_wp,0.0_wp)
       self%dUn_re = 0.0_wp; self%dUn_im = 0.0_wp
       self%dVn_re = 0.0_wp; self%dVn_im = 0.0_wp
+      self%mnorm = 0.0_wp                       ! zero memory ⇒ all slots skipped initially
    end subroutine ve_response_init
 
    subroutine ve_response_begin(self, sht)
@@ -344,16 +353,44 @@ contains
       class(ve_response), intent(inout) :: self
       type(sht_grid),     intent(in)    :: sht
       real(wp), allocatable :: fre(:), fim(:), xre(:), xim(:)
-      integer :: k, l, node
+      integer :: k, l, node, e, mm
+      real(wp) :: thr, mk
+
+      ! Skip the drift solve for coefficients with negligible memory (their drift is
+      ! negligible too): zero their drift instead of solving. For a spatially
+      ! localized load the excited spectrum is bounded, so this skips most of the
+      ! high-degree solves. thr is relative to the largest memory present.
+      ! mnorm is refreshed here from the current memory (a cheap pass vs the solves)
+      ! so it is always consistent — including after a restart, which reloads the
+      ! memory arrays but not this derived cache.
+      ! explicit loop (no abs(slice) temporaries — those would each heap-allocate)
+      do k = 1, self%nk
+         mk = 0.0_wp
+         do e = 1, self%ne
+            do mm = 1, NLAM
+               mk = max(mk, abs(self%Are(mm,e,k)), abs(self%Bre(mm,e,k)), &
+                           abs(self%Cre(mm,e,k)), abs(self%Aim(mm,e,k)), &
+                           abs(self%Bim(mm,e,k)), abs(self%Cim(mm,e,k)))
+            end do
+         end do
+         self%mnorm(k) = mk
+      end do
+      thr = self%skip_tol * maxval(self%mnorm)
 
       ! Iterate degree-grouped slots k (contiguous per-(l,m) memory + operator reuse
-      ! within a degree). NOTE: this loop is NOT OpenMP-parallelized — LIS is not
-      ! re-entrant (concurrent lis_solve calls corrupt its global state and crash,
-      ! even on distinct per-degree matrices), so threading the solves needs a
-      ! thread-safe solver first. kbeg(l):kbeg(l+1)-1 is the slot range of degree l.
+      ! within a degree). NOTE: NOT OpenMP-parallelized — LIS is not re-entrant
+      ! (concurrent lis_solve calls corrupt its global state and crash, even on
+      ! distinct per-degree matrices), so threading the solves needs a thread-safe
+      ! solver first. kbeg(l):kbeg(l+1)-1 is the slot range of degree l.
       allocate(fre(self%ndof), fim(self%ndof), xre(self%ndof), xim(self%ndof))
       do k = 1, self%nk
          l = self%kdeg(k)
+         if (self%mnorm(k) <= thr) then          ! negligible memory ⇒ negligible drift
+            self%dUa(k) = (0.0_wp,0.0_wp);  self%dFa(k) = (0.0_wp,0.0_wp)
+            self%dUn_re(:,k) = 0.0_wp;  self%dUn_im(:,k) = 0.0_wp
+            self%dVn_re(:,k) = 0.0_wp;  self%dVn_im(:,k) = 0.0_wp
+            cycle
+         end if
          fre = 0.0_wp;  fim = 0.0_wp
          call dissipative_rhs(self%ne, self%r, self%sa(:,:,l), self%sb(:,:,l), &
               self%sc(:,:,l), self%nrmc(:,l), self%Are(:,:,k), self%Bre(:,:,k), &
@@ -463,6 +500,7 @@ contains
       if (allocated(self%k2lm))   deallocate(self%k2lm)
       if (allocated(self%kdeg))   deallocate(self%kdeg)
       if (allocated(self%kbeg))   deallocate(self%kbeg)
+      if (allocated(self%mnorm))  deallocate(self%mnorm)
       self%lmax = 0;  self%nlm = 0;  self%nk = 0
    end subroutine ve_response_destroy
 
