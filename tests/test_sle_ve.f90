@@ -26,7 +26,7 @@ program test_sle_ve
    type(ve_response)  :: resp
    type(sle_solver)   :: sle
    type(sle_result)   :: res
-   real(wp), allocatable :: topo0(:,:), d_ice(:,:), S(:,:), C(:,:), Sfirst(:,:)
+   real(wp), allocatable :: topo0(:,:), d_ice(:,:), ice(:,:), S(:,:), C(:,:), Sfirst(:,:)
    real(wp) :: dt, mean1, meanN, dmax_mass, relax, eust
    logical  :: ok
    integer  :: i
@@ -38,9 +38,10 @@ program test_sle_ve
    call resp%init(e, sht, dt)
 
    allocate(topo0(sht%nphi,sht%nlat), d_ice(sht%nphi,sht%nlat), &
-            S(sht%nphi,sht%nlat), C(sht%nphi,sht%nlat), &
+            ice(sht%nphi,sht%nlat), S(sht%nphi,sht%nlat), C(sht%nphi,sht%nlat), &
             Sfirst(sht%nphi,sht%nlat))
    call make_fields(topo0, d_ice)
+   ice = d_ice                ! cap emplaced from zero, so absolute ice = change
 
    eust = -(rho_ice/rho_water)*sht%surface_integral(d_ice) / &
            sht%surface_integral(merge(1.0_wp,0.0_wp, topo0 < 0.0_wp))
@@ -48,7 +49,7 @@ program test_sle_ve
    write(*,'(a)') '       step    mean S (ocean) [m]   mass resid    inner'
    dmax_mass = 0.0_wp
    do i = 1, NSTEP
-      call sle%solve(sht, resp, d_ice, topo0, S, C, res)
+      call sle%solve(sht, resp, d_ice, ice, topo0, S, C, res)
       dmax_mass = max(dmax_mass, res%mass_resid)
       if (i == 1)     Sfirst = S
       if (i == 1)     mean1  = ocean_mean(S, C)

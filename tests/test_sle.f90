@@ -21,17 +21,20 @@ program test_sle
    type(sht_grid)     :: sht
    type(sle_solver)   :: sle
    type(sle_result)   :: res
-   real(wp), allocatable :: topo0(:,:), d_ice(:,:), S(:,:), C(:,:)
+   real(wp), allocatable :: topo0(:,:), d_ice(:,:), ice(:,:), S(:,:), C(:,:)
    logical :: ok
 
    ok = .true.
    call sht%init(LMAX, nlat=2*LMAX, nphi=4*LMAX)   ! de-aliased grid
    allocate(topo0(sht%nphi,sht%nlat), d_ice(sht%nphi,sht%nlat), &
-            S(sht%nphi,sht%nlat), C(sht%nphi,sht%nlat))
+            ice(sht%nphi,sht%nlat), S(sht%nphi,sht%nlat), C(sht%nphi,sht%nlat))
 
    ! Reference topography: a polar land cap (colat<60°, +500 m), ocean elsewhere
-   ! (−4000 m). Ice change: remove a 1000 m cap on the land (colat<30°).
+   ! (−4000 m). Ice change: remove a 1000 m cap on the land (colat<30°). The
+   ! grounded ice sits on land (topo > 0), so flotation reclassifies no ocean
+   ! cell here; pass a zero absolute-ice field.
    call make_fields(topo0, d_ice)
+   ice = 0.0_wp
 
    ! --- 1. eustatic limit: uniform rise, exact mass balance ------------------
    write(*,'(a)') ' (1) eustatic limit (rigid, non-self-gravitating)'
@@ -83,7 +86,7 @@ contains
       real(wp) :: ice_int, C_int, expect, smin, smax
       integer  :: i, j
 
-      call sle%solve(sht, resp, d_ice, topo0, S, C, res)
+      call sle%solve(sht, resp, d_ice, ice, topo0, S, C, res)
 
       ! predicted uniform rise = −(ρ_i/ρ_w)∫ΔI dΩ / ∫C dΩ
       ice_int = -(rho_ice/rho_water)*sht%surface_integral(d_ice)
@@ -129,7 +132,7 @@ contains
 
       e = build_M3L70V01()
       call resp%init(e, lmax=LMAX)
-      call sle%solve(sht, resp, d_ice, topo0, S, C, res)
+      call sle%solve(sht, resp, d_ice, ice, topo0, S, C, res)
 
       smin =  huge(1.0_wp);  smax = -huge(1.0_wp);  smean = 0.0_wp;  wsum = 0.0_wp
       do j = 1, sht%nlat
