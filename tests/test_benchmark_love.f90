@@ -13,15 +13,12 @@ program test_benchmark_love
    !!     buoyancy, the inviscid core, incompressibility AND the l normalization
    !!     (so it pins l's sign/scale — previously the one open Love convention).
    !!
-   !! (2) ELASTIC. Our elastic loading Love numbers are correct at high degree
-   !!     (asserted, |Δ|<2% for j>=40) but are systematically too soft at low
-   !!     degree (up to ~50% at j=2, shrinking with j). This is a KNOWN, OPEN
-   !!     solver bug — NOT a model/load/frame/mesh difference: the M3 parameters,
-   !!     the operator (Martinec 2000 eqs 80-84), the element integrals and the
-   !!     mesh are all verified, and the fluid limit (1) is exact, yet the
-   !!     elastic spectrum's SHAPE is wrong (no uniform mu-scale reproduces it).
-   !!     See doc/formulation.md "Elastic low-degree discrepancy". Printed here
-   !!     for tracking; intentionally NOT asserted at low degree until fixed.
+   !! (2) ELASTIC. Our elastic loading Love numbers match the table to <1% at
+   !!     every degree 2..48 (residual is P1 mesh discretization, same size as the
+   !!     fluid-limit residual). This was the long-standing low-degree discrepancy
+   !!     (~50% too soft at j=2): a single transposed index in the self-gravity
+   !!     potential-gradient force (eq 65/81, the U-F coupling i2) — now fixed.
+   !!     See doc/formulation.md "Elastic low-degree discrepancy (FIXED)".
    use fe_precision,       only: wp
    use fe_earth_structure, only: earth_model, build_M3L70V01, RHEOL_FLUID
    use fe_radial_fe,       only: radial_mesh, radial_operator, loading_love, &
@@ -68,7 +65,7 @@ program test_benchmark_love
       end if
    end do
 
-   ! --- (2) ELASTIC: high degree asserted, low degree reported (known bug) -----
+   ! --- (2) ELASTIC: match the table at every degree (<1%) --------------------
    write(*,'(a)') ''
    write(*,'(a)') ' (2) M3-L70-V01 elastic loading Love numbers vs benchmark table'
    write(*,'(a)') '      j      h_ours     h_ref    dh%      k_ours     k_ref    dk%'
@@ -80,21 +77,15 @@ program test_benchmark_love
       if (j <= 8 .or. mod(j,8) == 0) &
          write(*,'(i7,2f11.5,f8.1,2f11.5,f8.1)') j, h, he(j), &
               100.0_wp*(h-he(j))/abs(he(j)), k, ke(j), 100.0_wp*(k-ke(j))/abs(ke(j))
-      ! high-degree convergence IS correct -> assert it
-      if (j >= 40) then
-         if (reldiff(h, he(j)) > 2.0e-2_wp .or. reldiff(k, ke(j)) > 2.0e-2_wp) then
-            write(*,'(a,i0)') '      FAIL: elastic high-degree off (>2%) at j=', j
-            ok = .false.
-         end if
+      if (reldiff(h, he(j)) > 1.0e-2_wp .or. reldiff(k, ke(j)) > 1.0e-2_wp) then
+         write(*,'(a,i0)') '      FAIL: elastic Love numbers off the benchmark (>1%) at j=', j
+         ok = .false.
       end if
    end do
-   write(*,'(a)') '      NOTE: low-degree elastic h,k are systematically too soft'
-   write(*,'(a)') '            (known open solver bug; see doc/formulation.md). The'
-   write(*,'(a)') '            fluid limit (1) and high-degree elastic are correct.'
 
    write(*,'(a)') ''
    if (ok) then
-      write(*,'(a)') ' PASS: fluid limit matches the benchmark; elastic converges at high degree'
+      write(*,'(a)') ' PASS: elastic AND fluid M3-L70-V01 Love numbers match the benchmark (<1%)'
    else
       write(*,'(a)') ' FAIL: benchmark Love-number validation did not all pass'
       call radial_fe_finalize();  error stop 1

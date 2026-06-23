@@ -297,10 +297,18 @@ contains
 
                ! --- δE_grav (eq 81), factor ρ_k -------------------------------
                gg = (fourpiG/3.0_wp)*( rho_k*i4(ia,ib) + Rk(e)*i7(ia,ib) )
-               ! δU^b: gg(−4U^a+J V^a) + I² F^a + 4πG ρ_k I⁴ U^a
+               ! δU^b: gg(−4U^a+J V^a) + (dF/dr force) + 4πG ρ_k I⁴ U^a.
+               ! The potential-gradient body force −ρ₀∇φ₁ discretizes (eq 65,
+               ! continuous) to ∫ψ'_α ψ_β r² = I²_βα = i2(ib,ia) — the derivative
+               ! falls on the TRIAL F basis (ψ_α). This is the TRANSPOSE of the
+               ! Poisson-source F–U term below (i2(ia,ib)); the two together make
+               ! the U↔F gravitational coupling symmetric, as the energy
+               ! functional E_grav (eq 32) requires. (Using i2(ia,ib) here — the
+               ! non-symmetric form — is the elastic low-degree bug; see
+               ! doc/formulation.md "Elastic low-degree discrepancy".)
                Aloc(lU(ib), lU(ia)) = Aloc(lU(ib), lU(ia)) + rho_k*( -4.0_wp*gg + fourpiG*rho_k*i4(ia,ib) )
                Aloc(lU(ib), lV(ia)) = Aloc(lU(ib), lV(ia)) + rho_k*( Jr*gg )
-               Aloc(lU(ib), lF(ia)) = Aloc(lU(ib), lF(ia)) + rho_k*( i2(ia,ib) )
+               Aloc(lU(ib), lF(ia)) = Aloc(lU(ib), lF(ia)) + rho_k*( i2(ib,ia) )
                ! δV^b: J[ gg U^a + I⁵ F^a ]
                Aloc(lV(ib), lU(ia)) = Aloc(lV(ib), lU(ia)) + rho_k*( Jr*gg )
                Aloc(lV(ib), lF(ia)) = Aloc(lV(ib), lF(ia)) + rho_k*( Jr*i5(ia,ib) )

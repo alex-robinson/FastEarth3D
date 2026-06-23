@@ -116,14 +116,20 @@ program test_assembly
            '  (exterior (j+1) part = ', expect, ')'
    end if
 
-   ! 2f. the operator as a whole is NON-symmetric (I2/I3 couplings) — confirm we
-   ! did not accidentally symmetrize it (Martinec solves it with a general LU).
-   asym = maxval(abs(A - transpose(A)))
-   if (asym <= 0.0_wp) then
-      write(*,'(a)') ' (2f) FAIL: operator is symmetric (expected asymmetric)'
+   ! 2f. the operator as a whole is SYMMETRIC: it is the Hessian (second
+   ! variation) of the energy functional E = E_press+E_shear+E_grav+E_uniq
+   ! (eqs 30-33), so it MUST be self-transpose. In particular the U<->F
+   ! self-gravity coupling (potential-gradient force vs Poisson source) is a
+   ! transpose pair (i2(ib,ia) / i2(ia,ib)). NOTE: an earlier version asserted
+   ! the operator was *asymmetric* — that was a transcription bug in the U-F
+   ! term (i2(ia,ib) instead of i2(ib,ia)) that made the elastic Love numbers
+   ! too soft at low degree; see doc/formulation.md.
+   asym = maxval(abs(A - transpose(A))) / maxval(abs(A))
+   if (asym > 1.0e-12_wp) then
+      write(*,'(a,es10.3)') ' (2f) FAIL: operator not symmetric, ||A-Aᵀ||/||A||=', asym
       ok = .false.
    else
-      write(*,'(a,es10.3)') ' (2f) operator non-symmetric as expected, ||A-Aᵀ||=', asym
+      write(*,'(a,es10.3)') ' (2f) operator symmetric (energy Hessian), ||A-Aᵀ||/||A||=', asym
    end if
 
    write(*,'(a)') ''

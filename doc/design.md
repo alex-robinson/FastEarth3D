@@ -225,20 +225,17 @@ the CM frame, and `ve_degree` steps stably at j=1 (`test_love` case 4,
 unchanged for l ≥ 2.
 
 **Open / next** (priority order for a fresh session):
-0. **Fix the elastic low-degree Love-number bug (rung 2).** Benchmark data is now
-   in-repo (`data/benchmarks/love_M3-L70-V01/`; `test_benchmark_love`). The M3
-   FLUID limit is exact (<0.5%, all degrees) — self-gravity, `R_k` buoyancy, core,
-   incompressibility and the `l` normalisation are all validated (the old `l`-sign
-   question is closed). But the ELASTIC loading Love numbers are too soft at low
-   degree (~50% at j=2 → ~1% by j≈40), confirmed a real bug against an independent
-   oracle (TABOO NV=3/CODE=7 + giapy both give `h_e(2)=−0.454`; we give `−0.669`).
-   NOT model/load/frame/mesh, NOT a uniform μ-scale (degree-dependent correction).
-   Operator (eqs 80–84) verified term-by-term, integrals exact — so the error is
-   structural in the elastic shear↔self-gravity balance, hidden from every
-   μ→0/μ→∞ limit test. Needs a re-derivation of the spheroidal elastic balance
-   (eqs 80–81 + strain representation 85–86). See doc/formulation.md "Elastic
-   low-degree discrepancy". **This also closes the disc-offset and the rung-3
-   viscoelastic disc match** (same root cause).
+0. ~~Fix the elastic low-degree Love-number bug.~~ **DONE.** Benchmark data
+   in-repo (`data/benchmarks/love_M3-L70-V01/`; `test_benchmark_love`). Root cause:
+   a transposed index in the self-gravity potential-gradient force in
+   `build_dense_operator` (the U-F coupling used `I²_αβ` instead of `I²_βα`),
+   which broke the U↔F symmetry the energy functional requires. Found by
+   re-deriving the continuous gravity form (Martinec eq 65) term-by-term and
+   cross-checking the shear block against the `fe_viscoelastic` strain
+   representation (eqs 85–88). Fix: `i2(ia,ib) → i2(ib,ia)`. Now elastic AND fluid
+   M3-L70-V01 Love numbers match the benchmark to ~0.1% at every degree; the
+   operator is exactly symmetric (`test_assembly`). Closes the disc offset (rungs
+   2/3) at the source — a direct disc re-run to confirm <1% is a quick follow-up.
 1. **Lift the degree-1 skip in `ve_response`.** The blocker is gone (sparse KKT
    j=1). Change the `l < 2` guards (init / begin_step / apply / commit_step in
    `src/fe_response.f90`) to `l < 1`, assemble `ops(1)`, drop the `gu(1)=gn(1)=0`
