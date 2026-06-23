@@ -45,6 +45,7 @@ module fe_sht
       procedure :: synthesis => sht_grid_synthesis   !! spectral -> spatial
       procedure :: analysis  => sht_grid_analysis    !! spatial  -> spectral
       procedure :: eval_point => sht_grid_eval_point !! scalar field at (colat,lon)
+      procedure :: eval_point_horiz => sht_grid_eval_point_horiz !! ∇₁ field at (colat,lon)
       procedure :: lmidx     => sht_grid_lmidx       !! (l,m) -> coefficient index
       procedure :: surface_integral => sht_grid_surface_integral  !! ∫ f dΩ
    end type sht_grid
@@ -186,6 +187,24 @@ contains
       call SHqst_to_point(self%cfg, q, s, t, cos(colat), lon, vr, vt, vp)
       val = vr(1)
    end subroutine sht_grid_eval_point
+
+   subroutine sht_grid_eval_point_horiz(self, s_lm, colat, lon, vth, vph)
+      !! Evaluate the HORIZONTAL field of a spheroidal scalar (coefficients s_lm)
+      !! at an arbitrary point (colat, lon) [rad]: ∇₁(Σ s_lm Y_lm) =
+      !! (∂_θ, (1/sinθ)∂_φ)(Σ s_lm Y_lm), via SHqst_to_point with q = t = 0 and
+      !! spheroidal = s_lm. Returns vth = θ-component, vph = φ-component. Used for
+      !! the horizontal-displacement (u_θ, u_φ) columns of the Martinec benchmark;
+      !! s_lm = response%horizontal output (the per-degree V(a) coefficients).
+      class(sht_grid), intent(in) :: self
+      complex(wp),     intent(in) :: s_lm(:)    !! length nlm (spheroidal V(a))
+      real(wp),        intent(in) :: colat, lon !! [rad]
+      real(wp),        intent(out):: vth, vph   !! θ-, φ-components
+      complex(wp) :: q(self%nlm), s(self%nlm), t(self%nlm)
+      real(wp)    :: vr(1), vt(1), vp(1)
+      q = (0.0_wp, 0.0_wp);  s = s_lm;  t = (0.0_wp, 0.0_wp)
+      call SHqst_to_point(self%cfg, q, s, t, cos(colat), lon, vr, vt, vp)
+      vth = vt(1);  vph = vp(1)
+   end subroutine sht_grid_eval_point_horiz
 
    integer function sht_grid_lmidx(self, l, m) result(lm)
       !! 1-based index into the spectral array for harmonic (l, m).

@@ -87,6 +87,32 @@ program test_field
       write(*,'(a)') '     FAIL: basin far-field plateau wrong';  ok = .false.
    end if
 
+   ! --- (5) horizontal eval = surface gradient of the scalar field --------------
+   ! eval_point_horiz(s_lm) must return (∂_θ f, (1/sinθ)∂_φ f) for f = Σ s_lm Y_lm.
+   ! Validate convention-agnostically against a central finite-difference of the
+   ! model's OWN scalar eval_point (no dependence on the real-SH normalization).
+   block
+      real(wp) :: vth, vph, fp, fm, dth, dph, hstep, colat0, lon0, sgrad_t, sgrad_p, eh
+      flm = (0.0_wp, 0.0_wp)
+      flm(sht%lmidx(2,0)) = ( 1.5_wp,  0.0_wp)
+      flm(sht%lmidx(3,1)) = (-0.7_wp,  0.4_wp)
+      flm(sht%lmidx(5,4)) = ( 0.3_wp, -0.9_wp)
+      colat0 = 1.0_wp;  lon0 = 2.0_wp;  hstep = 1.0e-4_wp   ! interior point, away from poles
+      call sht%eval_point_horiz(flm, colat0, lon0, vth, vph)
+      call sht%eval_point(flm, colat0+hstep, lon0, fp)
+      call sht%eval_point(flm, colat0-hstep, lon0, fm)
+      sgrad_t = (fp - fm)/(2.0_wp*hstep)                    ! ∂_θ f
+      call sht%eval_point(flm, colat0, lon0+hstep, fp)
+      call sht%eval_point(flm, colat0, lon0-hstep, fm)
+      sgrad_p = (fp - fm)/(2.0_wp*hstep)/sin(colat0)        ! (1/sinθ) ∂_φ f
+      dth = abs(vth - sgrad_t);  dph = abs(vph - sgrad_p)
+      eh  = max(dth, dph)
+      write(*,'(a,es12.4,a,es12.4)') ' (5) horiz vs FD-gradient: |dvth|=', dth, '  |dvph|=', dph
+      if (eh > 1.0e-4_wp) then
+         write(*,'(a)') '     FAIL: eval_point_horiz != surface gradient';  ok = .false.
+      end if
+   end block
+
    write(*,'(a)') ''
    if (ok) then
       write(*,'(a)') ' PASS: eval_point + analytic field generators validated'

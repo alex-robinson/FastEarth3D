@@ -49,6 +49,12 @@ module fe_response
       procedure(apply_if), deferred :: apply
       procedure :: begin_step  => response_begin_default
       procedure :: commit_step => response_commit_default
+      !! horizontal() returns the spheroidal scalar v_lm = V(a)·σ_lm (+ frozen
+      !! drift, for stateful responses) whose surface gradient ∇₁(Σ v_lm Y_lm) is
+      !! the horizontal displacement (u_θ, u_φ). It is a pure DIAGNOSTIC — the SLE
+      !! fixed point needs only u and N (apply), so it never calls this; a caller
+      !! evaluates it ONCE on the converged load. Default (rigid / null) ⇒ zero.
+      procedure :: horizontal  => response_horizontal_default
    end type response_operator
 
    abstract interface
@@ -71,10 +77,12 @@ module fe_response
       real(wp) :: a    = 0.0_wp          !! surface radius  [m]
       real(wp), allocatable :: ugain(:)  !! (0:lmax) U(a) per unit σ_l  [m / (kg m^-2)]
       real(wp), allocatable :: ngain(:)  !! (0:lmax) N(a)=−F(a)/g per unit σ_l
+      real(wp), allocatable :: vgain(:)  !! (0:lmax) V(a) per unit σ_l (horizontal)
    contains
-      procedure :: init    => elastic_response_init
-      procedure :: apply   => elastic_response_apply
-      procedure :: destroy => elastic_response_destroy
+      procedure :: init       => elastic_response_init
+      procedure :: apply      => elastic_response_apply
+      procedure :: horizontal => elastic_response_horizontal
+      procedure :: destroy    => elastic_response_destroy
    end type elastic_response
 
    type, extends(response_operator) :: null_response
@@ -114,7 +122,7 @@ module fe_response
       real(wp), allocatable :: Jr(:)                    !! (1:lmax) l(l+1)
       real(wp), allocatable :: nrmc(:,:)                !! (NLAM,1:lmax) Z:Z norms
       real(wp), allocatable :: sa(:,:,:), sb(:,:,:), sc(:,:,:)  !! (4,NLAM,1:lmax)
-      real(wp), allocatable :: gu(:), gn(:)             !! (0:lmax) elastic gains
+      real(wp), allocatable :: gu(:), gn(:), gv(:)      !! (0:lmax) elastic gains (gv=V(a))
       real(wp), allocatable :: xUn(:,:), xVn(:,:)       !! (nr,1:lmax) unit-load nodal U,V
       ! Per-(l,m) state is stored in DEGREE-GROUPED order k = 1..nk (all orders m of
       ! a degree l contiguous, l ascending; degree 0 carries no memory and is
@@ -130,13 +138,14 @@ module fe_response
       real(wp), allocatable :: Bre(:,:,:), Bim(:,:,:)
       real(wp), allocatable :: Cre(:,:,:), Cim(:,:,:)
       ! frozen per-step drift (from the memory), set by begin_step
-      complex(wp), allocatable :: dUa(:), dFa(:)        !! (nk) surface drift
+      complex(wp), allocatable :: dUa(:), dFa(:), dVa(:) !! (nk) surface drift (U,F,V)
       real(wp), allocatable :: dUn_re(:,:), dUn_im(:,:) !! (nr,nk) nodal drift U
       real(wp), allocatable :: dVn_re(:,:), dVn_im(:,:) !! (nr,nk) nodal drift V
    contains
       procedure :: init        => ve_response_init
       procedure :: begin_step  => ve_response_begin
       procedure :: apply       => ve_response_apply
+      procedure :: horizontal  => ve_response_horizontal
       procedure :: commit_step => ve_response_commit
       procedure :: destroy     => ve_response_destroy
    end type ve_response
@@ -154,6 +163,15 @@ contains
       type(sht_grid),           intent(in)    :: sht
       complex(wp),              intent(in)    :: sigma_lm(:)
    end subroutine response_commit_default
+
+   subroutine response_horizontal_default(self, sht, sigma_lm, v_lm)
+      !! No horizontal displacement for a rigid / non-deforming response.
+      class(response_operator), intent(inout) :: self
+      type(sht_grid),           intent(in)    :: sht
+      complex(wp),              intent(in)    :: sigma_lm(:)  !! load [kg m^-2]
+      complex(wp),              intent(out)   :: v_lm(:)      !! spheroidal V(a) [m]
+      v_lm = (0.0_wp, 0.0_wp)
+   end subroutine response_horizontal_default
 
    subroutine null_response_apply(self, sht, sigma_lm, u_lm, n_lm)
       class(null_response), intent(inout) :: self
@@ -185,11 +203,12 @@ contains
       self%lmax = lmax
       self%a    = earth%r_earth
       self%g    = earth%gravity_at(earth%r_earth)
-      allocate(self%ugain(0:lmax), self%ngain(0:lmax))
+      allocate(self%ugain(0:lmax), self%ngain(0:lmax), self%vgain(0:lmax))
 
       ! degree 0: no deformation, pure monopole geoid offset
       self%ugain(0) = 0.0_wp
       self%ngain(0) = 4.0_wp*pi*grav_G*self%a / self%g
+      self%vgain(0) = 0.0_wp                    ! no horizontal at degree 0
 
       call mesh%build(earth)
       do l = 1, lmax
@@ -197,6 +216,7 @@ contains
          call op%solve(1.0_wp, ua, va, fa)     ! unit surface load coefficient
          self%ugain(l) = ua
          self%ngain(l) = -fa / self%g
+         self%vgain(l) = va
          call op%destroy()
       end do
 
@@ -231,10 +251,30 @@ contains
       end do
    end subroutine elastic_response_apply
 
+   subroutine elastic_response_horizontal(self, sht, sigma_lm, v_lm)
+      !! Spheroidal multiply: v_lm = vgain(l)·σ_lm (degree-1 left as solved, like
+      !! ugain — the horizontal displacement is in the CE-like gauge, not the geoid
+      !! CM frame). Synthesize ∇₁(Σ v_lm Y_lm) for (u_θ, u_φ).
+      class(elastic_response), intent(inout) :: self
+      type(sht_grid),          intent(in)    :: sht
+      complex(wp),             intent(in)    :: sigma_lm(:)
+      complex(wp),             intent(out)   :: v_lm(:)
+      integer :: l, m, lm, lcap
+      v_lm = (0.0_wp, 0.0_wp)
+      lcap = min(self%lmax, sht%lmax)
+      do m = 0, sht%mmax*sht%mres, sht%mres
+         do l = m, lcap
+            lm = sht%lmidx(l, m)
+            v_lm(lm) = self%vgain(l) * sigma_lm(lm)
+         end do
+      end do
+   end subroutine elastic_response_horizontal
+
    subroutine elastic_response_destroy(self)
       class(elastic_response), intent(inout) :: self
       if (allocated(self%ugain)) deallocate(self%ugain)
       if (allocated(self%ngain)) deallocate(self%ngain)
+      if (allocated(self%vgain)) deallocate(self%vgain)
       self%lmax = 0
    end subroutine elastic_response_destroy
 
@@ -280,6 +320,7 @@ contains
                self%sc(4,NLAM,self%lmax))
       allocate(self%gu(0:self%lmax), self%gn(0:self%lmax))
       allocate(self%xUn(self%nr,self%lmax), self%xVn(self%nr,self%lmax))
+      allocate(self%gv(0:self%lmax))
       allocate(self%ops(self%lmax), x(self%ndof))
 
       ! degree 0: monopole geoid, no deformation, no memory (no operator).
@@ -289,6 +330,7 @@ contains
       ! degree; it joins the l-loop below.
       self%gu(0) = 0.0_wp
       self%gn(0) = 4.0_wp*pi*grav_G*self%a/self%g
+      self%gv(0) = 0.0_wp                       ! no horizontal at degree 0
 
       do l = 1, self%lmax
          self%Jr(l) = real(l, wp)*real(l+1, wp)
@@ -298,6 +340,7 @@ contains
          call self%ops(l)%solve_vec(self%ops(l)%load_rhs(1.0_wp), x)
          self%gu(l) = x(idx_u(self%nr))
          self%gn(l) = -x(idx_f(self%nr))/self%g
+         self%gv(l) = x(idx_v(self%nr))         ! surface horizontal V(a)
          do node = 1, self%nr
             self%xUn(node,l) = x(idx_u(node))
             self%xVn(node,l) = x(idx_v(node))
@@ -337,11 +380,11 @@ contains
       allocate(self%Cre(NLAM,self%ne,self%nk), self%Cim(NLAM,self%ne,self%nk))
       self%Are = 0.0_wp; self%Aim = 0.0_wp; self%Bre = 0.0_wp
       self%Bim = 0.0_wp; self%Cre = 0.0_wp; self%Cim = 0.0_wp
-      allocate(self%dUa(self%nk), self%dFa(self%nk))
+      allocate(self%dUa(self%nk), self%dFa(self%nk), self%dVa(self%nk))
       allocate(self%dUn_re(self%nr,self%nk), self%dUn_im(self%nr,self%nk))
       allocate(self%dVn_re(self%nr,self%nk), self%dVn_im(self%nr,self%nk))
       allocate(self%mnorm(self%nk))
-      self%dUa = (0.0_wp,0.0_wp); self%dFa = (0.0_wp,0.0_wp)
+      self%dUa = (0.0_wp,0.0_wp); self%dFa = (0.0_wp,0.0_wp); self%dVa = (0.0_wp,0.0_wp)
       self%dUn_re = 0.0_wp; self%dUn_im = 0.0_wp
       self%dVn_re = 0.0_wp; self%dVn_im = 0.0_wp
       self%mnorm = 0.0_wp                       ! zero memory ⇒ all slots skipped initially
@@ -391,6 +434,7 @@ contains
          do k = self%kbeg(l), self%kbeg(l+1) - 1
             if (self%mnorm(k) <= thr) then       ! negligible memory ⇒ negligible drift
                self%dUa(k) = (0.0_wp,0.0_wp);  self%dFa(k) = (0.0_wp,0.0_wp)
+               self%dVa(k) = (0.0_wp,0.0_wp)
                self%dUn_re(:,k) = 0.0_wp;  self%dUn_im(:,k) = 0.0_wp
                self%dVn_re(:,k) = 0.0_wp;  self%dVn_im(:,k) = 0.0_wp
                cycle
@@ -406,6 +450,7 @@ contains
             call self%ops(l)%solve_vec(fim, xim)
             self%dUa(k) = cmplx(xre(idx_u(self%nr)), xim(idx_u(self%nr)), wp)
             self%dFa(k) = cmplx(xre(idx_f(self%nr)), xim(idx_f(self%nr)), wp)
+            self%dVa(k) = cmplx(xre(idx_v(self%nr)), xim(idx_v(self%nr)), wp)
             if (l == 1) self%dFa(k) = (0.0_wp, 0.0_wp)   ! N₁≡0 (CM frame; see init)
             do node = 1, self%nr
                self%dUn_re(node,k) = xre(idx_u(node))
@@ -443,6 +488,24 @@ contains
          n_lm(lm) = self%gn(l)*sigma_lm(lm) - self%dFa(k)/self%g
       end do
    end subroutine ve_response_apply
+
+   subroutine ve_response_horizontal(self, sht, sigma_lm, v_lm)
+      !! Spheroidal V at the frozen time: v_lm = gv(l)·σ + drift_V. Uses the same
+      !! frozen drift (dVa) as the last begin_step, so calling it after a converged
+      !! step gives the horizontal consistent with apply()'s u/N. Degree 1 left as
+      !! solved (CE-like gauge, like u — not the geoid CM frame).
+      class(ve_response), intent(inout) :: self
+      type(sht_grid),     intent(in)    :: sht
+      complex(wp),        intent(in)    :: sigma_lm(:)
+      complex(wp),        intent(out)   :: v_lm(:)
+      integer :: k, l, lm
+      v_lm = (0.0_wp,0.0_wp)               ! degree 0 has no horizontal (gv(0)=0)
+      do k = 1, self%nk
+         l  = self%kdeg(k)
+         lm = self%k2lm(k)
+         v_lm(lm) = self%gv(l)*sigma_lm(lm) + self%dVa(k)
+      end do
+   end subroutine ve_response_horizontal
 
    subroutine ve_response_commit(self, sht, sigma_lm)
       !! Advance the memory with the converged load: total nodal strain =
@@ -498,6 +561,7 @@ contains
       if (allocated(self%sc))     deallocate(self%sc)
       if (allocated(self%gu))     deallocate(self%gu)
       if (allocated(self%gn))     deallocate(self%gn)
+      if (allocated(self%gv))     deallocate(self%gv)
       if (allocated(self%xUn))    deallocate(self%xUn)
       if (allocated(self%xVn))    deallocate(self%xVn)
       if (allocated(self%Are))    deallocate(self%Are)
@@ -508,6 +572,7 @@ contains
       if (allocated(self%Cim))    deallocate(self%Cim)
       if (allocated(self%dUa))    deallocate(self%dUa)
       if (allocated(self%dFa))    deallocate(self%dFa)
+      if (allocated(self%dVa))    deallocate(self%dVa)
       if (allocated(self%dUn_re)) deallocate(self%dUn_re)
       if (allocated(self%dUn_im)) deallocate(self%dUn_im)
       if (allocated(self%dVn_re)) deallocate(self%dVn_re)
