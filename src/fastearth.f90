@@ -12,6 +12,8 @@ module fastearth
    use fe_sle,             only: sle_solver
    use fe_rotation,        only: rotation_state
    use fe_coupling,        only: solid_earth
+   use fe_io,              only: fe_restart_write, fe_restart_read, fe_write_step, &
+                                 fe_io_set_table
    implicit none
    public
 

@@ -16,6 +16,7 @@ obj_fastearth = \
 	$(objdir)/fe_sle.o \
 	$(objdir)/fe_rotation.o \
 	$(objdir)/fe_coupling.o \
+	$(objdir)/fe_io.o \
 	$(objdir)/fastearth.o
 
 # --- Inter-module dependencies (so `make -j` stays correct) ------------------
@@ -34,10 +35,14 @@ $(objdir)/fe_gravity.o:          $(objdir)/fe_earth_structure.o
 $(objdir)/fe_sle.o:              $(objdir)/fe_sht.o $(objdir)/fe_constants.o \
                                  $(objdir)/fe_response.o
 $(objdir)/fe_rotation.o:         $(objdir)/fe_sht.o $(objdir)/fe_constants.o
-$(objdir)/fe_coupling.o:         $(objdir)/fe_viscoelastic.o $(objdir)/fe_gravity.o \
-                                 $(objdir)/fe_sle.o $(objdir)/fe_rotation.o
+$(objdir)/fe_coupling.o:         $(objdir)/fe_response.o $(objdir)/fe_sle.o \
+                                 $(objdir)/fe_rotation.o $(objdir)/fe_earth_structure.o \
+                                 $(objdir)/fe_sht.o
+$(objdir)/fe_io.o:               $(objdir)/fe_coupling.o $(objdir)/fe_response.o \
+                                 $(objdir)/fe_viscoelastic.o $(objdir)/fe_sht.o \
+                                 $(objdir)/fe_constants.o
 # The umbrella module re-exports every component, so it compiles last.
-$(objdir)/fastearth.o:           $(objdir)/fe_coupling.o
+$(objdir)/fastearth.o:           $(objdir)/fe_coupling.o $(objdir)/fe_io.o
 
 # --- Pattern rule ------------------------------------------------------------
 $(objdir)/%.o: $(srcdir)/%.f90 | $(objdir)
@@ -102,6 +107,11 @@ test_sle: fastearth-static | $(bindir)
 		-o $(bindir)/test_sle.x $(objdir)/libfastearth.a $(LFLAGS)
 	@echo "    $(bindir)/test_sle.x is ready."
 
+test_flotation: fastearth-static | $(bindir)
+	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(testdir)/test_flotation.f90 \
+		-o $(bindir)/test_flotation.x $(objdir)/libfastearth.a $(LFLAGS)
+	@echo "    $(bindir)/test_flotation.x is ready."
+
 test_ve_response: fastearth-static | $(bindir)
 	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(testdir)/test_ve_response.f90 \
 		-o $(bindir)/test_ve_response.x $(objdir)/libfastearth.a $(LFLAGS)
@@ -117,7 +127,17 @@ test_benchmark_love: fastearth-static | $(bindir)
 		-o $(bindir)/test_benchmark_love.x $(objdir)/libfastearth.a $(LFLAGS)
 	@echo "    $(bindir)/test_benchmark_love.x is ready."
 
-TESTS = test_sht test_earth test_mesh test_integrals test_assembly test_love test_relax test_response test_sle test_ve_response test_sle_ve test_benchmark_love
+test_coupling: fastearth-static | $(bindir)
+	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(testdir)/test_coupling.f90 \
+		-o $(bindir)/test_coupling.x $(objdir)/libfastearth.a $(LFLAGS)
+	@echo "    $(bindir)/test_coupling.x is ready."
+
+test_restart: fastearth-static | $(bindir)
+	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(testdir)/test_restart.f90 \
+		-o $(bindir)/test_restart.x $(objdir)/libfastearth.a $(LFLAGS)
+	@echo "    $(bindir)/test_restart.x is ready."
+
+TESTS = test_sht test_earth test_mesh test_integrals test_assembly test_love test_relax test_response test_sle test_flotation test_ve_response test_sle_ve test_benchmark_love test_coupling test_restart
 
 check: $(TESTS)
 	@echo ""
