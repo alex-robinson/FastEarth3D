@@ -1,27 +1,41 @@
 program test_benchmark_sle
-   !! Rung-4 validation against the Martinec et al. (2018) SLE benchmark, the full
+   !! Rung-4 validation against the Martinec et al. (2018) SLE benchmark: the full
    !! migrating-coastline sea-level equation with basin topography and a time-
-   !! evolving off-pole ice cap. This is the standalone (not `make check`) SLE
-   !! benchmark; case A (pure loading, no SLE) lives in test_benchmark_martinec.
+   !! evolving off-pole ice cap. Standalone (NOT `make check`); case A (pure
+   !! loading, no SLE) lives in test_benchmark_martinec.
    !!
-   !! CASE E2 (this test) = giapy L3 + T2 + B3 (data/benchmarks/sle_martinec2018/,
-   !! see data/benchmarks/PROVENANCE.md and giapy tests/sle_test.py):
-   !!   * ICE  (L3): spherical cap, centre (colat 25 deg, lon 75 deg), final
-   !!     h0 = 500 m, final angular radius alpha = 10 deg, sqrt cap profile.
-   !!   * TOPO (B3): exponential basin B = 3800 - 6000 exp(-d^2/2 sigma^2),
-   !!     centre (colat 35 deg, lon 25 deg), sigma = 26 deg.
-   !!   * TIME (T2): linear growth of (alpha,h) from 0 to full over t = 15->5 kyr
-   !!     (500 steps), then held 5->0 kyr (250 steps); dt = 20 yr, 750 steps total.
-   !!   * lmax = 128 (giapy ntrunc=128), SLE inner iterations = 20 (giapy eliter).
+   !! Usage:  test_benchmark_sle.x [CASE]      CASE in {C2, D3, E2, F1}; default E2.
    !!
-   !! SCALARS ONLY (this pass): we validate the four scalar reference columns
-   !!   col2 vertical displacement u, col5 = -N*g (geoid), col6 sea-surface = N+esl,
-   !!   col7 SLE = relative sea level rsl = N - u + esl.
-   !! The horizontal columns col3/col4 (th/ph displacement) need the spheroidal V
-   !! field, which ve_response does not yet output -- deferred to a later pass.
+   !! Configs from Martinec-2018 Table 4 (doc/refs/Martinec2018.pdf). The SBK data
+   !! file letter = paper case letter + 1: SBK C2 = paper B, D3 = C, E2 = D, F1 = E
+   !! (verified: cap from the fig10 uplift peak; basin from the fig12 bump; ocean
+   !! mode from the far-field esl -- a migrating coastline drains a fixed-ocean case
+   !! ~2x too far). Building blocks: a sqrt spherical cap (centre colat25/lon75,
+   !! alpha=10deg) of height L1=1500 m or L2=500 m; a circular exponential basin
+   !! B = bmax - b0 exp(-psi^2/2 sigma^2) (sigma=26deg): B1 (760/1200, colat100/
+   !! lon320, shallow, far from ice) or B2 (3800/6000, colat35/lon25, 2200 m deep,
+   !! near ice). Time: T0 = Heaviside (full ice held tf=10 kyr, 500 steps); T1 =
+   !! linear growth over 10 kyr (500 steps) then held 5 kyr (250 steps), dt=20 yr.
+   !! Ocean geometry: SLE1 = fixed (O held at the initial coastline; sle%fixed_ocean
+   !! = .true.); SLE2 = time-varying (migrating coastline). lmax=128 (ntrunc=128).
    !!
-   !! Profiles (figs 10-13): along circles of constant lon (col1=colat) or
-   !! constant lat (col1=180+lon); coordinates sampled with fe_sht%eval_point.
+   !!   CASE  paper  cap     basin       time  ocean        profiles fig10/11/12/13
+   !!   C2    B      L1 1500 B1 shallow  T0    SLE1 fixed    lon75, c25, lon-40, c100
+   !!   D3    C      L2 500  B2 deep     T1    SLE1 fixed    lon75, c25, lon25 , c35
+   !!   E2    D      L2 500  B2 deep     T1    SLE2 migrate  lon75, c25, lon25 , c35
+   !!   F1    E      L2 500  B2 deep*    T1    SLE2 migrate  lon75, c25, lon25 , c35
+   !!
+   !! F1 paleotopo spinup (paper E, basin B2*): B2 is the PRESENT-DAY sea-surface
+   !! topography. The reference topo0 (held over each run) is iterated by a Heun-
+   !! style fixed point so the deformed present-day surface topo0 - rsl_final lands
+   !! on B2:  topo0 <- topo0 - 0.5*(topo0 - rsl_final - B2), until mean|.| < 1 m
+   !! (giapy: topo -= 0.5*(sstopo[-1] - B2); sstopo = bedrock vs sea surface).
+   !!
+   !! Columns validated (all four cases): col2 vertical displacement u; col3/col4
+   !! th/ph horizontal displacement (spheroidal V via resp%horizontal + the SHTns
+   !! gradient eval); col5 = -N*g (geoid); col6 sea-surface = N+esl; col7 SLE =
+   !! rsl = N - u + esl. Profiles (figs 10-13): circles of constant lon (col1=colat)
+   !! or constant lat (col1=180+lon), sampled with fe_sht%eval_point[_horiz].
    use fe_precision,       only: wp
    use fe_constants,       only: pi, kyr, rho_ice, rho_water
    use fe_earth_structure, only: earth_model, build_M3L70V01
@@ -37,104 +51,200 @@ program test_benchmark_sle
    integer,  parameter :: NGROW = 500, NHOLD = 250, NSTEP = NGROW + NHOLD
    real(wp), parameter :: DEG = pi/180.0_wp
    real(wp), parameter :: G_GIAPY = 9.815_wp           ! giapy reference gravity
-   character(*), parameter :: CASE = 'E2_'
-   ! E2 = L3 cap (500 m) + B3 deep basin (colat35,lon25); T2; profiles lon25/lat35
    real(wp), parameter :: ICE_COLAT = 25.0_wp*DEG, ICE_LON = 75.0_wp*DEG
-   real(wp), parameter :: H0 = 500.0_wp, ALPHA_MAX = 10.0_wp*DEG
-   real(wp), parameter :: BAS_COLAT = 35.0_wp*DEG, BAS_LON = 25.0_wp*DEG
-   real(wp), parameter :: BMAX = 3800.0_wp, B0 = 6000.0_wp, SIGB = 26.0_wp*DEG
+   real(wp), parameter :: ALPHA_MAX = 10.0_wp*DEG, SIGB = 26.0_wp*DEG
+   integer,  parameter :: NFIG = 4
+   integer,  parameter :: MAXSPIN = 12                  ! F1 paleotopo iterations
+   real(wp), parameter :: SPIN_TOL = 1.0_wp             ! F1: mean|present - B2| [m]
+
    ! Peak-normalized max-error tolerances. The Martinec-2018 SLE benchmark is a
    ! numerical INTER-CODE comparison (no analytical solution), so giapy is one
    ! implementation and meter-level / few-% scatter is expected -- largest in the
-   ! coastline/flotation-coupled fields. These bounds guard against gross
-   ! regression, not exact agreement. Achieved on E2 (lmax128): uplift/geoid ~5-6%
-   ! in well-behaved regions, sea-surface ~14% (a ~4 m uniform eustatic offset),
-   ! with the worst local errors (fig11 ~35-44%) confined to the cap-edge-over-
-   ! basin GROUNDING LINE -- the most implementation-dependent zone.
+   ! coastline/flotation-coupled fields and at the cap-edge-over-basin grounding
+   ! line. These bounds guard against gross regression, not exact agreement.
    real(wp), parameter :: TOL_U = 4.0e-1_wp, TOL_N = 5.0e-1_wp, &
-                          TOL_SS = 2.0e-1_wp, TOL_SLE = 5.0e-1_wp
+                          TOL_SS = 2.0e-1_wp, TOL_SLE = 5.0e-1_wp, TOL_H = 5.0e-1_wp
+
+   ! --- per-case configuration (set by set_case) -------------------------------
+   character(2) :: casename
+   character(3) :: caseprefix                            ! e.g. 'E2_' for file names
+   real(wp) :: H0, BAS_COLAT, BAS_LON, BMAX, B0
+   real(wp) :: pfix(NFIG)                                ! fixed lon (Z) or colat (Y) [rad]
+   logical  :: spinup                                    ! F1 paleotopo iteration
+   logical  :: fixed_ocean_case                          ! SLE1 fixed ocean (C2/D3)
+   logical  :: heaviside_case                            ! T0 Heaviside loading (C2)
+   integer  :: nsteps                                    ! steps in the time history
+   character(8) :: fig(NFIG) = ['fig10', 'fig11', 'fig12', 'fig13']
+   character(1) :: ptype(NFIG) = ['Z', 'Y', 'Z', 'Y']   ! Z: col1=colat, Y: col1=180+lon
 
    type(sht_grid)     :: sht
    type(earth_model)  :: em
    type(ve_response)  :: resp
    type(sle_solver)   :: sle
    type(sle_result)   :: res
-   real(wp), allocatable :: topo0(:,:), ice_now(:,:)
-   real(wp), allocatable :: rsl(:,:), C(:,:), tmp(:,:)
-   complex(wp), allocatable :: u_lm(:), N_lm(:), rsl_lm(:)
-   real(wp) :: dt, frac, alpha, h, esl, bary, shift, rho_ratio
-   integer  :: istep
+   real(wp), allocatable :: topo0(:,:), basin(:,:), ice_now(:,:)
+   real(wp), allocatable :: rsl(:,:), C(:,:), tmp(:,:), dtopo(:,:)
+   complex(wp), allocatable :: u_lm(:), N_lm(:), rsl_lm(:), v_lm(:)
+   real(wp) :: dt, esl, bary, shift, rho_ratio, spinerr
+   integer  :: spin
    logical  :: ok
 
-   integer,  parameter :: NFIG = 4
-   character(8) :: fig(NFIG) = ['fig10', 'fig11', 'fig12', 'fig13']
-   character(1) :: ptype(NFIG) = ['Z', 'Y', 'Z', 'Y']   ! Z: col1=colat, Y: col1=180+lon
-   real(wp) :: pfix(NFIG)                                 ! fixed lon (Z) or colat (Y) [rad]
-
    ok = .true.
-   ! Z-profiles: pfix = fixed longitude; Y-profiles: pfix = fixed colatitude.
-   ! giapy lat-profiles pass latev=90-lat to a latitude evaluator, so the sample
-   ! COLATITUDE = lat (the label), not 90-lat: fig11 lat25->colat25, fig13->colat35.
-   pfix = [ICE_LON, 25.0_wp*DEG, 25.0_wp*DEG, 35.0_wp*DEG]   ! fig11 colat25, fig12 lon25, fig13 colat35
+   call set_case()
 
    dt = 0.02_wp*kyr
    call sht%init(LMAX, nlat=2*LMAX, nphi=4*LMAX)
    em = build_M3L70V01()
    call resp%init(em, sht, dt)
    sle%n_inner = 20     ! n_outer left at default 3 (converged: 3 == 12 on E2)
+   sle%fixed_ocean = fixed_ocean_case   ! SLE1 (C2/D3) vs SLE2 migrating (E2/F1)
 
-   allocate(topo0(sht%nphi,sht%nlat), ice_now(sht%nphi,sht%nlat), &
-            rsl(sht%nphi,sht%nlat), C(sht%nphi,sht%nlat), tmp(sht%nphi,sht%nlat))
-   allocate(u_lm(sht%nlm), N_lm(sht%nlm), rsl_lm(sht%nlm))
+   allocate(topo0(sht%nphi,sht%nlat), basin(sht%nphi,sht%nlat), &
+            ice_now(sht%nphi,sht%nlat), rsl(sht%nphi,sht%nlat), &
+            C(sht%nphi,sht%nlat), tmp(sht%nphi,sht%nlat), dtopo(sht%nphi,sht%nlat))
+   allocate(u_lm(sht%nlm), N_lm(sht%nlm), rsl_lm(sht%nlm), v_lm(sht%nlm))
 
-   call exp_basin(sht, BAS_COLAT, BAS_LON, BMAX, B0, SIGB, topo0)
+   ! present-day basin topography; topo0 is the reference held over the run (= the
+   ! basin for C2/D3/E2; iterated for F1 so the present-day surface lands on it).
+   call exp_basin(sht, BAS_COLAT, BAS_LON, BMAX, B0, SIGB, basin)
+   topo0 = basin
 
-   write(*,'(a,i0,a,i0,a)') ' E2 (L3+T2+B3): lmax=', LMAX, ', ', NSTEP, ' steps @ dt=20 yr'
-   do istep = 1, NSTEP
-      frac = min(1.0_wp, real(istep,wp)/real(NGROW,wp))   ! T2 ramp 0->1 over 10 kyr, then held
-      alpha = frac*ALPHA_MAX;  h = frac*H0
-      call spherical_cap(sht, ICE_COLAT, ICE_LON, alpha, h, ice_now)
-      ! d_ice = TOTAL ice change from the ice-free reference (not a per-step
-      ! increment); ice = absolute ice (same here, ref is ice-free).
-      call sle%solve(sht, resp, ice_now, ice_now, topo0, rsl, C, res)
-      if (mod(istep,100) == 0 .or. istep == NSTEP) &
-         write(*,'(a,i4,a,f7.4,a,es10.2,a,f9.4,a,i3,a,es9.2)') '   step ', istep, '  frac=', frac, &
-            '  mass_resid=', res%mass_resid, '  esl=', res%esl, &
-            '  n_outer=', res%n_outer_done, '  resid=', res%resid
-   end do
+   write(*,'(3a,i0,a,i0,a)') ' ', casename, ' SLE benchmark: lmax=', LMAX, ', ', nsteps, ' steps @ dt=20 yr'
+
+   if (spinup) then
+      do spin = 1, MAXSPIN
+         call run_history()                              ! fills rsl, C, ice_now, res
+         dtopo = (topo0 - rsl) - basin                   ! present-day surface - B2
+         spinerr = sht%surface_integral(abs(dtopo))/(16.0_wp*atan(1.0_wp))
+         write(*,'(a,i2,a,f10.4,a)') '   spinup ', spin, ': mean|present - B2| = ', spinerr, ' m'
+         if (spinerr < SPIN_TOL) exit
+         topo0 = topo0 - 0.5_wp*dtopo                     ! Heun-style paleotopo update
+      end do
+   else
+      call run_history()
+   end if
    esl = res%esl
 
-   ! eustatic decomposition at the final state (ice_now, C are the last-step values)
+   ! converged horizontal: rebuild the converged surface load exactly as fe_sle's
+   ! commit_step does (grounded ice + ocean water) and read the spheroidal V field.
+   ! resp%horizontal reuses the last begin_step's frozen drift, so v_lm is
+   ! consistent with res%u/res%N.
+   tmp = rho_ice*ice_now*(1.0_wp - C) + rho_water*(C*rsl)
+   call sht%analysis(tmp, u_lm)                           ! u_lm reused as load_lm
+   call resp%horizontal(sht, u_lm, v_lm)
+
+   ! eustatic decomposition at the final state
    rho_ratio = rho_ice/rho_water
-   bary  = -rho_ratio*sht%surface_integral(ice_now)/sht%surface_integral(C)  ! barystatic
-   shift = sht%surface_integral(C*(res%N - res%u))/sht%surface_integral(C)    ! ocean-mean(N-u)
+   bary  = -rho_ratio*sht%surface_integral(ice_now)/sht%surface_integral(C)
+   shift = sht%surface_integral(C*(res%N - res%u))/sht%surface_integral(C)
    write(*,'(a)') ''
    write(*,'(a,f10.4,a,f10.4,a,f10.4)') ' eustatic: dphi(esl)=', esl, '  barystatic=', bary, &
                                         '  ocean-mean(N-u)=', shift
-   write(*,'(a,f8.4,a,f8.4,a,f10.2)') ' ocean frac: migrated(C)=', res%ocean_frac, &
-        '  bare basin(topo0<0)=', sht%surface_integral(merge(1.0_wp,0.0_wp,topo0<0.0_wp))/(16.0_wp*atan(1.0_wp)), &
+   write(*,'(a,f8.4,a,f10.2)') ' ocean frac: migrated(C)=', res%ocean_frac, &
         '  C_int[sr]=', sht%surface_integral(C)
 
-   ! spectral coefficients of the final converged fields (analysis overwrites input)
+   ! spectral coefficients of the final converged scalar fields
    tmp = res%u;  call sht%analysis(tmp, u_lm)
    tmp = res%N;  call sht%analysis(tmp, N_lm)
    tmp = rsl;    call sht%analysis(tmp, rsl_lm)
 
    write(*,'(a)') ''
-   write(*,'(a)') ' Peak-normalized max error vs Martinec-2018 E2 (scalars):'
-   write(*,'(a)') '   fig     rows    u[%]    N[%]   ss[%]  sle[%]   peaks u/N/ss/sle [m]'
+   write(*,'(3a)') ' Peak-normalized max error vs Martinec-2018 ', casename, ':'
+   write(*,'(a)') '   fig     rows    u[%]  vth[%]  vph[%]    N[%]   ss[%]  sle[%]'
    call compare_all()
 
    write(*,'(a)') ''
    if (ok) then
-      write(*,'(a)') ' PASS: Martinec-2018 case E2 (SLE scalars) matches the benchmark'
+      write(*,'(3a)') ' PASS: Martinec-2018 case ', casename, ' (SLE u + horizontal + geoid + SLE) matches'
    else
-      write(*,'(a)') ' FAIL: Martinec-2018 case E2 SLE validation did not all pass'
+      write(*,'(3a)') ' FAIL: Martinec-2018 case ', casename, ' SLE validation did not all pass'
       call resp%destroy();  call sht%destroy();  call radial_fe_finalize();  error stop 1
    end if
    call resp%destroy();  call sht%destroy();  call radial_fe_finalize()
 
 contains
+
+   subroutine set_case()
+      !! Parse the case argument and set the per-case configuration.
+      integer :: nargs
+      character(16) :: arg
+      nargs = command_argument_count()
+      if (nargs >= 1) then
+         call get_command_argument(1, arg);  casename = trim(adjustl(arg))
+      else
+         casename = 'E2'
+      end if
+      ! Configurations from Martinec-2018 Table 4 (the SBK file letter = paper
+      ! letter + 1): SBK C2 = paper B, D3 = C, E2 = D, F1 = E. Paper ice models:
+      ! L1 (1500 m) / L2 (500 m), both at colat25/lon75; basins B1 (760/1200,
+      ! colat100/lon320, shallow, far from ice) / B2 (3800/6000, colat35/lon25,
+      ! deep, near ice). Time: T0 = Heaviside (full ice held 10 kyr); T1 = linear
+      ! growth over 10 kyr then held 5 kyr. Ocean: SLE1 = fixed geometry, SLE2 =
+      ! time-varying (migrating coastline).
+      ! defaults common to D3/E2/F1 (E-series profiles); overridden per case
+      pfix = [ICE_LON, 25.0_wp*DEG, 25.0_wp*DEG, 35.0_wp*DEG]
+      spinup = .false.;  fixed_ocean_case = .false.;  heaviside_case = .false.
+      nsteps = NSTEP                                       ! T1: 750 steps (grow+hold)
+      select case (casename)
+      case ('C2')                                ! paper B: L1 1500 m + B1 + T0 + SLE1 fixed
+         H0 = 1500.0_wp
+         BAS_COLAT = 100.0_wp*DEG;  BAS_LON = 320.0_wp*DEG
+         BMAX = 760.0_wp;  B0 = 1200.0_wp
+         pfix = [ICE_LON, 25.0_wp*DEG, -40.0_wp*DEG, 100.0_wp*DEG]   ! B1 profiles
+         fixed_ocean_case = .true.;  heaviside_case = .true.
+         nsteps = NGROW                                    ! T0: 500 steps (10 kyr), full ice
+      case ('D3')                                ! paper C: L2 500 m + B2 deep + T1 + SLE1 fixed
+         H0 = 500.0_wp
+         BAS_COLAT = 35.0_wp*DEG;  BAS_LON = 25.0_wp*DEG
+         BMAX = 3800.0_wp;  B0 = 6000.0_wp
+         fixed_ocean_case = .true.
+      case ('E2')                                ! paper D: L2 500 m + B2 deep + T1 + SLE2 migrating
+         H0 = 500.0_wp
+         BAS_COLAT = 35.0_wp*DEG;  BAS_LON = 25.0_wp*DEG
+         BMAX = 3800.0_wp;  B0 = 6000.0_wp
+      case ('F1')                                ! paper E: as E2 + paleotopo (B2*) spinup
+         H0 = 500.0_wp
+         BAS_COLAT = 35.0_wp*DEG;  BAS_LON = 25.0_wp*DEG
+         BMAX = 3800.0_wp;  B0 = 6000.0_wp
+         spinup = .true.
+      case default
+         write(*,'(3a)') ' FAIL: unknown case "', trim(casename), '" (expected C2/D3/E2/F1)'
+         error stop 1
+      end select
+      caseprefix = casename//'_'
+   end subroutine set_case
+
+   subroutine run_history()
+      !! Run the time history on the current topo0 from a relaxed, ice-free
+      !! reference (zero Maxwell memory). T1: linear growth 0->full over NGROW
+      !! steps (10 kyr), then held NHOLD steps (5 kyr). T0 (heaviside): full ice
+      !! from the first step, held nsteps (= NGROW = 10 kyr). Leaves the converged
+      !! final-step fields in rsl, C, ice_now and the diagnostics in res.
+      integer :: istep
+      real(wp) :: frac, alpha, h
+      call reset_memory()
+      do istep = 1, nsteps
+         if (heaviside_case) then
+            frac = 1.0_wp                                   ! T0: full ice every step
+         else
+            frac = min(1.0_wp, real(istep,wp)/real(NGROW,wp))  ! T1 ramp 0->1, then held
+         end if
+         alpha = frac*ALPHA_MAX;  h = frac*H0
+         call spherical_cap(sht, ICE_COLAT, ICE_LON, alpha, h, ice_now)
+         ! ice-free reference: d_ice (load) = ice (flotation) = current absolute cap
+         call sle%solve(sht, resp, ice_now, ice_now, topo0, rsl, C, res)
+         if (mod(istep,250) == 0 .or. istep == nsteps) &
+            write(*,'(a,i4,a,f7.4,a,es10.2,a,f9.4,a,i3)') '   step ', istep, '  frac=', frac, &
+               '  mass_resid=', res%mass_resid, '  esl=', res%esl, '  n_outer=', res%n_outer_done
+      end do
+   end subroutine run_history
+
+   subroutine reset_memory()
+      !! Return the response to the relaxed, ice-free reference (zero memory, t=0)
+      !! so each history (and each F1 spinup pass) starts from the same state.
+      call resp%destroy()
+      call resp%init(em, sht, dt)
+   end subroutine reset_memory
 
    subroutine compare_all()
       integer :: k
@@ -146,15 +256,23 @@ contains
    subroutine compare_fig(k)
       integer, intent(in) :: k
       integer,  parameter :: MAXR = 800
-      real(wp) :: c1(MAXR), uref(MAXR), nref(MAXR), ssref(MAXR), sleref(MAXR)
-      real(wp) :: colat, lon, um, nm, ssm, slem
-      real(wp) :: eu, en, ess, esle, pu, pn, pss, psle
+      real(wp) :: c1(MAXR), uref(MAXR), vthref(MAXR), vphref(MAXR)
+      real(wp) :: nref(MAXR), ssref(MAXR), sleref(MAXR)
+      real(wp) :: colat, lon, um, nm, ssm, slem, vthm, vphm
+      real(wp) :: eu, evth, evph, en, ess, esle
+      real(wp) :: pu, pvth, pvph, pn, pss, psle
       integer  :: nrow, i
 
-      call read_fig(trim(fig(k)), c1, uref, nref, ssref, sleref, nrow)
-      eu = 0; en = 0; ess = 0; esle = 0
-      pu = maxval(abs(uref(1:nrow)));  pn = maxval(abs(nref(1:nrow)))
-      pss = maxval(abs(ssref(1:nrow)));  psle = maxval(abs(sleref(1:nrow)))
+      call read_fig(trim(fig(k)), c1, uref, vthref, vphref, nref, ssref, sleref, nrow)
+      eu = 0; evth = 0; evph = 0; en = 0; ess = 0; esle = 0
+      pu   = maxval(abs(uref(1:nrow)));    pn   = maxval(abs(nref(1:nrow)))
+      pss  = maxval(abs(ssref(1:nrow)));   psle = maxval(abs(sleref(1:nrow)))
+      ! Horizontal is a VECTOR: normalize both components by the peak horizontal
+      ! vector magnitude |(vth,vph)|, not each by its own peak. A profile through a
+      ! symmetry axis nearly nulls one component, and per-component normalization
+      ! would otherwise blow up a few-cm error on that tiny component.
+      pvth = maxval(sqrt(vthref(1:nrow)**2 + vphref(1:nrow)**2))
+      pvph = pvth
       do i = 1, nrow
          if (ptype(k) == 'Z') then        ! col1 = colatitude, fixed longitude
             colat = c1(i)*DEG;  lon = pfix(k)
@@ -164,33 +282,44 @@ contains
          call sht%eval_point(u_lm,   colat, lon, um)
          call sht%eval_point(N_lm,   colat, lon, nm)
          call sht%eval_point(rsl_lm, colat, lon, slem)
+         call sht%eval_point_horiz(v_lm, colat, lon, vthm, vphm)
          ssm = nm + esl
-         eu   = max(eu,   abs(um  - uref(i)))
-         en   = max(en,   abs(nm  - nref(i)))
-         ess  = max(ess,  abs(ssm - ssref(i)))
+         eu   = max(eu,   abs(um   - uref(i)))
+         evth = max(evth, abs(vthm - vthref(i)))
+         evph = max(evph, abs(vphm - vphref(i)))
+         en   = max(en,   abs(nm   - nref(i)))
+         ess  = max(ess,  abs(ssm  - ssref(i)))
          esle = max(esle, abs(slem - sleref(i)))
       end do
-      eu = eu/pu;  en = en/pn;  ess = ess/pss;  esle = esle/psle
-      write(*,'(3x,a,i7,4f8.2,3x,4f8.2)') fig(k), nrow, 100*eu, 100*en, 100*ess, 100*esle, &
-                                          pu, pn, pss, psle
+      eu = eu/pu;  evth = evth/pvth;  evph = evph/pvph
+      en = en/pn;  ess = ess/pss;  esle = esle/psle
+      write(*,'(3x,a,i7,6f8.2)') fig(k), nrow, 100*eu, 100*evth, 100*evph, &
+                                 100*en, 100*ess, 100*esle
       if (eu   > TOL_U)   ok = .false.
+      if (evth > TOL_H)   ok = .false.
+      if (evph > TOL_H)   ok = .false.
       if (en   > TOL_N)   ok = .false.
       if (ess  > TOL_SS)  ok = .false.
       if (esle > TOL_SLE) ok = .false.
    end subroutine compare_fig
 
-   subroutine read_fig(name, c1, uref, nref, ssref, sleref, nrow)
-      !! Read a 7-column *_SBK.dat profile: col1, col2=u, (col3,col4 skipped),
-      !! col5=-N*g, col6=sea-surface, col7=SLE. Reference geoid N = -col5/g_giapy.
+   subroutine read_fig(name, c1, uref, vthref, vphref, nref, ssref, sleref, nrow)
+      !! Read a 7-column *_SBK.dat profile: col1; col2=u; col3=th-, col4=ph-
+      !! horizontal displacement; col5=-N*g; col6=sea-surface; col7=SLE. Reference
+      !! geoid N = -col5/g_giapy.
       character(*), intent(in)  :: name
-      real(wp),     intent(out) :: c1(:), uref(:), nref(:), ssref(:), sleref(:)
+      real(wp),     intent(out) :: c1(:), uref(:), vthref(:), vphref(:)
+      real(wp),     intent(out) :: nref(:), ssref(:), sleref(:)
       integer,      intent(out) :: nrow
       character(256) :: line
-      character(*), parameter :: f = DIR//CASE
       real(wp) :: v(7)
       integer  :: u, ios
-      open(newunit=u, file=f//name//'_SBK.dat', status='old', action='read', iostat=ios)
-      if (ios /= 0) then;  write(*,'(4a)') ' FAIL: cannot read ', f, name, '_SBK.dat'; error stop 1;  end if
+      open(newunit=u, file=DIR//caseprefix//name//'_SBK.dat', status='old', &
+           action='read', iostat=ios)
+      if (ios /= 0) then
+         write(*,'(5a)') ' FAIL: cannot read ', DIR, caseprefix, name, '_SBK.dat'
+         error stop 1
+      end if
       nrow = 0
       do
          read(u,'(a)',iostat=ios) line
@@ -202,6 +331,8 @@ contains
          nrow = nrow + 1
          c1(nrow)     = v(1)
          uref(nrow)   = v(2)
+         vthref(nrow) = v(3)
+         vphref(nrow) = v(4)
          nref(nrow)   = -v(5)/G_GIAPY
          ssref(nrow)  = v(6)
          sleref(nrow) = v(7)

@@ -84,9 +84,31 @@ cases A, C2, D3, E2, F1 (figs 10–13), at truncation j256.
     potential increment [SI, = −geoid·9.815]; `col6` sea-surface variation w.r.t.
     h_UF [m]; `col7` sea-level-equation result [m]. Profiles are along circles of
     constant lon or lat (figs 10–13 use lon=75, lat=25, lon=±/25, lat=35/100).
-- **Benchmark spec** (from giapy `tests/sle_test.py`): ice cases L1/L2/L3
-  (spherical caps h(δ)=h0·√[(cosδ−cosα)/(1−cosα)], α=10°, at given centre),
-  topographies B0–B3 (B = bmax − b0·exp(−δ²/2σ²) exponential basins, σ=26°),
-  time histories T1 (Heaviside at 10 kyr) / T2 (10-kyr linear growth) / T3
-  (linear decay). giapy ice/water/sea densities 931/1000/1000 kg m⁻³, g=9.815.
-  Case A = L1+T1+B0; the SLE cases combine L2/L3 + T2 + B1/B2/B3.
+- **Benchmark spec** — the authority is **Martinec et al. (2018) Table 4**
+  (`doc/refs/Martinec2018.pdf`), NOT giapy's `tests/sle_test.py` (whose working
+  case labels D1/D2/E1 and basin numbering differ from the paper). The paper
+  defines 5 cases (A–E), 3 ice models, 3 basins:
+  - **Ice** (sqrt cap h(ψ)=h0·√[(cosψ−cosα)/(1−cosα)], α=10°): **L0** pole,1500 m;
+    **L1** colat25/lon75, 1500 m; **L2** colat25/lon75, 500 m.
+  - **Basin** (ζ⁽⁰⁾ = bmax − b0·exp(−ψ²/2σ²), σ=26°): **B0** none; **B1**
+    colat100/lon320, 760/1200 (shallow, far from ice); **B2** colat35/lon25,
+    3800/6000 (2200 m deep at centre, near ice).
+  - **Time**: **T0** Heaviside (full load held, terminal time tf = t1 = 10 kyr);
+    **T1** linear growth over 10 kyr then held to t2 = 15 kyr.
+  - **Ocean**: **SLE0** none (case A); **SLE1** fixed ocean geometry O⁽⁰⁾ (held);
+    **SLE2** time-varying (migrating coastline).
+  - Densities ρ_ice/ρ_w = 931/1000 kg m⁻³, g₀ = 9.815 m s⁻².
+- **SBK file ↔ paper case** (the SBK letter = paper letter + 1; verified against
+  the data — cap from the fig10 uplift peak, basin from the fig12 bump, ocean mode
+  from the far-field esl, since a migrating coastline drains a fixed-ocean case ~2×
+  too far):
+  | SBK | paper | SLE | ice | time | basin |
+  |-----|-------|-----|-----|------|-------|
+  | A   | A | SLE0 | L0 | T0 | B0 (none) |
+  | C2  | B | SLE1 fixed | L1 (1500 m) | T0 Heaviside | B1 (760/1200, shallow) |
+  | D3  | C | SLE1 fixed | L2 (500 m) | T1 | B2 (3800/6000, deep) |
+  | E2  | D | SLE2 migrate | L2 (500 m) | T1 | B2 (3800/6000, deep) |
+  | F1  | E | SLE2 migrate | L2 (500 m) | T1 | B2* (paleo-SET prescribed at tf) |
+
+  Validated by `tests/test_benchmark_sle.f90` (standalone): all four reproduce the
+  SBK curves to within the inter-code scatter (esl matches to ≲5 m; D3 to ~0.2 m).
