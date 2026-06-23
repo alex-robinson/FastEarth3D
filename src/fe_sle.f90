@@ -56,6 +56,16 @@ module fe_sle
       !! O⁽⁰⁾ = (topo0 < 0) throughout (§2.1, eq 1, the SLE1 suite) — no coastline
       !! migration, so a single outer pass converges the inner water load.
       logical  :: fixed_ocean = .false.
+      !! Sloping-coast ("subgrid") ocean water load. .false. (default) loads the
+      !! ocean with ρ_w·C·rsl — the full sea-level change wherever C = 1, a sharp
+      !! coastline. .true. uses the actual water column change (Martinec 2018 §2.2,
+      !! eqs 15-19): s = C·rsl − ζ⁽⁰⁾·(C − C⁽⁰⁾), which equals rsl over permanent
+      !! ocean but rsl − ζ⁽⁰⁾ over newly-flooded cells, tapering to zero at the
+      !! coast where the bed meets the sea surface. This is the mass-correct load on
+      !! a migrating, sloping coastline (matters when the coastline moves over
+      !! shallow bathymetry; a no-op when it does not, so binary and subgrid agree
+      !! on deep basins). No effect with fixed_ocean (C ≡ C⁽⁰⁾ ⇒ the term vanishes).
+      logical  :: subgrid = .false.
    contains
       procedure :: solve => sle_solve
    end type sle_solver
@@ -93,17 +103,24 @@ contains
       type(sle_result),         intent(out)   :: res
 
       real(wp), allocatable :: load(:,:), u(:,:), N(:,:), Sraw(:,:), rsl_new(:,:)
+      real(wp), allocatable :: C0(:,:), wcorr(:,:)
       complex(wp), allocatable :: load_lm(:), u_lm(:), N_lm(:)
-      real(wp) :: rho_ratio, ice_int, dphi, C_int, Cs_int, smax, dmax
+      real(wp) :: rho_ratio, ice_int, dphi, C_int, Cs_int, zeta_int, smax, dmax
       integer  :: io, ii, np, nl
 
       np = sht%nphi;  nl = sht%nlat
       allocate(load(np,nl), u(np,nl), N(np,nl), Sraw(np,nl), rsl_new(np,nl))
+      allocate(C0(np,nl), wcorr(np,nl))
       allocate(load_lm(sht%nlm), u_lm(sht%nlm), N_lm(sht%nlm))
 
       rho_ratio = rho_ice/rho_water
       rsl = 0.0_wp;  u = 0.0_wp;  N = 0.0_wp;  dphi = 0.0_wp;  ice_int = 0.0_wp
+      zeta_int = 0.0_wp;  wcorr = 0.0_wp
       res%n_inner_last = 0;  res%resid = 0.0_wp;  res%n_outer_done = 0
+
+      ! Initial ocean function O⁽⁰⁾ = (ζ⁽⁰⁾ < 0), the reference coastline against
+      ! which the subgrid sloping-coast term measures newly flooded / emerged cells.
+      where (topo0 < 0.0_wp);  C0 = 1.0_wp;  elsewhere;  C0 = 0.0_wp;  end where
 
       ! Freeze the response's relaxation drift for this time step; for elastic /
       ! null responses this is a no-op.
@@ -132,13 +149,28 @@ contains
          ! ocean-water budget. Recomputed per coastline pass (grounded set shifts).
          ice_int = -rho_ratio * sht%surface_integral(d_ice*(1.0_wp - C))
 
+         ! Subgrid sloping-coast correction (Martinec 2018 eq 17): the ocean water
+         ! column change is C·rsl − ζ⁽⁰⁾·(C − C⁽⁰⁾), not C·rsl. The −ζ⁽⁰⁾(C−C⁽⁰⁾)
+         ! piece accounts for the bed elevation of cells that crossed the coastline
+         ! since t0 (a newly flooded cell fills from its bed, ζ⁽⁰⁾, not from the
+         ! reference sea surface), so the load tapers to zero at the moving coast.
+         ! Constant over the inner loop (depends only on the coastline C, C⁽⁰⁾). It
+         ! also enters the mass balance via ζ̄⁽⁰⁾ = ∫ζ⁽⁰⁾(C−C⁽⁰⁾) (eqs 19-20).
+         if (self%subgrid) then
+            wcorr    = -rho_water * topo0 * (C - C0)
+            zeta_int = sht%surface_integral(topo0*(C - C0))
+         else
+            wcorr = 0.0_wp;  zeta_int = 0.0_wp
+         end if
+
          do ii = 1, self%n_inner
             ! total surface mass load = GROUNDED ice + ocean water. Ice over ocean
             ! cells (C=1: open ocean or floating ice) does not press its full weight
             ! on the bed -- it is borne by buoyancy and carried by the ocean term
             ! ρ_w·C·rsl. The (1−C) mask keeps the ice load only where it grounds
             ! (C=0). Without it, ice overhanging a deep basin over-loads the bed.
-            load = rho_ice*d_ice*(1.0_wp - C) + rho_water*(C*rsl)
+            ! wcorr is the subgrid sloping-coast term (zero unless self%subgrid).
+            load = rho_ice*d_ice*(1.0_wp - C) + rho_water*(C*rsl) + wcorr
             call sht%analysis(load, load_lm)            ! analysis overwrites load
             call resp%apply(sht, load_lm, u_lm, N_lm)
             call sht%synthesis(u_lm, u)
@@ -146,7 +178,7 @@ contains
 
             Sraw = N - u
             Cs_int = sht%surface_integral(C*Sraw)
-            dphi   = (ice_int - Cs_int)/C_int           ! mass-conservation offset
+            dphi   = (ice_int - Cs_int + zeta_int)/C_int ! mass-conservation offset
             rsl_new = Sraw + dphi                        ! full field, everywhere
 
             dmax = maxval(abs(C*(rsl_new - rsl)))        ! converge on the ocean part
@@ -162,13 +194,15 @@ contains
 
       ! Commit the relaxation memory using the converged total load (no-op for
       ! elastic / null), advancing the response by one time step. Same grounded-
-      ! ice masking as the inner load (floating ice does not bear on the bed).
-      load = rho_ice*d_ice*(1.0_wp - C) + rho_water*(C*rsl)
+      ! ice masking + subgrid sloping-coast term (wcorr) as the inner load.
+      load = rho_ice*d_ice*(1.0_wp - C) + rho_water*(C*rsl) + wcorr
       call sht%analysis(load, load_lm)
       call resp%commit_step(sht, load_lm)
 
-      ! diagnostics
-      Cs_int = sht%surface_integral(C*rsl)
+      ! diagnostics. The conserved ocean-water volume is ∫s dΩ = ∫C·rsl − ζ̄⁽⁰⁾
+      ! (the subgrid sloping-coast term; ζ̄⁽⁰⁾ = 0 in the binary case), which must
+      ! balance the melt source ice_int.
+      Cs_int = sht%surface_integral(C*rsl) - zeta_int
       res%ocean_frac = C_int/(16.0_wp*atan(1.0_wp))      ! ∫C dΩ / 4π
       if (abs(ice_int) > 0.0_wp) then
          res%mass_resid = abs(Cs_int - ice_int)/abs(ice_int)

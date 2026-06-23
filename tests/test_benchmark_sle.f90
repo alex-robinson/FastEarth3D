@@ -73,6 +73,7 @@ program test_benchmark_sle
    logical  :: spinup                                    ! F1 paleotopo iteration
    logical  :: fixed_ocean_case                          ! SLE1 fixed ocean (C2/D3)
    logical  :: heaviside_case                            ! T0 Heaviside loading (C2)
+   logical  :: subgrid_run                               ! 2nd arg "subgrid": force migrating+subgrid
    integer  :: nsteps                                    ! steps in the time history
    character(8) :: fig(NFIG) = ['fig10', 'fig11', 'fig12', 'fig13']
    character(1) :: ptype(NFIG) = ['Z', 'Y', 'Z', 'Y']   ! Z: col1=colat, Y: col1=180+lon
@@ -98,6 +99,7 @@ program test_benchmark_sle
    call resp%init(em, sht, dt)
    sle%n_inner = 20     ! n_outer left at default 3 (converged: 3 == 12 on E2)
    sle%fixed_ocean = fixed_ocean_case   ! SLE1 (C2/D3) vs SLE2 migrating (E2/F1)
+   sle%subgrid     = subgrid_run        ! 2nd arg "subgrid": sloping-coast water load
 
    allocate(topo0(sht%nphi,sht%nlat), basin(sht%nphi,sht%nlat), &
             ice_now(sht%nphi,sht%nlat), rsl(sht%nphi,sht%nlat), &
@@ -167,12 +169,22 @@ contains
    subroutine set_case()
       !! Parse the case argument and set the per-case configuration.
       integer :: nargs
-      character(16) :: arg
+      character(16) :: arg, arg2
       nargs = command_argument_count()
       if (nargs >= 1) then
          call get_command_argument(1, arg);  casename = trim(adjustl(arg))
       else
          casename = 'E2'
+      end if
+      ! Optional 2nd arg "subgrid": run this case with the migrating coastline AND
+      ! the subgrid sloping-coast water load (overriding a case's fixed-ocean
+      ! default). Used to check that subgrid-migrating reproduces the SBK data on
+      ! the shallow-basin cases -- giapy itself always migrates with subgrid, so its
+      ! reference IS a subgrid-migrating solution.
+      subgrid_run = .false.
+      if (nargs >= 2) then
+         call get_command_argument(2, arg2)
+         if (trim(adjustl(arg2)) == 'subgrid') subgrid_run = .true.
       end if
       ! Configurations from Martinec-2018 Table 4 (the SBK file letter = paper
       ! letter + 1): SBK C2 = paper B, D3 = C, E2 = D, F1 = E. Paper ice models:
@@ -211,6 +223,7 @@ contains
          write(*,'(3a)') ' FAIL: unknown case "', trim(casename), '" (expected C2/D3/E2/F1)'
          error stop 1
       end select
+      if (subgrid_run) fixed_ocean_case = .false.   ! subgrid implies a migrating coast
       caseprefix = casename//'_'
    end subroutine set_case
 

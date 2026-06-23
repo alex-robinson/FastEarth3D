@@ -177,7 +177,12 @@ test_sle_eustatic: fastearth-static | $(bindir)
 		-o $(bindir)/test_sle_eustatic.x $(objdir)/libfastearth.a $(LFLAGS)
 	@echo "    $(bindir)/test_sle_eustatic.x is ready."
 
-TESTS = test_band test_sht test_earth test_mesh test_integrals test_assembly test_love test_relax test_response test_sle test_flotation test_flotation_load test_ve_response test_sle_ve test_benchmark_love test_coupling test_restart test_benchmark_disc test_benchmark_martinec test_field
+test_sle_subgrid: fastearth-static | $(bindir)
+	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(testdir)/test_sle_subgrid.f90 \
+		-o $(bindir)/test_sle_subgrid.x $(objdir)/libfastearth.a $(LFLAGS)
+	@echo "    $(bindir)/test_sle_subgrid.x is ready."
+
+TESTS = test_band test_sht test_earth test_mesh test_integrals test_assembly test_love test_relax test_response test_sle test_flotation test_flotation_load test_ve_response test_sle_ve test_benchmark_love test_coupling test_restart test_benchmark_disc test_benchmark_martinec test_field test_sle_subgrid
 
 check: $(TESTS)
 	@echo ""
