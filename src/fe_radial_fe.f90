@@ -27,6 +27,7 @@ module fe_radial_fe
                                   elem_i5, elem_i6, elem_i7, &
                                   elem_k1, elem_k2, elem_k3
    use fe_lis,              only: fe_lis_system, fe_lis_finalize
+   use fe_band,             only: band_lu
    implicit none
    private
 
@@ -70,7 +71,12 @@ module fe_radial_fe
       integer  :: ndof_solve = 0          !! solved dimension (ndof, or ndof+1 if bordered)
       real(wp) :: r_earth = 0.0_wp        !! surface radius a [m]
       real(wp) :: g_surf  = 0.0_wp        !! g₀(a) [m s⁻²]
-      type(fe_lis_system)   :: sys               !! built+factored LIS system (reused)
+      ! Solver for the equilibrated system. Degrees j>=2 are an unbordered band
+      ! system: a pivoted banded LU (fe_band) — direct, cache-light, and re-entrant
+      ! (so many degrees can be solved concurrently). Degree j=1 is bordered (the
+      ! dense KKT row/col), which is not banded, so it keeps the LIS solver.
+      type(band_lu)         :: band              !! j>=2: factored banded LU
+      type(fe_lis_system)   :: sys               !! j=1 only: built+factored LIS system
       real(wp), allocatable :: dr(:), dc(:)      !! row / column equilibration
       ! Degree-1 only: the E_uniq penalty (4π/3) w wᵀ is densifying AND, because w
       ! carries K³~∫ψr², ~1e16× the band — i.e. a de-facto hard constraint wᵀd=0
@@ -469,7 +475,15 @@ contains
             end do
             ! corner is 0 (KKT) — no entry.
          end if
-         call self%sys%build(ns, rows, cols, vals, LIS_OPTS_DEFAULT)
+         if (self%bordered) then
+            call self%sys%build(ns, rows, cols, vals, LIS_OPTS_DEFAULT)   ! j=1
+         else
+            block
+               logical :: okband
+               call self%band%build(nd, p, rows, cols, vals, okband)      ! j>=2
+               if (.not. okband) error stop 'radial_operator_assemble: band LU failed'
+            end block
+         end if
       end block
       self%ready = .true.
    end subroutine radial_operator_assemble
@@ -512,7 +526,14 @@ contains
       end if
       bs(1:ns) = 0.0_wp                          ! border RHS (j=1 multiplier) is 0
       bs(1:nd) = self%dr * b                     ! equilibrate physical rows: b̂ = Dr b
-      call self%sys%solve(bs(1:ns), y(1:ns), iters, resid, info)   ! reuse matrix + ILU
+      if (self%bordered) then
+         call self%sys%solve(bs(1:ns), y(1:ns), iters, resid, info)   ! j=1: LIS
+      else
+         call self%band%solve(bs(1:nd), y(1:nd))                      ! j>=2: banded LU (direct)
+         if (present(iters)) iters = 1
+         if (present(resid)) resid = 0.0_wp
+         if (present(info))  info  = 0
+      end if
       x = self%dc * y(1:nd)                      ! recover physical solution (drop μ)
    end subroutine radial_operator_solve_vec
 
@@ -536,6 +557,7 @@ contains
    subroutine radial_operator_destroy(self)
       class(radial_operator), intent(inout) :: self
       call self%sys%destroy()
+      call self%band%destroy()
       if (allocated(self%dr))   deallocate(self%dr)
       if (allocated(self%dc))   deallocate(self%dc)
       if (allocated(self%w))    deallocate(self%w)

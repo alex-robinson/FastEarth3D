@@ -10,6 +10,7 @@ obj_fastearth = \
 	$(objdir)/fe_earth_structure.o \
 	$(objdir)/fe_radial_integrals.o \
 	$(objdir)/fe_lis.o \
+	$(objdir)/fe_band.o \
 	$(objdir)/fe_radial_fe.o \
 	$(objdir)/fe_viscoelastic.o \
 	$(objdir)/fe_response.o \
@@ -27,8 +28,10 @@ $(objdir)/fe_field.o:            $(objdir)/fe_precision.o $(objdir)/fe_sht.o
 $(objdir)/fe_earth_structure.o:  $(objdir)/fe_precision.o $(objdir)/fe_constants.o
 $(objdir)/fe_radial_integrals.o: $(objdir)/fe_precision.o
 $(objdir)/fe_lis.o:              $(objdir)/fe_precision.o
+$(objdir)/fe_band.o:             $(objdir)/fe_precision.o
 $(objdir)/fe_radial_fe.o:        $(objdir)/fe_constants.o $(objdir)/fe_earth_structure.o \
-                                 $(objdir)/fe_radial_integrals.o $(objdir)/fe_lis.o
+                                 $(objdir)/fe_radial_integrals.o $(objdir)/fe_lis.o \
+                                 $(objdir)/fe_band.o
 $(objdir)/fe_viscoelastic.o:     $(objdir)/fe_radial_fe.o $(objdir)/fe_earth_structure.o
 $(objdir)/fe_response.o:         $(objdir)/fe_radial_fe.o $(objdir)/fe_earth_structure.o \
                                  $(objdir)/fe_sht.o $(objdir)/fe_constants.o \
@@ -64,6 +67,11 @@ fastearth-static: $(obj_fastearth)
 	@echo ""
 
 # --- Tests -------------------------------------------------------------------
+test_band: fastearth-static | $(bindir)
+	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(testdir)/test_band.f90 \
+		-o $(bindir)/test_band.x $(objdir)/libfastearth.a $(LFLAGS)
+	@echo "    $(bindir)/test_band.x is ready."
+
 test_sht: fastearth-static | $(bindir)
 	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(testdir)/test_sht.f90 \
 		-o $(bindir)/test_sht.x $(objdir)/libfastearth.a $(LFLAGS)
@@ -154,7 +162,7 @@ test_field: fastearth-static | $(bindir)
 		-o $(bindir)/test_field.x $(objdir)/libfastearth.a $(LFLAGS)
 	@echo "    $(bindir)/test_field.x is ready."
 
-TESTS = test_sht test_earth test_mesh test_integrals test_assembly test_love test_relax test_response test_sle test_flotation test_ve_response test_sle_ve test_benchmark_love test_coupling test_restart test_benchmark_disc test_benchmark_martinec test_field
+TESTS = test_band test_sht test_earth test_mesh test_integrals test_assembly test_love test_relax test_response test_sle test_flotation test_ve_response test_sle_ve test_benchmark_love test_coupling test_restart test_benchmark_disc test_benchmark_martinec test_field
 
 check: $(TESTS)
 	@echo ""
