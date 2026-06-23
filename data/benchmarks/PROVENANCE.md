@@ -38,6 +38,31 @@ lithosphere, three mantle layers, inviscid core), degrees 1–256.
   - one line `... h_f l_f k_f` — the **fluid** (t→∞) Love numbers.
   - (column order in the elastic/fluid lines is k, h, l after the leading index.)
 
+## `disc_spada2011/{u,n,dudt}_disc.txt`
+
+Spatial response of the **disc load** test of the Spada et al. (2011) benchmark:
+vertical displacement `u`, geoid `n`, and uplift rate `dudt`, for the
+**M3-L70-V01** earth model. Load: a 10°-radius disc of 1000 m ice
+(ρ_ice = 931 kg m⁻³) on elevated bedrock (no ocean load).
+
+- **Source:** the `isostasy_data` repository (J. Jereczek),
+  `model_outputs/Spada-2011/`. https://github.com/JanJereczek/isostasy_data
+- **Underlying benchmark:** Spada et al. (2011), *A benchmark study for glacial
+  isostatic adjustment codes*, Geophys. J. Int. 185, 106–132 (the Charles
+  University GIA Benchmark). Same earth model as the Love table above.
+- **Grid:** 201 rows, colatitude θ = 0:0.1:20°; 6 columns, times
+  t = [0, 1, 2, 5, 10, 100] kyr. **Column 1 (t=0) is the elastic response.**
+- **GOTCHA — the `n_*` (geoid) files are stored in REVERSED θ order.** The
+  upstream loader (`isostasy_data`/FastIsostasy.jl `dataloaders.jl`) applies
+  `reverse!(X, dims=1)` to the `n_` cases only; `u_*` and `dudt_*` are NOT
+  reversed. So `n_disc.txt` row 1 is θ=20° and row 201 is θ=0°; reverse the rows
+  before pairing with the θ grid. (See `test_benchmark_disc`, which reverses `n`.)
+- **Degree-1 / geoid frame:** the displacement is in the CE-like gauge (h₁≈0,
+  geocenter), the geoid in the CM frame (N₁=0). FastEarth3D reproduces both: u to
+  ~1% near-field, n to ~1% once the degree-1 geoid is referenced to CM (N₁=0; see
+  fe_response). The far-field (θ≳12°) forebulge in `u` is small-amplitude and
+  shows larger relative differences (low-degree-truncation sensitive).
+
 ## `sle_martinec2018/*_SBK.dat`
 
 Reference spatial response curves for the sea-level-equation benchmark,
