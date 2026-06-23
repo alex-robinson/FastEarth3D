@@ -1,5 +1,5 @@
 program test_love
-   !! Rung-2 validation: solve the per-degree saddle-point system with LIS and
+   !! Rung-2 validation: solve the per-degree saddle-point system (banded LU) and
    !! check the surface loading Love numbers. Two analytic limits of a
    !! homogeneous incompressible self-gravitating sphere pin the solver with no
    !! external benchmark table:
@@ -40,7 +40,7 @@ program test_love
          write(*,'(a)') '      FAIL: k off the fluid limit (-1)'; ok = .false.
       end if
       if (rsd > 1.0e-8_wp) then
-         write(*,'(a)') '      FAIL: LIS did not converge'; ok = .false.
+         write(*,'(a)') '      FAIL: solver did not converge'; ok = .false.
       end if
    end do
 
@@ -70,7 +70,7 @@ program test_love
 
    write(*,'(a)') ''
    if (ok) then
-      write(*,'(a)') ' PASS: LIS saddle-point solve reproduces the analytic'
+      write(*,'(a)') ' PASS: banded-LU saddle-point solve reproduces the analytic'
       write(*,'(a)') '       fluid and rigid Love-number limits'
    else
       write(*,'(a)') ' FAIL: Love-number validation did not all pass'

@@ -28,23 +28,21 @@ SHTNSROOT = fesm-utils/shtns-serial
 INC_SHTNS = -I$(SHTNSROOT)/include
 LIB_SHTNS = -L$(SHTNSROOT)/lib -lshtns
 
-# --- LIS (Library of Iterative Solvers; provides lisf.h + liblis.a) ----------
-# Backs the per-degree banded saddle-point solve in fe_radial_fe. The Fortran
-# interface is the preprocessor header lisf.h (needs -cpp, set as CPPFLAGS_PP);
-# INC_LIS is what lets `#include "lisf.h"` resolve. Real-scalar build.
-LISROOT = fesm-utils/lis-serial
-INC_LIS = -I$(LISROOT)/include
-LIB_LIS = -L$(LISROOT)/lib -llis
+# --- (LIS removed) -----------------------------------------------------------
+# The per-degree solve is now a dependency-free pivoted banded LU (fe_band); LIS
+# is no longer linked. Keeping INC_LIS / LIB_LIS empty so the flag lists below
+# (and any external references) stay valid.
+INC_LIS =
+LIB_LIS =
 
 # --- OpenMP ------------------------------------------------------------------
 # `make openmp=1` adds -fopenmp (via config/Makefile, appended to FFLAGS) to thread
 # the per-degree loop in fe_response (begin_step / commit_step). The dependency
 # libraries deliberately stay SERIAL: we thread over independent per-degree systems
-# ourselves, each solved by the re-entrant banded LU (fe_band); LIS is used only for
-# the single j=1 system (run by one thread) and SHTns/FFTW are called outside the
-# parallel regions. The omp library variants are intentionally NOT linked — lis-omp
-# would nest threads inside our parallel loop, and concurrent LIS solves are not
-# re-entrant anyway (which is why j>=2 moved to the banded LU in the first place).
+# ourselves, each solved by the re-entrant banded LU (fe_band); SHTns/FFTW are
+# called only outside the parallel regions. There is no LIS to reconcile — the
+# iterative solver was removed in favour of the direct banded LU, which is also why
+# this build no longer depends on a serial-vs-OpenMP LIS variant at all.
 
 # --- Final flag sets ---------------------------------------------------------
 # MODFLAGS (-I/-J objdir) and FFLAGS_BASE come from the compiler fragment.
@@ -54,5 +52,4 @@ FFLAGS_FE   = $(FFLAGS_BASE) $(MODFLAGS) $(INC_NC) $(INC_FESMUTILS) $(INC_FFTW) 
 
 # Static archives resolve left-to-right, so a library must precede the libraries
 # it depends on: SHTns before FFTW (SHTns calls FFTW), fesm-utils before netCDF.
-# LIS is self-contained (only needs libm, already pulled in by FFTW/system).
 LFLAGS_FE   = $(LIB_FESMUTILS) $(LIB_SHTNS) $(LIB_FFTW) $(LIB_LIS) $(LIB_NC) $(LFLAGS_EXTRA)

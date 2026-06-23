@@ -9,7 +9,6 @@ obj_fastearth = \
 	$(objdir)/fe_field.o \
 	$(objdir)/fe_earth_structure.o \
 	$(objdir)/fe_radial_integrals.o \
-	$(objdir)/fe_lis.o \
 	$(objdir)/fe_band.o \
 	$(objdir)/fe_radial_fe.o \
 	$(objdir)/fe_viscoelastic.o \
@@ -27,11 +26,9 @@ $(objdir)/fe_sht.o:              $(objdir)/fe_precision.o
 $(objdir)/fe_field.o:            $(objdir)/fe_precision.o $(objdir)/fe_sht.o
 $(objdir)/fe_earth_structure.o:  $(objdir)/fe_precision.o $(objdir)/fe_constants.o
 $(objdir)/fe_radial_integrals.o: $(objdir)/fe_precision.o
-$(objdir)/fe_lis.o:              $(objdir)/fe_precision.o
 $(objdir)/fe_band.o:             $(objdir)/fe_precision.o
 $(objdir)/fe_radial_fe.o:        $(objdir)/fe_constants.o $(objdir)/fe_earth_structure.o \
-                                 $(objdir)/fe_radial_integrals.o $(objdir)/fe_lis.o \
-                                 $(objdir)/fe_band.o
+                                 $(objdir)/fe_radial_integrals.o $(objdir)/fe_band.o
 $(objdir)/fe_viscoelastic.o:     $(objdir)/fe_radial_fe.o $(objdir)/fe_earth_structure.o
 $(objdir)/fe_response.o:         $(objdir)/fe_radial_fe.o $(objdir)/fe_earth_structure.o \
                                  $(objdir)/fe_sht.o $(objdir)/fe_constants.o \

@@ -51,8 +51,8 @@ rewrite.
 | `fe_sht` | SHTns wrapper — the transform kernel | done + tested |
 | `fe_earth_structure` | radial layers + optional 3D viscosity field | types |
 | `fe_radial_integrals` | Appendix C P1/P0 element integrals | done + tested |
-| `fe_lis` | LIS wrapper (build-once, reuse matrix + ILU) | done |
-| `fe_radial_fe` | per-degree saddle-point operator + LIS solve | done + tested |
+| `fe_band` | pivoted banded LU (dependency-free, re-entrant) | done + tested |
+| `fe_radial_fe` | per-degree saddle-point operator + banded-LU solve | done + tested |
 | `fe_viscoelastic` | Maxwell memory-stress explicit time stepping (1-D) + shared kernel | done + tested |
 | `fe_response` | surface-load → (uplift, geoid) operator: elastic + viscoelastic field driver | done + tested |
 | `fe_gravity` | self-gravitation / Poisson coupling | stub |
@@ -165,7 +165,7 @@ operator as the dissipative RHS forcing `−∫τ^V:δε dV` (radial Gauss-2 + t
 spectral double-dot over the four spheroidal tensor components, eqs 94/110).
 Elastic layers (η→∞) freeze, fluid layers (μ=0) carry no memory. Stability
 `Δt ≲ 2η_min/μ` ⇒ viscosity floor; VEGA Δt = 20 yr. The fixed operator is built
-and ILU-factored once (`fe_lis_system`) and reused every step (~70 µs/solve).
+and LU-factored once (`fe_band`, banded) and reused every step (~20 µs/solve).
 Validated (`test_relax`): held load relaxes elastic→fluid, `t_relax ∝ η`.
 
 **Love numbers (rung 2) — DONE.** `h_n = g₀ U(a)/φ^L`, `l_n = g₀ V(a)/φ^L`,
@@ -261,14 +261,15 @@ displacement `u`.
 4. **Performance — DONE.** `begin_step` does 2 real solves per (l,m) per step
    (~O(nlm) solves), the cost driver at VILMA resolution. Four changes, all exact
    (results unchanged) except the threshold-controlled skip:
-   - **Banded LU** (`fe_band`) replaces GMRES+ILU on the per-degree solve for j≥2.
-     The operator is banded (half-bandwidth ~6) and the equilibrated system is
-     effectively direct (1 GMRES iter), so a pivoted band LU — factor once at
-     assemble, band solve per RHS — is far faster (~20 µs vs ~700 µs/solve) and
-     cache-light (no ILU fill to evict). Pivoting is required (zero pressure
-     (Π,Π) block). j=1 (dense KKT border) keeps LIS. Dependency-free, **re-entrant**.
-   - **GMRES restart 60→8** + reusable solve workspace (for the j=1 LIS path and
-     general robustness).
+   - **Banded LU** (`fe_band`) replaces the iterative solver (LIS GMRES+ILU) on the
+     per-degree solve, and **LIS is removed entirely**. The operator is banded
+     (half-bandwidth ~6) and the equilibrated system is effectively direct (1 GMRES
+     iter), so a pivoted band LU — factor once at assemble, band solve per RHS — is
+     far faster (~20 µs vs ~700 µs/solve) and cache-light (no ILU fill to evict).
+     Pivoting is required (zero pressure (Π,Π) block). j=1 carries the dense KKT
+     border (rigid-mode removal), so that one degree has ~full bandwidth and factors
+     as a dense LU — still `fe_band`, just wide. Dependency-free, **re-entrant** (so
+     no serial-vs-OpenMP LIS variant to reconcile when linked into a larger host).
    - **Degree-grouped storage** of the per-(l,m) Maxwell memory/drift (slot `k`,
      `lm↔k` map) so the loop is contiguous and per-degree.
    - **Skip-negligible**: coefficients whose memory is < `skip_tol`×max are not

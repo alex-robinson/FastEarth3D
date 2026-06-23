@@ -91,13 +91,17 @@ asserts `‖A−Aᵀ‖/‖A‖ = 0`.) Implemented in `fe_radial_fe%build_dense_
 transcribed term-by-term from the PDF and verified against the table and analytic
 limits below.
 
-**Solve (no LAPACK): LIS** (`fe_lis`). The physical entries span ~20 orders of
-magnitude (`μr²/h` vs the pressure couplings vs `1/4πG`), so the operator is
-geometric-mean **row/column equilibrated** before the solve; restarted GMRES with
-an ILU(1) preconditioner then converges effectively as a direct solve (1 GMRES
-iteration, residual ~1e-13) on this band-diagonal system. The matrix is
-**degree-dependent only through J**; assemble + equilibrate once per j, reuse for
-all orders m / loads / time steps (precon-reuse optimisation still TODO).
+**Solve: dependency-free pivoted banded LU** (`fe_band`). The physical entries span
+~20 orders of magnitude (`μr²/h` vs the pressure couplings vs `1/4πG`), so the
+operator is geometric-mean **row/column equilibrated** first. It is band-diagonal
+(half-bandwidth ~6, node-interleaved P1/P0) and indefinite (zero pressure block),
+so a **partial-pivoting band LU** factors it directly — factor once per j at
+assemble, solve per RHS (~20 µs). The matrix is **degree-dependent only through J**;
+assemble + factor once per j, reuse for all orders m / loads / time steps. The LU
+is re-entrant (no global state), so the per-degree loop parallelizes with OpenMP.
+(Earlier this used LIS GMRES+ILU; LIS was removed — it added a serial-vs-OpenMP
+link dependency and concurrent solves were not re-entrant.) Degree 1 carries the
+dense KKT border (rigid-mode removal) so it factors as a dense LU via the same code.
 
 ### Boundary / regularity conditions
 - **Centre r=0:** **no explicit BC** — Martinec meshes through the centre and the
@@ -115,8 +119,8 @@ Explicit ω=1 Maxwell scheme (eqs 23-25): the total stress splits into the
 instantaneous elastic stress (the SAME operator above) plus a memory stress
 `τ^{V,i} = (1−M)τ^{V,i-1} − 2μ M ε^i`, `M = μΔt/η` (eq 17). The memory enters the
 RHS as the dissipative forcing `−∫ τ^{V,i}:δε dV` (eq 35); the LHS never changes,
-so it is assembled, equilibrated and ILU-factored **once** (`fe_lis_system`) and
-reused every step.
+so it is assembled, equilibrated and LU-factored **once** (`fe_band`) and reused
+every step.
 
 1-D (radially symmetric η): the memory stress evolves directly on the tensor-SH
 coefficients (§9, eq 107) — no spatial grid. Per element it is stored as `A,B,C`
