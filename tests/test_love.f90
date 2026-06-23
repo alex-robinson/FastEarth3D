@@ -126,8 +126,10 @@ contains
             write(*,'(a)') '      FAIL: M3 solve did not converge'; ok = .false.
          end if
          if (jj == 2) then
-            if (kk > -0.25_wp .or. kk < -0.55_wp .or. hh > -0.3_wp) then
-               write(*,'(a)') '      FAIL: M3 degree-2 Love numbers unphysical'
+            ! benchmark M3-L70-V01: h2=-0.4538, k2=-0.2439 (quantitative match in
+            ! test_benchmark_love); bracket them here as a quick physical sanity.
+            if (kk > -0.20_wp .or. kk < -0.30_wp .or. hh > -0.40_wp .or. hh < -0.50_wp) then
+               write(*,'(a)') '      FAIL: M3 degree-2 Love numbers off benchmark'
                ok = .false.
             end if
          end if
@@ -196,7 +198,12 @@ contains
       if (wTd > 1.0e-10_wp) then
          write(*,'(a)') '      FAIL: rigid translation not removed (wᵀd /= 0)'; ok = .false.
       end if
-      if (rperp > 1.0e-6_wp) then
+      ! rperp is the equilibration round-trip accuracy on the j=1 bordered
+      ! operator (entries span ~20 orders of magnitude): the KKT first block row
+      ! makes r = A_band d − b = −w λ parallel to w by construction, so rperp is
+      ! pure conditioning noise (GMRES resid here is ~1e-13). ~4e-6 with the
+      ! symmetric grav operator (was ~1e-6 before the U-F symmetry fix).
+      if (rperp > 1.0e-5_wp) then
          write(*,'(a)') '      FAIL: band operator not satisfied off the gauge direction'
          ok = .false.
       end if

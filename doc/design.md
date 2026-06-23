@@ -232,6 +232,19 @@ and `ve_degree`), so the SLE's `N=−F/g` at degree 1 is self-consistent with th
 displacement `u`.
 
 **Open / next** (priority order for a fresh session):
+0. ~~Fix the elastic low-degree Love-number bug.~~ **DONE.** Benchmark data
+   in-repo (`data/benchmarks/love_M3-L70-V01/`; `test_benchmark_love`). Root cause:
+   a transposed index in the self-gravity potential-gradient force in
+   `build_dense_operator` (the U-F coupling used `I²_αβ` instead of `I²_βα`),
+   which broke the U↔F symmetry the energy functional requires. Found by
+   re-deriving the continuous gravity form (Martinec eq 65) term-by-term and
+   cross-checking the shear block against the `fe_viscoelastic` strain
+   representation (eqs 85–88). Fix: `i2(ia,ib) → i2(ib,ia)`. Now elastic AND fluid
+   M3-L70-V01 Love numbers match the benchmark to ~0.1% at every degree; the
+   operator is exactly symmetric (`test_assembly`). Closes the disc offset (rungs
+   2/3) at the source — a direct disc re-run to confirm <1% is a quick follow-up.
+   (The earlier "lift the degree-1 skip in `ve_response`" item is now DONE on main
+   — the geocenter degree-1 response is carried in the field driver.)
 1. **`fe_coupling` wiring** — the CLIMBER-X contract (reference state: z_bed_eq +
    reference ice/topo; host-grid mapping). A deliberate interface decision; swap
    the `visco(:)` member for a `ve_response`, drive `sle%solve` per Δt across the
@@ -239,8 +252,12 @@ displacement `u`.
 2. **Grounded-ice flotation** in the ocean function (currently `topo < 0` only):
    a cell is ocean only where it is below sea level AND ice does not ground
    (`ρ_i I < −ρ_w·topo`).
-3. **Martinec et al. (2018) cases A–E** quantitative match — needs benchmark
-   input data (ice history + present topography), not yet in-repo.
+3. **Martinec et al. (2018) cases A–E** quantitative match — the REFERENCE
+   output curves are now in-repo (`data/benchmarks/sle_martinec2018/`, cases
+   A/C2/D3/E2/F1, figs 10–13: u, v_θ, v_φ, F, sea-surface, SLE). The load/topo
+   SPEC is analytic (giapy `tests/sle_test.py`: ice L1–L3 at (θ₀,φ₀,h₀), topo
+   B0–B3 exponential basins, time T1–T3) — build these inputs and compare. The
+   elastic bug (item 0) that fed the SLE response is now fixed, so this is unblocked.
 4. **Performance** — `begin_step` does 2 real solves per (l,m) per step
    (~O(nlm) solves), fine for moderate `lmax` but the cost driver at VILMA
    resolution (lmax 170); exploit small high-degree coefficients / parallelize.

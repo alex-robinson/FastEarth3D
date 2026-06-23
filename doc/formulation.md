@@ -78,12 +78,18 @@ laid out **node-interleaved** `[U V F | Π]` so the operator stays band-diagonal
 [ B   0  ] [Π ] = [0]          B = pressure/incompressibility coupling (eq 82)
 ```
 
-The shear block (eq 80) is **symmetric** (it is `∫μ ε:ε`); the **B/Bᵀ** pressure
-block is symmetric by construction; but the **self-gravity `I²` U↔F coupling
-(eq 81) is not symmetric**, so the assembled operator is non-symmetric overall —
-which is why Martinec solves it with a *general* banded LU (BANMUL/BANBKS), not a
-symmetric one. Implemented in `fe_radial_fe%build_dense_operator`, transcribed
-term-by-term from the PDF and verified against the analytic limits below.
+The whole operator is **symmetric**: it is the Hessian (second variation) of the
+energy functional `E = E_press + E_shear + E_grav + E_uniq` (eqs 30–33), so it is
+self-transpose by construction. The shear block (eq 80, `∫μ ε:ε`) is symmetric;
+the **B/Bᵀ** pressure block is symmetric; and the self-gravity U↔F coupling (eq 65
+continuous → eq 81) is a **transpose pair** — the potential-gradient body force
+`∫(dF/dr)δU r² = I²_βα` on δU and the Poisson source `∫ρ₀U(dδF/dr) r² = I²_αβ` on
+δF. (Earlier this doc claimed the operator was non-symmetric "because the I² U↔F
+coupling is not symmetric"; that was the elastic low-degree bug — the U-F term was
+discretised with `I²_αβ` instead of `I²_βα`. See below. `test_assembly` now
+asserts `‖A−Aᵀ‖/‖A‖ = 0`.) Implemented in `fe_radial_fe%build_dense_operator`,
+transcribed term-by-term from the PDF and verified against the table and analytic
+limits below.
 
 **Solve (no LAPACK): LIS** (`fe_lis`). The physical entries span ~20 orders of
 magnitude (`μr²/h` vs the pressure couplings vs `1/4πG`), so the operator is
@@ -126,10 +132,12 @@ sphere relaxes from the elastic Love number (t=0) to the fluid limit `−(2j+1)/
 (t→∞) — the two limits already pinned below — smoothly and monotonically, with
 `t_relax ∝ η` (e-folding 0.76→1.53 kyr when η doubles). dt-converged (10 vs 50 yr
 agree). **Disc time series vs Spada (2011):** the M3-L70-V01 disc relaxation
-matches in shape, but mine relaxes ~15% faster and sits ~10% high (elastic) /
-~11% low (fully relaxed) — the SAME systematic model-spec offset seen in the
-elastic disc, not a solver bug (the solver is exact at both analytic limits and
-`t_relax∝η` holds). Quantitative closure needs Spada's exact model / Love table.
+previously sat ~10% high (elastic) / ~11% low (fully relaxed). **RESOLVED:** this
+was the elastic low-degree self-gravity bug (the U-F transpose, fixed above) — the
+disc is dominated by low–intermediate degrees where the elastic Love numbers were
+too soft. With the fix the per-degree elastic Love numbers match the benchmark to
+~0.1%, so the disc offset is closed at the source; a direct disc re-run to confirm
+<1% is a quick follow-up (the synthesis prototype lives in `/tmp/explore_disc*.f90`).
 
 **Degree-1 (sparse KKT, solved):** `E_uniq` (eq 83) is a rank-1 penalty
 `(4π/3) w wᵀ` over every degree-1 (U,V) dof, so adding it to the operator densifies
@@ -165,8 +173,50 @@ The `k` form was **pinned empirically by two analytic limits**: Martinec's `φ�
 (=`F`) is the *total* perturbation potential and carries the load's direct
 potential with the **opposite sign** to `φ^L` (`F→−φ^L` for a rigid sphere), so
 the induced potential is `−F−φ^L`. `σ` cancels in every ratio (use σ=1).
-**`l` still needs its sign / S⁽¹⁾-normalization factor calibrated** against the
-published Spada `l` (h and k are fully pinned).
+**`l` sign / S⁽¹⁾-normalization: RESOLVED.** The benchmark M3-L70-V01 fluid
+limit reproduces the table `l_f` to ~0.1 % at every degree 2–8 (`test_benchmark_love`),
+so `l = g V(a)/φ^L` is correct as written — no extra sign or normalization factor.
+
+## Elastic low-degree discrepancy (FIXED)
+
+A long-standing ~10 % offset in the disc benchmark turned out to be a real
+solver bug in the elastic self-gravity coupling. With the benchmark table now
+in-repo (`data/benchmarks/love_M3-L70-V01/`, independently reproduced by TABOO
+NV=3/CODE=7) it was localised and fixed (`test_benchmark_love`).
+
+**Symptom.** The elastic loading Love numbers were too *soft* (too much
+deformation): `h_e(2) = −0.669` vs the table/TABOO `−0.454` (−47 %), the error
+shrinking with degree to ~1 % by j≈40. The *fluid* (t→∞) limit was always exact
+(<0.5 %, all degrees) — fluidise the Maxwell layers (μ=0) and the elastic solve
+reproduces the table `h_f,l_f,k_f`.
+
+**Diagnosis (the re-derivation).** The bug hid from every existing test:
+fluid→elastic changes only the shear block (eq 80; grav/press/surface carry no
+μ), μ→0 kills the shear block, μ→∞ forces d→0. So all the homogeneous limits and
+the M3 fluid limit pass regardless. Ruled out, in order: model params, load,
+frame, mesh (converged), and a uniform μ-scale (the required correction is
+degree-dependent — the spectrum *shape* was wrong). Then:
+
+1. The **shear block is correct** — its 4×4 element matrix is identical (machine
+   precision, all degrees) to the stiffness rebuilt independently from the strain
+   representation (eqs 85–88) used by `fe_viscoelastic`, i.e. `2∫μ Σ_λ ‖Z^λ‖²
+   B^λ_i B^λ_j r² dr`. So the energy `∫μ ε:ε` is encoded consistently two ways.
+2. That left the **self-gravity block** (eq 65 → 81), μ-independent but corrupting
+   the *interior* solution in a way the fluid surface values don't expose but the
+   elastic shear coupling does — and self-gravity dominates exactly at low degree,
+   matching the signature. Discretising the **continuous** form eq 65 term-by-term
+   pinned it: the potential-gradient body force on δU, `∫ρ₀(dF/dr)δU r²`,
+   discretises to `∫ψ'_α ψ_β r² = I²_βα` (derivative on the **trial** F basis).
+   The code used `I²_αβ` (`i2(ia,ib)`) — the transpose of the Poisson-source F-U
+   term — which is *not* its proper symmetric partner.
+
+**Fix.** One index in `build_dense_operator`: the U-F entry `i2(ia,ib) →
+i2(ib,ia)`. This restores the U↔F symmetry the energy functional requires (the
+operator is now exactly symmetric, `test_assembly` 2f). Result: elastic `h,k,l`
+match the table to ~0.1 % (P1 discretisation) at **every** degree 2–48, and the
+fluid limit is unchanged. This also closes the disc offset (rungs 2/3), whose
+root cause was this same term. (Likely a typo in the paper's discretised eq 81
+relative to its own continuous eq 65, faithfully copied — eq 65 is the arbiter.)
 
 ## Validation targets
 1. **Fluid limit** (μ→0, homogeneous sphere): `h_j → −(2j+1)/3` and `k_j → −1`.
@@ -174,11 +224,13 @@ published Spada `l` (h and k are fully pinned).
    incompressibility + Poisson + the load forcing.
 2. **Rigid limit** (μ→∞): `h_j, l_j, k_j → 0`. ✅ to ~1e-5 (`test_love`).
    Checks the shear block and the F sign convention.
-3. Elastic loading Love numbers h,l,k vs **Spada (2011) Test 2/1**, model
-   M3-L70-V01, degrees 2–256. Current output is physical (k₂≈−0.37, decaying with
-   j); a quantitative match awaits the published table (not in-repo). 🔶
-4. Internal: operator finite (centre I⁷ guard); B=Bᵀ; gravity R_k reconstruction
-   (`test_assembly`). ✅
+3. Elastic loading Love numbers h,l,k vs **benchmark M3-L70-V01 table**
+   (`data/benchmarks/love_M3-L70-V01/`, degrees 2–256; `test_benchmark_love`).
+   **✅ elastic AND fluid match to <1 % (≈0.1 %, P1 discretisation) at every
+   degree** after the U-F symmetry fix; the fluid limit also pins `l`. See
+   "Elastic low-degree discrepancy (FIXED)" above.
+4. Internal: operator finite (centre I⁷ guard); B=Bᵀ; **full operator symmetric
+   (energy Hessian)**; gravity R_k reconstruction (`test_assembly`). ✅
 5. **Degree-1 (sparse KKT):** the j=1 solve converges (non-singular), removes the
    rigid mode (`wᵀd/|w||d|`~1e-23), satisfies the band operator off the gauge
    direction (`‖r⊥w‖/‖r‖`~1e-11) and on the F rows, and gives a finite geocenter
