@@ -109,15 +109,23 @@ module fe_response
       real(wp), allocatable :: sa(:,:,:), sb(:,:,:), sc(:,:,:)  !! (4,NLAM,1:lmax)
       real(wp), allocatable :: gu(:), gn(:)             !! (0:lmax) elastic gains
       real(wp), allocatable :: xUn(:,:), xVn(:,:)       !! (nr,1:lmax) unit-load nodal U,V
-      ! per-(l,m) memory stress, split into real/imag (NLAM,ne,nlm)
+      ! Per-(l,m) state is stored in DEGREE-GROUPED order k = 1..nk (all orders m of
+      ! a degree l contiguous, l ascending; degree 0 carries no memory and is
+      ! excluded). This makes begin_step/commit_step iterate k contiguously AND
+      ! reuse the per-degree operator ops(l) across its orders (cache-hot), instead
+      ! of the SHTns m-major lm order which switches operator on nearly every solve.
+      integer :: nk = 0                                 !! # deforming coeffs (l>=1)
+      integer, allocatable :: k2lm(:)                   !! (nk) slot k -> SHTns lm index
+      integer, allocatable :: kdeg(:)                   !! (nk) degree l of slot k
+      integer, allocatable :: kbeg(:)                   !! (1:lmax+1) first k of each degree
+      ! per-(l,m) memory stress, split into real/imag (NLAM,ne,nk)
       real(wp), allocatable :: Are(:,:,:), Aim(:,:,:)
       real(wp), allocatable :: Bre(:,:,:), Bim(:,:,:)
       real(wp), allocatable :: Cre(:,:,:), Cim(:,:,:)
       ! frozen per-step drift (from the memory), set by begin_step
-      complex(wp), allocatable :: dUa(:), dFa(:)        !! (nlm) surface drift
-      real(wp), allocatable :: dUn_re(:,:), dUn_im(:,:) !! (nr,nlm) nodal drift U
-      real(wp), allocatable :: dVn_re(:,:), dVn_im(:,:) !! (nr,nlm) nodal drift V
-      integer, allocatable :: deg(:)                    !! (nlm) degree of each coeff
+      complex(wp), allocatable :: dUa(:), dFa(:)        !! (nk) surface drift
+      real(wp), allocatable :: dUn_re(:,:), dUn_im(:,:) !! (nr,nk) nodal drift U
+      real(wp), allocatable :: dVn_re(:,:), dVn_im(:,:) !! (nr,nk) nodal drift V
    contains
       procedure :: init        => ve_response_init
       procedure :: begin_step  => ve_response_begin
@@ -236,7 +244,7 @@ contains
       type(radial_mesh) :: mesh
       real(wp), allocatable :: x(:)
       real(wp) :: eta_e
-      integer  :: l, m, e, lay, node
+      integer  :: l, m, e, lay, node, k
 
       call self%destroy()
       call mesh%build(earth)
@@ -295,25 +303,39 @@ contains
       ! xUn/xVn) is left as solved (CE-like geocenter, h₁≈0).
       if (self%lmax >= 1) self%gn(1) = 0.0_wp
 
-      ! per-(l,m) memory (zeroed) and the degree map of each coefficient
-      allocate(self%Are(NLAM,self%ne,self%nlm), self%Aim(NLAM,self%ne,self%nlm))
-      allocate(self%Bre(NLAM,self%ne,self%nlm), self%Bim(NLAM,self%ne,self%nlm))
-      allocate(self%Cre(NLAM,self%ne,self%nlm), self%Cim(NLAM,self%ne,self%nlm))
+      ! Degree-grouped coefficient map: slot k = 1..nk over (l>=1, m=0..min(l,mmax)),
+      ! l ascending then m ascending. k2lm bridges back to the SHTns lm index for
+      ! the load/uplift/geoid spectra; kdeg gives the degree (operator) per slot.
+      self%nk = 0
+      do l = 1, self%lmax
+         do m = 0, min(l, sht%mmax*sht%mres), sht%mres
+            self%nk = self%nk + 1
+         end do
+      end do
+      allocate(self%k2lm(self%nk), self%kdeg(self%nk), self%kbeg(self%lmax+1))
+      k = 0
+      do l = 1, self%lmax
+         self%kbeg(l) = k + 1                  ! first slot of degree l (contiguous)
+         do m = 0, min(l, sht%mmax*sht%mres), sht%mres
+            k = k + 1
+            self%k2lm(k) = sht%lmidx(l, m)
+            self%kdeg(k) = l
+         end do
+      end do
+      self%kbeg(self%lmax+1) = k + 1           ! sentinel (one past the last slot)
+
+      ! per-(l,m) memory + drift, all in degree-grouped k order (zeroed)
+      allocate(self%Are(NLAM,self%ne,self%nk), self%Aim(NLAM,self%ne,self%nk))
+      allocate(self%Bre(NLAM,self%ne,self%nk), self%Bim(NLAM,self%ne,self%nk))
+      allocate(self%Cre(NLAM,self%ne,self%nk), self%Cim(NLAM,self%ne,self%nk))
       self%Are = 0.0_wp; self%Aim = 0.0_wp; self%Bre = 0.0_wp
       self%Bim = 0.0_wp; self%Cre = 0.0_wp; self%Cim = 0.0_wp
-      allocate(self%dUa(self%nlm), self%dFa(self%nlm))
-      allocate(self%dUn_re(self%nr,self%nlm), self%dUn_im(self%nr,self%nlm))
-      allocate(self%dVn_re(self%nr,self%nlm), self%dVn_im(self%nr,self%nlm))
+      allocate(self%dUa(self%nk), self%dFa(self%nk))
+      allocate(self%dUn_re(self%nr,self%nk), self%dUn_im(self%nr,self%nk))
+      allocate(self%dVn_re(self%nr,self%nk), self%dVn_im(self%nr,self%nk))
       self%dUa = (0.0_wp,0.0_wp); self%dFa = (0.0_wp,0.0_wp)
       self%dUn_re = 0.0_wp; self%dUn_im = 0.0_wp
       self%dVn_re = 0.0_wp; self%dVn_im = 0.0_wp
-
-      allocate(self%deg(self%nlm));  self%deg = -1
-      do m = 0, sht%mmax*sht%mres, sht%mres
-         do l = m, self%lmax
-            self%deg(sht%lmidx(l,m)) = l
-         end do
-      end do
    end subroutine ve_response_init
 
    subroutine ve_response_begin(self, sht)
@@ -322,34 +344,33 @@ contains
       class(ve_response), intent(inout) :: self
       type(sht_grid),     intent(in)    :: sht
       real(wp), allocatable :: fre(:), fim(:), xre(:), xim(:)
-      integer :: lm, l, node
+      integer :: k, l, node
 
+      ! Iterate degree-grouped slots k (contiguous per-(l,m) memory + operator reuse
+      ! within a degree). NOTE: this loop is NOT OpenMP-parallelized — LIS is not
+      ! re-entrant (concurrent lis_solve calls corrupt its global state and crash,
+      ! even on distinct per-degree matrices), so threading the solves needs a
+      ! thread-safe solver first. kbeg(l):kbeg(l+1)-1 is the slot range of degree l.
       allocate(fre(self%ndof), fim(self%ndof), xre(self%ndof), xim(self%ndof))
-      ! Iterate the flat lm index: the per-(l,m) memory arrays (Are/Bre/Cre…) are
-      ! laid out with lm as the trailing dimension, so sequential lm keeps their
-      ! access contiguous (streaming-friendly). (Degree-grouping the loop to reuse
-      ! ops(l) was tried and is slower here — it scatters the large memory-array
-      ! access; the contiguous-streaming win dominates the operator-switch cost.)
-      do lm = 1, self%nlm
-         l = self%deg(lm)
-         if (l < 1) cycle                       ! degree 0: no memory drift
+      do k = 1, self%nk
+         l = self%kdeg(k)
          fre = 0.0_wp;  fim = 0.0_wp
          call dissipative_rhs(self%ne, self%r, self%sa(:,:,l), self%sb(:,:,l), &
-              self%sc(:,:,l), self%nrmc(:,l), self%Are(:,:,lm), self%Bre(:,:,lm), &
-              self%Cre(:,:,lm), fre)
+              self%sc(:,:,l), self%nrmc(:,l), self%Are(:,:,k), self%Bre(:,:,k), &
+              self%Cre(:,:,k), fre)
          call dissipative_rhs(self%ne, self%r, self%sa(:,:,l), self%sb(:,:,l), &
-              self%sc(:,:,l), self%nrmc(:,l), self%Aim(:,:,lm), self%Bim(:,:,lm), &
-              self%Cim(:,:,lm), fim)
+              self%sc(:,:,l), self%nrmc(:,l), self%Aim(:,:,k), self%Bim(:,:,k), &
+              self%Cim(:,:,k), fim)
          call self%ops(l)%solve_vec(fre, xre)
          call self%ops(l)%solve_vec(fim, xim)
-         self%dUa(lm) = cmplx(xre(idx_u(self%nr)), xim(idx_u(self%nr)), wp)
-         self%dFa(lm) = cmplx(xre(idx_f(self%nr)), xim(idx_f(self%nr)), wp)
-         if (l == 1) self%dFa(lm) = (0.0_wp, 0.0_wp)   ! N₁≡0 (CM frame; see init)
+         self%dUa(k) = cmplx(xre(idx_u(self%nr)), xim(idx_u(self%nr)), wp)
+         self%dFa(k) = cmplx(xre(idx_f(self%nr)), xim(idx_f(self%nr)), wp)
+         if (l == 1) self%dFa(k) = (0.0_wp, 0.0_wp)   ! N₁≡0 (CM frame; see init)
          do node = 1, self%nr
-            self%dUn_re(node,lm) = xre(idx_u(node))
-            self%dUn_im(node,lm) = xim(idx_u(node))
-            self%dVn_re(node,lm) = xre(idx_v(node))
-            self%dVn_im(node,lm) = xim(idx_v(node))
+            self%dUn_re(node,k) = xre(idx_u(node))
+            self%dUn_im(node,k) = xim(idx_u(node))
+            self%dVn_re(node,k) = xre(idx_v(node))
+            self%dVn_im(node,k) = xim(idx_v(node))
          end do
       end do
    end subroutine ve_response_begin
@@ -362,19 +383,19 @@ contains
       complex(wp),        intent(in)    :: sigma_lm(:)
       complex(wp),        intent(out)   :: u_lm(:)
       complex(wp),        intent(out)   :: n_lm(:)
-      integer :: lm, l
+      integer :: k, l, lm, lm0
 
       u_lm = (0.0_wp,0.0_wp);  n_lm = (0.0_wp,0.0_wp)
-      do lm = 1, self%nlm
-         l = self%deg(lm)
-         if (l < 0) cycle
-         if (l < 1) then                        ! degree 0: gain only, no drift
-            u_lm(lm) = self%gu(l)*sigma_lm(lm)
-            n_lm(lm) = self%gn(l)*sigma_lm(lm)
-         else
-            u_lm(lm) = self%gu(l)*sigma_lm(lm) + self%dUa(lm)
-            n_lm(lm) = self%gn(l)*sigma_lm(lm) - self%dFa(lm)/self%g
-         end if
+      ! degree 0: monopole geoid, no deformation, no memory
+      lm0 = sht%lmidx(0, 0)
+      u_lm(lm0) = self%gu(0)*sigma_lm(lm0)
+      n_lm(lm0) = self%gn(0)*sigma_lm(lm0)
+      ! degrees l>=1, in degree-grouped k order (gn(1)=0 and dFa(k)=0 give N₁≡0)
+      do k = 1, self%nk
+         l  = self%kdeg(k)
+         lm = self%k2lm(k)
+         u_lm(lm) = self%gu(l)*sigma_lm(lm) + self%dUa(k)
+         n_lm(lm) = self%gn(l)*sigma_lm(lm) - self%dFa(k)/self%g
       end do
    end subroutine ve_response_apply
 
@@ -387,23 +408,23 @@ contains
       complex(wp),        intent(in)    :: sigma_lm(:)
       real(wp), allocatable :: Ure(:), Uim(:), Vre(:), Vim(:)
       real(wp) :: sre, sim
-      integer  :: lm, l, node
+      integer  :: k, l, lm, node
 
       allocate(Ure(self%nr), Uim(self%nr), Vre(self%nr), Vim(self%nr))
-      do lm = 1, self%nlm
-         l = self%deg(lm)
-         if (l < 1) cycle                       ! degree 0: no memory
+      do k = 1, self%nk                          ! degree-grouped order
+         l  = self%kdeg(k)
+         lm = self%k2lm(k)
          sre = real(sigma_lm(lm), wp);  sim = aimag(sigma_lm(lm))
          do node = 1, self%nr
-            Ure(node) = sre*self%xUn(node,l) + self%dUn_re(node,lm)
-            Uim(node) = sim*self%xUn(node,l) + self%dUn_im(node,lm)
-            Vre(node) = sre*self%xVn(node,l) + self%dVn_re(node,lm)
-            Vim(node) = sim*self%xVn(node,l) + self%dVn_im(node,lm)
+            Ure(node) = sre*self%xUn(node,l) + self%dUn_re(node,k)
+            Uim(node) = sim*self%xUn(node,l) + self%dUn_im(node,k)
+            Vre(node) = sre*self%xVn(node,l) + self%dVn_re(node,k)
+            Vim(node) = sim*self%xVn(node,l) + self%dVn_im(node,k)
          end do
          call advance_memory(self%ne, self%mu, self%Mk, Ure, Vre, self%Jr(l), &
-              self%Are(:,:,lm), self%Bre(:,:,lm), self%Cre(:,:,lm))
+              self%Are(:,:,k), self%Bre(:,:,k), self%Cre(:,:,k))
          call advance_memory(self%ne, self%mu, self%Mk, Uim, Vim, self%Jr(l), &
-              self%Aim(:,:,lm), self%Bim(:,:,lm), self%Cim(:,:,lm))
+              self%Aim(:,:,k), self%Bim(:,:,k), self%Cim(:,:,k))
       end do
       self%time = self%time + self%dt
    end subroutine ve_response_commit
@@ -439,8 +460,10 @@ contains
       if (allocated(self%dUn_im)) deallocate(self%dUn_im)
       if (allocated(self%dVn_re)) deallocate(self%dVn_re)
       if (allocated(self%dVn_im)) deallocate(self%dVn_im)
-      if (allocated(self%deg))    deallocate(self%deg)
-      self%lmax = 0;  self%nlm = 0
+      if (allocated(self%k2lm))   deallocate(self%k2lm)
+      if (allocated(self%kdeg))   deallocate(self%kdeg)
+      if (allocated(self%kbeg))   deallocate(self%kbeg)
+      self%lmax = 0;  self%nlm = 0;  self%nk = 0
    end subroutine ve_response_destroy
 
 end module fe_response

@@ -11,12 +11,12 @@ checked on read; the rest are diagnostic.
 
 | id | variable  | dimensions     | units | long_name                                        |
 |----|-----------|----------------|-------|--------------------------------------------------|
-|  1 | tau_a_re  | nlam, ne, nlm  | Pa    | Maxwell memory stress, component A (real part)   |
-|  2 | tau_a_im  | nlam, ne, nlm  | Pa    | Maxwell memory stress, component A (imag part)   |
-|  3 | tau_b_re  | nlam, ne, nlm  | Pa    | Maxwell memory stress, component B (real part)   |
-|  4 | tau_b_im  | nlam, ne, nlm  | Pa    | Maxwell memory stress, component B (imag part)   |
-|  5 | tau_c_re  | nlam, ne, nlm  | Pa    | Maxwell memory stress, component C (real part)   |
-|  6 | tau_c_im  | nlam, ne, nlm  | Pa    | Maxwell memory stress, component C (imag part)   |
+|  1 | tau_a_re  | nlam, ne, nk  | Pa    | Maxwell memory stress, component A (real part)   |
+|  2 | tau_a_im  | nlam, ne, nk  | Pa    | Maxwell memory stress, component A (imag part)   |
+|  3 | tau_b_re  | nlam, ne, nk  | Pa    | Maxwell memory stress, component B (real part)   |
+|  4 | tau_b_im  | nlam, ne, nk  | Pa    | Maxwell memory stress, component B (imag part)   |
+|  5 | tau_c_re  | nlam, ne, nk  | Pa    | Maxwell memory stress, component C (real part)   |
+|  6 | tau_c_im  | nlam, ne, nk  | Pa    | Maxwell memory stress, component C (imag part)   |
 |  7 | z_bed_eq  | lon, lat       | m     | Reference (equilibrium) bedrock elevation        |
 |  8 | h_ice_ref | lon, lat       | m     | Reference grounded-ice thickness                 |
 |  9 | h_ice     | lon, lat       | m     | Grounded-ice thickness                           |

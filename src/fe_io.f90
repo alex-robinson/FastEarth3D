@@ -10,7 +10,7 @@ module fe_io
    !! table is both the I/O metadata source and the human documentation.
    !!
    !! Prognostic (restored on restart): the Maxwell memory-stress fields tau_*
-   !! (nlam,ne,nlm) and the model time. Static (written once, checked on read):
+   !! (nlam,ne,nk) and the model time. Static (written once, checked on read):
    !! the reference state z_bed_eq, h_ice_ref. Diagnostic: h_ice, rsl, z_bed,
    !! C_ocean (lon,lat) — written for inspection and restored if present.
    use fe_precision,    only: wp
@@ -98,7 +98,7 @@ contains
    end subroutine fe_write_step
 
    subroutine write_init(self, filename, time)
-      !! Create the file and its dimensions (lon, lat, nlam, ne, nlm, time) and
+      !! Create the file and its dimensions (lon, lat, nlam, ne, nk, time) and
       !! write the static reference fields.
       class(solid_earth), intent(in) :: self
       character(len=*),   intent(in) :: filename
@@ -113,7 +113,8 @@ contains
       call nc_write_dim(filename, "lat",  x=lat_deg, units="degrees_north")
       call nc_write_dim(filename, "nlam", x=1, dx=1, nx=NLAM,          units="1")
       call nc_write_dim(filename, "ne",   x=1, dx=1, nx=self%resp%ne,  units="1")
-      call nc_write_dim(filename, "nlm",  x=1, dx=1, nx=self%resp%nlm, units="1")
+      ! nk = # deforming (l>=1) coefficients, in the ve_response degree-grouped order
+      call nc_write_dim(filename, "nk",   x=1, dx=1, nx=self%resp%nk,  units="1")
       call nc_write_dim(filename, "time", x=time, dx=1.0_wp, nx=1, units="s", unlimited=.true.)
 
       call put2d(self, filename, "z_bed_eq",  self%z_bed_eq,  static=.true.)
@@ -142,7 +143,7 @@ contains
    end subroutine write_one
 
    subroutine put3d(self, filename, name, dat, n, ncid)
-      !! Write a (nlam,ne,nlm) field at time slice n.
+      !! Write a (nlam,ne,nk) Maxwell-memory field at time slice n.
       class(solid_earth), intent(in) :: self
       character(len=*),   intent(in) :: filename, name
       real(wp),           intent(in) :: dat(:,:,:)
@@ -150,8 +151,8 @@ contains
       type(var_io_type) :: v
       call find_var_io_in_table(v, name, vtable, with_error=.true.)
       call nc_write(filename, name, dat, ncid=ncid, &
-           dim1="nlam", dim2="ne", dim3="nlm", dim4="time", &
-           start=[1,1,1,n], count=[NLAM, self%resp%ne, self%resp%nlm, 1], &
+           dim1="nlam", dim2="ne", dim3="nk", dim4="time", &
+           start=[1,1,1,n], count=[NLAM, self%resp%ne, self%resp%nk, 1], &
            units=trim(v%units), long_name=trim(v%long_name))
    end subroutine put3d
 
@@ -189,15 +190,15 @@ contains
       character(len=*),   intent(in)    :: filename
       real(wp), optional, intent(in)    :: time
       real(wp), allocatable :: tvals(:), ref(:,:)
-      integer :: nt, n, np, nl, ne, nlm
+      integer :: nt, n, np, nl, ne, nk
       real(wp) :: tol
 
       np = self%sht%nphi;  nl = self%sht%nlat
-      ne = self%resp%ne;   nlm = self%resp%nlm
+      ne = self%resp%ne;   nk = self%resp%nk
 
       ! dimension validation
       if (nc_size(filename, "nlam") /= NLAM .or. nc_size(filename, "ne")  /= ne  .or. &
-          nc_size(filename, "nlm")  /= nlm  .or. nc_size(filename, "lon") /= np  .or. &
+          nc_size(filename, "nk")   /= nk   .or. nc_size(filename, "lon") /= np  .or. &
           nc_size(filename, "lat")  /= nl) &
          error stop 'fe_restart_read: file dimensions do not match the initialised model'
 
@@ -223,12 +224,12 @@ contains
          error stop 'fe_restart_read: h_ice_ref does not match the initialised model'
 
       ! prognostic Maxwell memory at slice n
-      call get3d(filename, "tau_a_re", self%resp%Are, ne, nlm, n)
-      call get3d(filename, "tau_a_im", self%resp%Aim, ne, nlm, n)
-      call get3d(filename, "tau_b_re", self%resp%Bre, ne, nlm, n)
-      call get3d(filename, "tau_b_im", self%resp%Bim, ne, nlm, n)
-      call get3d(filename, "tau_c_re", self%resp%Cre, ne, nlm, n)
-      call get3d(filename, "tau_c_im", self%resp%Cim, ne, nlm, n)
+      call get3d(filename, "tau_a_re", self%resp%Are, ne, nk, n)
+      call get3d(filename, "tau_a_im", self%resp%Aim, ne, nk, n)
+      call get3d(filename, "tau_b_re", self%resp%Bre, ne, nk, n)
+      call get3d(filename, "tau_b_im", self%resp%Bim, ne, nk, n)
+      call get3d(filename, "tau_c_re", self%resp%Cre, ne, nk, n)
+      call get3d(filename, "tau_c_im", self%resp%Cim, ne, nk, n)
 
       ! diagnostic current state (so the restarted object reports correctly)
       call get2d(filename, "h_ice",   self%h_ice, np, nl, n)
@@ -241,11 +242,11 @@ contains
       self%time      = tvals(n)
    end subroutine fe_restart_read
 
-   subroutine get3d(filename, name, dat, ne, nlm, n)
+   subroutine get3d(filename, name, dat, ne, nk, n)
       character(len=*), intent(in)  :: filename, name
       real(wp),         intent(out) :: dat(:,:,:)
-      integer,          intent(in)  :: ne, nlm, n
-      call nc_read(filename, name, dat, start=[1,1,1,n], count=[NLAM, ne, nlm, 1])
+      integer,          intent(in)  :: ne, nk, n
+      call nc_read(filename, name, dat, start=[1,1,1,n], count=[NLAM, ne, nk, 1])
    end subroutine get3d
 
    subroutine get2d(filename, name, dat, np, nl, n)
