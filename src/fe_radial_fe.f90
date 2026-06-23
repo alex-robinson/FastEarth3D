@@ -93,7 +93,7 @@ module fe_radial_fe
    ! Default LIS solver/preconditioner for the indefinite, non-symmetric
    ! saddle-point system: restarted GMRES with an ILU(1) preconditioner.
    character(len=*), parameter :: LIS_OPTS_DEFAULT = &
-        '-i gmres -restart 60 -p ilu -ilu_fill 1 -tol 1.0e-12 -maxiter 20000'
+        '-i gmres -restart 8 -p ilu -ilu_fill 1 -tol 1.0e-12 -maxiter 20000'
 
 contains
 
@@ -496,13 +496,23 @@ contains
       integer,  optional,     intent(out) :: iters, info
       real(wp), optional,     intent(out) :: resid
       character(len=*), optional, intent(in) :: options  !! ignored (precon built at assemble)
-      real(wp), allocatable :: bs(:), y(:)
+      ! Reusable scratch for the equilibrated RHS / solution. SAVEd (allocated once,
+      ! grown only if a larger system appears) so the per-degree field driver's
+      ! many thousands of solves per step don't each pay a heap allocation — under
+      ! a large heap (many resident operators) that alloc was a big cost. Declared
+      ! threadprivate so a future OpenMP parallel solve keeps a private copy.
+      real(wp), allocatable, save :: bs(:), y(:)
+      !$omp threadprivate(bs, y)
       integer  :: nd, ns
       nd = self%ndof;  ns = self%ndof_solve
-      allocate(bs(ns), y(ns))
-      bs = 0.0_wp                               ! border RHS (j=1 multiplier) is 0
+      if (.not. allocated(bs)) then
+         allocate(bs(ns), y(ns))
+      else if (size(bs) < ns) then
+         deallocate(bs, y);  allocate(bs(ns), y(ns))
+      end if
+      bs(1:ns) = 0.0_wp                          ! border RHS (j=1 multiplier) is 0
       bs(1:nd) = self%dr * b                     ! equilibrate physical rows: b̂ = Dr b
-      call self%sys%solve(bs, y, iters, resid, info)   ! reuse matrix + ILU
+      call self%sys%solve(bs(1:ns), y(1:ns), iters, resid, info)   ! reuse matrix + ILU
       x = self%dc * y(1:nd)                      ! recover physical solution (drop μ)
    end subroutine radial_operator_solve_vec
 

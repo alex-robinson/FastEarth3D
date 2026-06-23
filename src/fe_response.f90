@@ -325,6 +325,11 @@ contains
       integer :: lm, l, node
 
       allocate(fre(self%ndof), fim(self%ndof), xre(self%ndof), xim(self%ndof))
+      ! Iterate the flat lm index: the per-(l,m) memory arrays (Are/Bre/Cre…) are
+      ! laid out with lm as the trailing dimension, so sequential lm keeps their
+      ! access contiguous (streaming-friendly). (Degree-grouping the loop to reuse
+      ! ops(l) was tried and is slower here — it scatters the large memory-array
+      ! access; the contiguous-streaming win dominates the operator-switch cost.)
       do lm = 1, self%nlm
          l = self%deg(lm)
          if (l < 1) cycle                       ! degree 0: no memory drift
