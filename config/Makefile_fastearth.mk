@@ -159,7 +159,12 @@ test_field: fastearth-static | $(bindir)
 		-o $(bindir)/test_field.x $(objdir)/libfastearth.a $(LFLAGS)
 	@echo "    $(bindir)/test_field.x is ready."
 
-TESTS = test_band test_sht test_earth test_mesh test_integrals test_assembly test_love test_relax test_response test_sle test_flotation test_ve_response test_sle_ve test_benchmark_love test_coupling test_restart test_benchmark_disc test_benchmark_martinec test_field
+test_flotation_load: fastearth-static | $(bindir)
+	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(testdir)/test_flotation_load.f90 \
+		-o $(bindir)/test_flotation_load.x $(objdir)/libfastearth.a $(LFLAGS)
+	@echo "    $(bindir)/test_flotation_load.x is ready."
+
+TESTS = test_band test_sht test_earth test_mesh test_integrals test_assembly test_love test_relax test_response test_sle test_flotation test_flotation_load test_ve_response test_sle_ve test_benchmark_love test_coupling test_restart test_benchmark_disc test_benchmark_martinec test_field
 
 check: $(TESTS)
 	@echo ""

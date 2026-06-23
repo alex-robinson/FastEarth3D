@@ -41,6 +41,9 @@ module fe_sle
       real(wp) :: resid        = 0.0_wp !! last inner max|ΔS| [m]
       real(wp) :: mass_resid   = 0.0_wp !! relative ocean-mass-conservation error
       real(wp) :: ocean_frac   = 0.0_wp !! ∫C dΩ / 4π
+      real(wp) :: esl          = 0.0_wp !! eustatic offset Δφ [m] (uniform sea-surface shift)
+      real(wp), allocatable :: u(:,:)   !! converged solid uplift [m] (nphi,nlat)
+      real(wp), allocatable :: N(:,:)   !! converged geoid rise [m] (nphi,nlat)
    end type sle_result
 
    type :: sle_solver
@@ -96,7 +99,7 @@ contains
       ! water-equivalent melt source ∝ −(ρ_i/ρ_w)∫ΔI dΩ (a² cancels in Δφ)
       ice_int = -rho_ratio * sht%surface_integral(d_ice)
 
-      rsl = 0.0_wp
+      rsl = 0.0_wp;  u = 0.0_wp;  N = 0.0_wp;  dphi = 0.0_wp
       res%n_inner_last = 0;  res%resid = 0.0_wp;  res%n_outer_done = 0
 
       ! Freeze the response's relaxation drift for this time step; for elastic /
@@ -113,9 +116,12 @@ contains
          if (C_int <= 0.0_wp) exit          ! no ocean: nothing to redistribute
 
          do ii = 1, self%n_inner
-            ! total surface mass load = grounded ice + ocean water (C·rsl is the
-            ! ocean-masked sea level)
-            load = rho_ice*d_ice + rho_water*(C*rsl)
+            ! total surface mass load = GROUNDED ice + ocean water. Ice over ocean
+            ! cells (C=1: open ocean or floating ice) does not press its full weight
+            ! on the bed -- it is borne by buoyancy and carried by the ocean term
+            ! ρ_w·C·rsl. The (1−C) mask keeps the ice load only where it grounds
+            ! (C=0). Without it, ice overhanging a deep basin over-loads the bed.
+            load = rho_ice*d_ice*(1.0_wp - C) + rho_water*(C*rsl)
             call sht%analysis(load, load_lm)            ! analysis overwrites load
             call resp%apply(sht, load_lm, u_lm, N_lm)
             call sht%synthesis(u_lm, u)
@@ -137,8 +143,9 @@ contains
       end do
 
       ! Commit the relaxation memory using the converged total load (no-op for
-      ! elastic / null), advancing the response by one time step.
-      load = rho_ice*d_ice + rho_water*(C*rsl)
+      ! elastic / null), advancing the response by one time step. Same grounded-
+      ! ice masking as the inner load (floating ice does not bear on the bed).
+      load = rho_ice*d_ice*(1.0_wp - C) + rho_water*(C*rsl)
       call sht%analysis(load, load_lm)
       call resp%commit_step(sht, load_lm)
 
@@ -150,6 +157,7 @@ contains
       else
          res%mass_resid = abs(Cs_int)
       end if
+      res%u = u;  res%N = N;  res%esl = dphi             ! converged fields + offset
    end subroutine sle_solve
 
    subroutine ocean_function(topo, ice, C)
