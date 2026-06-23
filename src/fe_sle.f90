@@ -56,16 +56,15 @@ module fe_sle
       !! O⁽⁰⁾ = (topo0 < 0) throughout (§2.1, eq 1, the SLE1 suite) — no coastline
       !! migration, so a single outer pass converges the inner water load.
       logical  :: fixed_ocean = .false.
-      !! Sloping-coast ("subgrid") ocean water load. .false. (default) loads the
-      !! ocean with ρ_w·C·rsl — the full sea-level change wherever C = 1, a sharp
-      !! coastline. .true. uses the actual water column change (Martinec 2018 §2.2,
-      !! eqs 15-19): s = C·rsl − ζ⁽⁰⁾·(C − C⁽⁰⁾), which equals rsl over permanent
-      !! ocean but rsl − ζ⁽⁰⁾ over newly-flooded cells, tapering to zero at the
-      !! coast where the bed meets the sea surface. This is the mass-correct load on
-      !! a migrating, sloping coastline (matters when the coastline moves over
-      !! shallow bathymetry; a no-op when it does not, so binary and subgrid agree
-      !! on deep basins). No effect with fixed_ocean (C ≡ C⁽⁰⁾ ⇒ the term vanishes).
-      logical  :: subgrid = .false.
+      !! Sloping-coast ("subgrid") ocean water load. .true. (default) uses the
+      !! actual water-column change (Martinec 2018 §2.2, eqs 15-19): s = C·rsl −
+      !! ζ⁽⁰⁾·(C − C⁽⁰⁾), which equals rsl over permanent ocean but rsl − ζ⁽⁰⁾ over
+      !! newly-flooded cells, tapering to zero at the coast where the bed meets the
+      !! sea surface — the mass-correct load on a migrating, sloping coastline.
+      !! .false. is the simpler binary load ρ_w·C·rsl (the full sea-level change
+      !! wherever C = 1, a sharp coastline), kept for comparison; it agrees with
+      !! subgrid when the coastline does not move (deep basins, fixed_ocean).
+      logical  :: subgrid = .true.
    contains
       procedure :: solve => sle_solve
    end type sle_solver

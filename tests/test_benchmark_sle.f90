@@ -59,11 +59,13 @@ program test_benchmark_sle
 
    ! Peak-normalized max-error tolerances. The Martinec-2018 SLE benchmark is a
    ! numerical INTER-CODE comparison (no analytical solution), so giapy is one
-   ! implementation and meter-level / few-% scatter is expected -- largest in the
-   ! coastline/flotation-coupled fields and at the cap-edge-over-basin grounding
-   ! line. These bounds guard against gross regression, not exact agreement.
-   real(wp), parameter :: TOL_U = 4.0e-1_wp, TOL_N = 5.0e-1_wp, &
-                          TOL_SS = 2.0e-1_wp, TOL_SLE = 5.0e-1_wp, TOL_H = 5.0e-1_wp
+   ! implementation and a few-% scatter is expected. With the subgrid coast the
+   ! migrating cases E2/F1 match to ~1% on the coupled fields; the loosest residuals
+   ! are C2's basin-region uplift / horizontal (~23-28%, a small peak amplified) and
+   ! the geoid/SLE (~7%). These bounds sit ~30-50% above the worst achieved value --
+   ! tight enough to catch a real regression, loose enough for inter-code scatter.
+   real(wp), parameter :: TOL_U = 3.0e-1_wp, TOL_N = 1.2e-1_wp, &
+                          TOL_SS = 8.0e-2_wp, TOL_SLE = 1.2e-1_wp, TOL_H = 3.5e-1_wp
 
    ! --- per-case configuration (set by set_case) -------------------------------
    character(2) :: casename
@@ -73,7 +75,7 @@ program test_benchmark_sle
    logical  :: spinup                                    ! F1 paleotopo iteration
    logical  :: fixed_ocean_case                          ! SLE1 fixed ocean (C2/D3)
    logical  :: heaviside_case                            ! T0 Heaviside loading (C2)
-   logical  :: subgrid_run                               ! 2nd arg "subgrid": force migrating+subgrid
+   logical  :: binary_run                                ! 2nd arg "binary": force the binary coast
    integer  :: nsteps                                    ! steps in the time history
    character(8) :: fig(NFIG) = ['fig10', 'fig11', 'fig12', 'fig13']
    character(1) :: ptype(NFIG) = ['Z', 'Y', 'Z', 'Y']   ! Z: col1=colat, Y: col1=180+lon
@@ -99,7 +101,7 @@ program test_benchmark_sle
    call resp%init(em, sht, dt)
    sle%n_inner = 20     ! n_outer left at default 3 (converged: 3 == 12 on E2)
    sle%fixed_ocean = fixed_ocean_case   ! SLE1 (C2/D3) vs SLE2 migrating (E2/F1)
-   sle%subgrid     = subgrid_run        ! 2nd arg "subgrid": sloping-coast water load
+   sle%subgrid     = .not. binary_run   ! subgrid coast by default; "binary" 2nd arg opts out
 
    allocate(topo0(sht%nphi,sht%nlat), basin(sht%nphi,sht%nlat), &
             ice_now(sht%nphi,sht%nlat), rsl(sht%nphi,sht%nlat), &
@@ -176,15 +178,14 @@ contains
       else
          casename = 'E2'
       end if
-      ! Optional 2nd arg "subgrid": run this case with the migrating coastline AND
-      ! the subgrid sloping-coast water load (overriding a case's fixed-ocean
-      ! default). Used to check that subgrid-migrating reproduces the SBK data on
-      ! the shallow-basin cases -- giapy itself always migrates with subgrid, so its
-      ! reference IS a subgrid-migrating solution.
-      subgrid_run = .false.
+      ! The ocean load uses the subgrid sloping-coast term by default (the library
+      ! default; giapy's reference is a subgrid coast, so the migrating cases E2/F1
+      ! match it to ~1%). Optional 2nd arg "binary" forces the old binary coastline
+      ! for comparison.
+      binary_run = .false.
       if (nargs >= 2) then
          call get_command_argument(2, arg2)
-         if (trim(adjustl(arg2)) == 'subgrid') subgrid_run = .true.
+         if (trim(adjustl(arg2)) == 'binary') binary_run = .true.
       end if
       ! Configurations from Martinec-2018 Table 4 (the SBK file letter = paper
       ! letter + 1): SBK C2 = paper B, D3 = C, E2 = D, F1 = E. Paper ice models:
@@ -223,7 +224,6 @@ contains
          write(*,'(3a)') ' FAIL: unknown case "', trim(casename), '" (expected C2/D3/E2/F1)'
          error stop 1
       end select
-      if (subgrid_run) fixed_ocean_case = .false.   ! subgrid implies a migrating coast
       caseprefix = casename//'_'
    end subroutine set_case
 
