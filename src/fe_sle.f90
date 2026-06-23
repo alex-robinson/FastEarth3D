@@ -96,10 +96,7 @@ contains
       allocate(load_lm(sht%nlm), u_lm(sht%nlm), N_lm(sht%nlm))
 
       rho_ratio = rho_ice/rho_water
-      ! water-equivalent melt source ∝ −(ρ_i/ρ_w)∫ΔI dΩ (a² cancels in Δφ)
-      ice_int = -rho_ratio * sht%surface_integral(d_ice)
-
-      rsl = 0.0_wp;  u = 0.0_wp;  N = 0.0_wp;  dphi = 0.0_wp
+      rsl = 0.0_wp;  u = 0.0_wp;  N = 0.0_wp;  dphi = 0.0_wp;  ice_int = 0.0_wp
       res%n_inner_last = 0;  res%resid = 0.0_wp;  res%n_outer_done = 0
 
       ! Freeze the response's relaxation drift for this time step; for elastic /
@@ -114,6 +111,11 @@ contains
          call ocean_function(topo0 - rsl, ice, C)
          C_int = sht%surface_integral(C)
          if (C_int <= 0.0_wp) exit          ! no ocean: nothing to redistribute
+
+         ! water-equivalent melt source ∝ −(ρ_i/ρ_w)∫ΔI dΩ over GROUNDED ice only:
+         ! floating ice (C=1) is already in the ocean, so it does not change the
+         ! ocean-water budget. Recomputed per coastline pass (grounded set shifts).
+         ice_int = -rho_ratio * sht%surface_integral(d_ice*(1.0_wp - C))
 
          do ii = 1, self%n_inner
             ! total surface mass load = GROUNDED ice + ocean water. Ice over ocean
