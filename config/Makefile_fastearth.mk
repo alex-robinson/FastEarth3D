@@ -164,6 +164,19 @@ test_flotation_load: fastearth-static | $(bindir)
 		-o $(bindir)/test_flotation_load.x $(objdir)/libfastearth.a $(LFLAGS)
 	@echo "    $(bindir)/test_flotation_load.x is ready."
 
+# Standalone SLE benchmark (Martinec-2018 case E2): ~750 steps at lmax=128, runs
+# in minutes -- intentionally NOT in TESTS / `make check`. Build with `make
+# openmp=1 test_benchmark_sle` and run $(bindir)/test_benchmark_sle.x directly.
+test_benchmark_sle: fastearth-static | $(bindir)
+	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(testdir)/test_benchmark_sle.f90 \
+		-o $(bindir)/test_benchmark_sle.x $(objdir)/libfastearth.a $(LFLAGS)
+	@echo "    $(bindir)/test_benchmark_sle.x is ready."
+
+test_sle_eustatic: fastearth-static | $(bindir)
+	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(testdir)/test_sle_eustatic.f90 \
+		-o $(bindir)/test_sle_eustatic.x $(objdir)/libfastearth.a $(LFLAGS)
+	@echo "    $(bindir)/test_sle_eustatic.x is ready."
+
 TESTS = test_band test_sht test_earth test_mesh test_integrals test_assembly test_love test_relax test_response test_sle test_flotation test_flotation_load test_ve_response test_sle_ve test_benchmark_love test_coupling test_restart test_benchmark_disc test_benchmark_martinec test_field
 
 check: $(TESTS)
