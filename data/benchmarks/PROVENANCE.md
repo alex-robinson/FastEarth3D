@@ -48,9 +48,20 @@ cases A, C2, D3, E2, F1 (figs 10–13), at truncation j256.
   intercomparison published as Martinec et al. (2018), *A benchmark study of
   numerical implementations of the sea level equation in GIA modelling*,
   Geophys. J. Int. 215, 389–414.
-- **Columns:** `col1` colatitude/longitude [deg]; `col2` vertical displacement
-  [m]; `col3`,`col4` θ- and φ-horizontal displacement [m]; `col5` gravitational
-  potential increment [SI]; `col6` sea-surface variation w.r.t. h_UF [m];
-  `col7` sea-level-equation result [m].
-- **Benchmark spec** (from giapy `tests/sle_test.py`): ice cases L1/L2/L3,
-  topographies B0–B3 (exponential basins), time histories T1/T2/T3.
+- **Two file formats** (the case-A loading file differs from the SLE-case files):
+  - **`A_fig10_SBK.dat`** (case A only): 4 columns, header
+    `# Colat(deg) Uplift(m) Horizontal(m) Geoid(m)`; rows are colatitude
+    180°→0° at 0.25° spacing (721 rows). This case has NO ocean (B0=0): a pure
+    viscoelastic cap-loading response, with degrees n=0,1 dropped (giapy jmin=2).
+  - **`{C2,D3,E2,F1}_fig{10..13}_SBK.dat`** (the SLE cases): 7 data columns —
+    `col1` longitude/colatitude [deg]; `col2` vertical displacement [m];
+    `col3`,`col4` θ- and φ-horizontal displacement [m]; `col5` gravitational
+    potential increment [SI, = −geoid·9.815]; `col6` sea-surface variation w.r.t.
+    h_UF [m]; `col7` sea-level-equation result [m]. Profiles are along circles of
+    constant lon or lat (figs 10–13 use lon=75, lat=25, lon=±/25, lat=35/100).
+- **Benchmark spec** (from giapy `tests/sle_test.py`): ice cases L1/L2/L3
+  (spherical caps h(δ)=h0·√[(cosδ−cosα)/(1−cosα)], α=10°, at given centre),
+  topographies B0–B3 (B = bmax − b0·exp(−δ²/2σ²) exponential basins, σ=26°),
+  time histories T1 (Heaviside at 10 kyr) / T2 (10-kyr linear growth) / T3
+  (linear decay). giapy ice/water/sea densities 931/1000/1000 kg m⁻³, g=9.815.
+  Case A = L1+T1+B0; the SLE cases combine L2/L3 + T2 + B1/B2/B3.
