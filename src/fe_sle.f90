@@ -53,41 +53,50 @@ module fe_sle
 
 contains
 
-   subroutine sle_solve(self, sht, resp, d_ice, ice, topo0, S, C, res)
-      !! Solve for the relative-sea-level change S [m] driven by a grounded-ice
+   subroutine sle_solve(self, sht, resp, d_ice, ice, topo0, rsl, C, res)
+      !! Solve for the relative-sea-level change rsl [m] driven by a grounded-ice
       !! thickness change d_ice [m], on a reference topography topo0 [m] (solid
       !! surface relative to the reference sea surface; ocean where < 0).
+      !!
+      !! rsl is the FULL relative-sea-level change field, N − u + Δφ (geoid rise
+      !! minus solid uplift, plus the mass-conservation offset), defined over the
+      !! WHOLE grid — not just the ocean. On land it is the bedrock-vs-sea-surface
+      !! change that drives bedrock motion under grounded ice; over the ocean it
+      !! is the sea-level change. The ocean-masked sea level is simply C·rsl, so
+      !! it is not returned separately. The bedrock relative to the sea surface is
+      !! topo0 − rsl everywhere.
       !!
       !! The absolute grounded-ice thickness ice [m] is passed alongside the
       !! change d_ice: d_ice drives the surface load, while ice enters the
       !! coastline test in ocean_function so that ice thick enough to ground on
       !! the bed is excluded from the ocean (it bears on the solid surface, it
-      !! does not float). Both are needed because the load is incremental but
-      !! flotation is an absolute condition.
+      !! does not float — even where the bed has subsided below the sea surface).
+      !! Both are needed because the load is incremental but flotation is an
+      !! absolute condition.
       class(sle_solver),        intent(inout) :: self
       type(sht_grid),           intent(in)    :: sht
       class(response_operator), intent(inout) :: resp
       real(wp),                 intent(in)    :: d_ice(:,:)  !! ice CHANGE [m] (load)
       real(wp),                 intent(in)    :: ice(:,:)    !! abs. ice [m] (flotation)
       real(wp),                 intent(in)    :: topo0(:,:)  !! (nphi,nlat) [m]
-      real(wp),                 intent(out)   :: S(:,:)      !! (nphi,nlat) [m]
+      real(wp),                 intent(out)   :: rsl(:,:)    !! full RSL change [m]
       real(wp),                 intent(out)   :: C(:,:)      !! (nphi,nlat) ocean fn
       type(sle_result),         intent(out)   :: res
 
-      real(wp), allocatable :: load(:,:), u(:,:), N(:,:), Sraw(:,:), Snew(:,:)
+      real(wp), allocatable :: load(:,:), u(:,:), N(:,:), Sraw(:,:), rsl_new(:,:)
       complex(wp), allocatable :: load_lm(:), u_lm(:), N_lm(:)
       real(wp) :: rho_ratio, ice_int, dphi, C_int, Cs_int, smax, dmax
       integer  :: io, ii, np, nl
 
       np = sht%nphi;  nl = sht%nlat
-      allocate(load(np,nl), u(np,nl), N(np,nl), Sraw(np,nl), Snew(np,nl))
+      allocate(load(np,nl), u(np,nl), N(np,nl), Sraw(np,nl), rsl_new(np,nl))
       allocate(load_lm(sht%nlm), u_lm(sht%nlm), N_lm(sht%nlm))
 
       rho_ratio = rho_ice/rho_water
       ! water-equivalent melt source ∝ −(ρ_i/ρ_w)∫ΔI dΩ (a² cancels in Δφ)
       ice_int = -rho_ratio * sht%surface_integral(d_ice)
 
-      S = 0.0_wp
+      rsl = 0.0_wp
       res%n_inner_last = 0;  res%resid = 0.0_wp;  res%n_outer_done = 0
 
       ! Freeze the response's relaxation drift for this time step; for elastic /
@@ -95,16 +104,18 @@ contains
       call resp%begin_step(sht)
 
       do io = 1, self%n_outer
-         ! migrate the coastline: ocean where the current solid surface is below
-         ! the (reference) sea surface, topo0 − S < 0, AND the ice there floats
-         ! rather than grounds.
-         call ocean_function(topo0 - S, ice, C)
+         ! migrate the coastline using the current (full-field) sea level: ocean
+         ! where the deformed solid surface topo0 − rsl is below the sea surface
+         ! AND the ice there floats rather than grounds (grounded ice keeps a
+         ! subsided cell as land).
+         call ocean_function(topo0 - rsl, ice, C)
          C_int = sht%surface_integral(C)
          if (C_int <= 0.0_wp) exit          ! no ocean: nothing to redistribute
 
          do ii = 1, self%n_inner
-            ! total surface mass load = grounded ice + ocean water
-            load = rho_ice*d_ice + rho_water*(C*S)
+            ! total surface mass load = grounded ice + ocean water (C·rsl is the
+            ! ocean-masked sea level)
+            load = rho_ice*d_ice + rho_water*(C*rsl)
             call sht%analysis(load, load_lm)            ! analysis overwrites load
             call resp%apply(sht, load_lm, u_lm, N_lm)
             call sht%synthesis(u_lm, u)
@@ -113,12 +124,12 @@ contains
             Sraw = N - u
             Cs_int = sht%surface_integral(C*Sraw)
             dphi   = (ice_int - Cs_int)/C_int           ! mass-conservation offset
-            Snew   = C*(Sraw + dphi)
+            rsl_new = Sraw + dphi                        ! full field, everywhere
 
-            dmax = maxval(abs(Snew - S))
-            S    = Snew
+            dmax = maxval(abs(C*(rsl_new - rsl)))        ! converge on the ocean part
+            rsl  = rsl_new
             res%n_inner_last = ii;  res%resid = dmax
-            smax = maxval(abs(S))
+            smax = maxval(abs(C*rsl))
             if (dmax <= self%tol*max(smax, tiny(1.0_wp))) exit
          end do
 
@@ -127,12 +138,12 @@ contains
 
       ! Commit the relaxation memory using the converged total load (no-op for
       ! elastic / null), advancing the response by one time step.
-      load = rho_ice*d_ice + rho_water*(C*S)
+      load = rho_ice*d_ice + rho_water*(C*rsl)
       call sht%analysis(load, load_lm)
       call resp%commit_step(sht, load_lm)
 
       ! diagnostics
-      Cs_int = sht%surface_integral(C*S)
+      Cs_int = sht%surface_integral(C*rsl)
       res%ocean_frac = C_int/(16.0_wp*atan(1.0_wp))      ! ∫C dΩ / 4π
       if (abs(ice_int) > 0.0_wp) then
          res%mass_resid = abs(Cs_int - ice_int)/abs(ice_int)

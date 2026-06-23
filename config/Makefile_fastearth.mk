@@ -34,8 +34,9 @@ $(objdir)/fe_gravity.o:          $(objdir)/fe_earth_structure.o
 $(objdir)/fe_sle.o:              $(objdir)/fe_sht.o $(objdir)/fe_constants.o \
                                  $(objdir)/fe_response.o
 $(objdir)/fe_rotation.o:         $(objdir)/fe_sht.o $(objdir)/fe_constants.o
-$(objdir)/fe_coupling.o:         $(objdir)/fe_viscoelastic.o $(objdir)/fe_gravity.o \
-                                 $(objdir)/fe_sle.o $(objdir)/fe_rotation.o
+$(objdir)/fe_coupling.o:         $(objdir)/fe_response.o $(objdir)/fe_sle.o \
+                                 $(objdir)/fe_rotation.o $(objdir)/fe_earth_structure.o \
+                                 $(objdir)/fe_sht.o
 # The umbrella module re-exports every component, so it compiles last.
 $(objdir)/fastearth.o:           $(objdir)/fe_coupling.o
 
@@ -122,7 +123,12 @@ test_benchmark_love: fastearth-static | $(bindir)
 		-o $(bindir)/test_benchmark_love.x $(objdir)/libfastearth.a $(LFLAGS)
 	@echo "    $(bindir)/test_benchmark_love.x is ready."
 
-TESTS = test_sht test_earth test_mesh test_integrals test_assembly test_love test_relax test_response test_sle test_flotation test_ve_response test_sle_ve test_benchmark_love
+test_coupling: fastearth-static | $(bindir)
+	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(testdir)/test_coupling.f90 \
+		-o $(bindir)/test_coupling.x $(objdir)/libfastearth.a $(LFLAGS)
+	@echo "    $(bindir)/test_coupling.x is ready."
+
+TESTS = test_sht test_earth test_mesh test_integrals test_assembly test_love test_relax test_response test_sle test_flotation test_ve_response test_sle_ve test_benchmark_love test_coupling
 
 check: $(TESTS)
 	@echo ""
