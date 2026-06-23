@@ -356,14 +356,11 @@ contains
       integer :: k, l, node, e, mm
       real(wp) :: thr, mk
 
-      ! Skip the drift solve for coefficients with negligible memory (their drift is
-      ! negligible too): zero their drift instead of solving. For a spatially
-      ! localized load the excited spectrum is bounded, so this skips most of the
-      ! high-degree solves. thr is relative to the largest memory present.
-      ! mnorm is refreshed here from the current memory (a cheap pass vs the solves)
-      ! so it is always consistent — including after a restart, which reloads the
-      ! memory arrays but not this derived cache.
-      ! explicit loop (no abs(slice) temporaries — those would each heap-allocate)
+      ! Refresh the per-slot memory magnitude from the current memory (a cheap pass
+      ! vs the solves) so it is always consistent — including after a restart, which
+      ! reloads the memory arrays but not this derived cache. Explicit loop (no
+      ! abs(slice) temporaries, which would each heap-allocate).
+      !$omp parallel do default(shared) private(k, e, mm, mk) schedule(static)
       do k = 1, self%nk
          mk = 0.0_wp
          do e = 1, self%ne
@@ -375,41 +372,52 @@ contains
          end do
          self%mnorm(k) = mk
       end do
+      !$omp end parallel do
+      ! Skip the drift solve for coefficients with negligible memory (their drift is
+      ! negligible too): zero their drift instead of solving. thr is relative to the
+      ! largest memory present.
       thr = self%skip_tol * maxval(self%mnorm)
 
-      ! Iterate degree-grouped slots k (contiguous per-(l,m) memory + operator reuse
-      ! within a degree). NOTE: NOT OpenMP-parallelized — LIS is not re-entrant
-      ! (concurrent lis_solve calls corrupt its global state and crash, even on
-      ! distinct per-degree matrices), so threading the solves needs a thread-safe
-      ! solver first. kbeg(l):kbeg(l+1)-1 is the slot range of degree l.
+      ! Solve for the drift, PARALLEL OVER DEGREE l so each per-degree operator
+      ! ops(l) is touched by a single thread. Safe because j>=2 uses the re-entrant
+      ! banded LU (fe_band); degree 1 (the lone LIS solver, not re-entrant) is a
+      ! single iteration, hence run by a single thread — no concurrent LIS call. The
+      ! scratch vectors are per-thread; dynamic schedule balances the rising work
+      ! per degree (l+1 orders). Inactive (ordinary serial loop) unless openmp=1.
+      !$omp parallel default(shared) private(l, k, node, fre, fim, xre, xim)
       allocate(fre(self%ndof), fim(self%ndof), xre(self%ndof), xim(self%ndof))
-      do k = 1, self%nk
-         l = self%kdeg(k)
-         if (self%mnorm(k) <= thr) then          ! negligible memory ⇒ negligible drift
-            self%dUa(k) = (0.0_wp,0.0_wp);  self%dFa(k) = (0.0_wp,0.0_wp)
-            self%dUn_re(:,k) = 0.0_wp;  self%dUn_im(:,k) = 0.0_wp
-            self%dVn_re(:,k) = 0.0_wp;  self%dVn_im(:,k) = 0.0_wp
-            cycle
-         end if
-         fre = 0.0_wp;  fim = 0.0_wp
-         call dissipative_rhs(self%ne, self%r, self%sa(:,:,l), self%sb(:,:,l), &
-              self%sc(:,:,l), self%nrmc(:,l), self%Are(:,:,k), self%Bre(:,:,k), &
-              self%Cre(:,:,k), fre)
-         call dissipative_rhs(self%ne, self%r, self%sa(:,:,l), self%sb(:,:,l), &
-              self%sc(:,:,l), self%nrmc(:,l), self%Aim(:,:,k), self%Bim(:,:,k), &
-              self%Cim(:,:,k), fim)
-         call self%ops(l)%solve_vec(fre, xre)
-         call self%ops(l)%solve_vec(fim, xim)
-         self%dUa(k) = cmplx(xre(idx_u(self%nr)), xim(idx_u(self%nr)), wp)
-         self%dFa(k) = cmplx(xre(idx_f(self%nr)), xim(idx_f(self%nr)), wp)
-         if (l == 1) self%dFa(k) = (0.0_wp, 0.0_wp)   ! N₁≡0 (CM frame; see init)
-         do node = 1, self%nr
-            self%dUn_re(node,k) = xre(idx_u(node))
-            self%dUn_im(node,k) = xim(idx_u(node))
-            self%dVn_re(node,k) = xre(idx_v(node))
-            self%dVn_im(node,k) = xim(idx_v(node))
+      !$omp do schedule(dynamic)
+      do l = 1, self%lmax
+         do k = self%kbeg(l), self%kbeg(l+1) - 1
+            if (self%mnorm(k) <= thr) then       ! negligible memory ⇒ negligible drift
+               self%dUa(k) = (0.0_wp,0.0_wp);  self%dFa(k) = (0.0_wp,0.0_wp)
+               self%dUn_re(:,k) = 0.0_wp;  self%dUn_im(:,k) = 0.0_wp
+               self%dVn_re(:,k) = 0.0_wp;  self%dVn_im(:,k) = 0.0_wp
+               cycle
+            end if
+            fre = 0.0_wp;  fim = 0.0_wp
+            call dissipative_rhs(self%ne, self%r, self%sa(:,:,l), self%sb(:,:,l), &
+                 self%sc(:,:,l), self%nrmc(:,l), self%Are(:,:,k), self%Bre(:,:,k), &
+                 self%Cre(:,:,k), fre)
+            call dissipative_rhs(self%ne, self%r, self%sa(:,:,l), self%sb(:,:,l), &
+                 self%sc(:,:,l), self%nrmc(:,l), self%Aim(:,:,k), self%Bim(:,:,k), &
+                 self%Cim(:,:,k), fim)
+            call self%ops(l)%solve_vec(fre, xre)
+            call self%ops(l)%solve_vec(fim, xim)
+            self%dUa(k) = cmplx(xre(idx_u(self%nr)), xim(idx_u(self%nr)), wp)
+            self%dFa(k) = cmplx(xre(idx_f(self%nr)), xim(idx_f(self%nr)), wp)
+            if (l == 1) self%dFa(k) = (0.0_wp, 0.0_wp)   ! N₁≡0 (CM frame; see init)
+            do node = 1, self%nr
+               self%dUn_re(node,k) = xre(idx_u(node))
+               self%dUn_im(node,k) = xim(idx_u(node))
+               self%dVn_re(node,k) = xre(idx_v(node))
+               self%dVn_im(node,k) = xim(idx_v(node))
+            end do
          end do
       end do
+      !$omp end do
+      deallocate(fre, fim, xre, xim)
+      !$omp end parallel
    end subroutine ve_response_begin
 
    subroutine ve_response_apply(self, sht, sigma_lm, u_lm, n_lm)
@@ -447,7 +455,11 @@ contains
       real(wp) :: sre, sim
       integer  :: k, l, lm, node
 
+      ! The Maxwell update is independent per slot k (no solve, pure arithmetic on
+      ! that slot's memory), so parallelize over k directly; scratch is per-thread.
+      !$omp parallel default(shared) private(k, l, lm, node, sre, sim, Ure, Uim, Vre, Vim)
       allocate(Ure(self%nr), Uim(self%nr), Vre(self%nr), Vim(self%nr))
+      !$omp do schedule(static)
       do k = 1, self%nk                          ! degree-grouped order
          l  = self%kdeg(k)
          lm = self%k2lm(k)
@@ -463,6 +475,9 @@ contains
          call advance_memory(self%ne, self%mu, self%Mk, Uim, Vim, self%Jr(l), &
               self%Aim(:,:,k), self%Bim(:,:,k), self%Cim(:,:,k))
       end do
+      !$omp end do
+      deallocate(Ure, Uim, Vre, Vim)
+      !$omp end parallel
       self%time = self%time + self%dt
    end subroutine ve_response_commit
 

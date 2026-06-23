@@ -36,27 +36,15 @@ LISROOT = fesm-utils/lis-serial
 INC_LIS = -I$(LISROOT)/include
 LIB_LIS = -L$(LISROOT)/lib -llis
 
-# --- OpenMP variants ---------------------------------------------------------
-# `make openmp=1`: swap the serial dependency builds for their OpenMP variants.
-# Note the differing library names (libshtns.a vs libshtns_omp.a, matching FFTW).
-ifeq ($(openmp),1)
-	INC_FESMUTILS = -I$(FESMUTILSROOT)/include-omp
-	LIB_FESMUTILS = -L$(FESMUTILSROOT)/include-omp -lfesmutils
-
-	FFTWROOT = fesm-utils/fftw-omp
-	INC_FFTW = -I$(FFTWROOT)/include
-	LIB_FFTW = -L$(FFTWROOT)/lib -lfftw3_omp -lfftw3 -lm
-
-	SHTNSROOT = fesm-utils/shtns-omp
-	INC_SHTNS = -I$(SHTNSROOT)/include
-	LIB_SHTNS = -L$(SHTNSROOT)/lib -lshtns_omp
-
-	# LIS built with OpenMP (same -llis name, parallel internals); the degree
-	# loop will thread over independent systems, LIS stays serial per solve.
-	LISROOT = fesm-utils/lis-omp
-	INC_LIS = -I$(LISROOT)/include
-	LIB_LIS = -L$(LISROOT)/lib -llis
-endif
+# --- OpenMP ------------------------------------------------------------------
+# `make openmp=1` adds -fopenmp (via config/Makefile, appended to FFLAGS) to thread
+# the per-degree loop in fe_response (begin_step / commit_step). The dependency
+# libraries deliberately stay SERIAL: we thread over independent per-degree systems
+# ourselves, each solved by the re-entrant banded LU (fe_band); LIS is used only for
+# the single j=1 system (run by one thread) and SHTns/FFTW are called outside the
+# parallel regions. The omp library variants are intentionally NOT linked — lis-omp
+# would nest threads inside our parallel loop, and concurrent LIS solves are not
+# re-entrant anyway (which is why j>=2 moved to the banded LU in the first place).
 
 # --- Final flag sets ---------------------------------------------------------
 # MODFLAGS (-I/-J objdir) and FFLAGS_BASE come from the compiler fragment.
