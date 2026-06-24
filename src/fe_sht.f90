@@ -44,6 +44,7 @@ module fe_sht
       procedure :: destroy   => sht_grid_destroy
       procedure :: synthesis => sht_grid_synthesis   !! spectral -> spatial
       procedure :: analysis  => sht_grid_analysis    !! spatial  -> spectral
+      procedure :: sph_synthesis => sht_grid_sph_synthesis !! spheroidal (gradient) vector synth
       procedure :: eval_point => sht_grid_eval_point !! scalar field at (colat,lon)
       procedure :: eval_point_horiz => sht_grid_eval_point_horiz !! ∇₁ field at (colat,lon)
       procedure :: lmidx     => sht_grid_lmidx       !! (l,m) -> coefficient index
@@ -170,6 +171,18 @@ contains
       complex(wp),     intent(out)   :: slm(:)   !! length nlm
       call spat_to_SH(self%cfg, sh, slm)
    end subroutine sht_grid_analysis
+
+   subroutine sht_grid_sph_synthesis(self, slm, vth, vph)
+      !! Spheroidal (gradient) vector synthesis: from the spectral coefficients slm
+      !! of a scalar potential, return the surface-gradient field on the grid,
+      !!   vth = ∂_θ(Σ slm Y_lm),   vph = (1/sinθ) ∂_φ(Σ slm Y_lm),
+      !! i.e. the E_lm and F_lm tensor-harmonic building blocks (Martinec 2000 B11).
+      !! Used to bootstrap the tensor-SH dyadic basis (fe_tensor_sh).
+      class(sht_grid), intent(in)  :: self
+      complex(wp),     intent(in)  :: slm(:)      !! length nlm
+      real(wp),        intent(out) :: vth(:,:), vph(:,:)  !! (nphi, nlat)
+      call SHsph_to_spat(self%cfg, slm, vth, vph)
+   end subroutine sht_grid_sph_synthesis
 
    subroutine sht_grid_eval_point(self, f_lm, colat, lon, val)
       !! Evaluate a scalar field (spectral coefficients f_lm) at an ARBITRARY point
