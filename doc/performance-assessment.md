@@ -74,7 +74,7 @@ Ranked by return on effort for transient runs. ✅ = implemented now; ⏭ = defe
 | 2 | **Warm-start the SLE fixed point** from the previous step's `rsl` | **~1.5% on E2**; up to ~2× only on strongly-migrating coastlines (unverified) | low | ✅ |
 | 3 | ~~**ETD0** exponential memory update → larger `dt`~~ | **rejected — fails benchmarks** | — | ✗ |
 | 3b | ~~**ETD1** (linear-strain φ-weights) → larger `dt`~~ | **rejected — the memory *rule*, not the strain coupling, sets the order** | — | ✗ |
-| 3c | **Trapezoidal memory rule solved by coupling iteration** → 2nd-order, with an adaptive-`dt` controller (1-D + field driver 3a + step-doubling + SLE-coupled 3b + `fe_timestep` controller — all DONE) | **order 1→2; ~1300× accuracy (1-D) / ~270× (SLE, fast load) at fixed `dt`; adaptive: reference accuracy in ~⅓ the steps** | med | ✅ |
+| 3c | **Trapezoidal memory rule solved by coupling iteration** → 2nd-order, with an adaptive-`dt` controller (1-D + field driver 3a + step-doubling + SLE-coupled 3b + `fe_timestep` controller — all DONE) | **order 1→2; ~1300× accuracy (1-D) / ~270× (SLE, fast load) at fixed `dt`; adaptive: ~1.6× wall on dynamic-range loads (no gain on smooth loads)** | med | ✅ |
 | 4 | **OpenMP SHTns as the default** (offline *and* coupled) | several× at lmax ≥ 256 | low | ⏭ |
 | 5 | **Fuse the two syntheses** to one synthesis of `N_lm − u_lm` | ~33% of inner-loop SHTs | low | ⏭ |
 | 6 | **Batched multi-RHS band solve** over all `m`/re-im at fixed `l`; kill the dense degree-1 LU via nullspace projection | high at production lmax | med | ⏭ |
@@ -292,13 +292,33 @@ grow Δt by `safety·err^{-1/(p+1)}`) or reject (roll back, shrink). Rollback us
 `stash_coarse`/`coarse_fine_error` (buffer B = τ_coarse); Δt changes via `set_dt`, a
 cheap `Mk = (μ/η)·Δt` rescale (no operator re-factor — the band LU is Δt-independent).
 `test_timestep`: the field step-doubling estimate scales as Δt³ (order 2.97), and on a
-fast ice ramp the controller converges to a fine fixed-Δt reference to ~1e-4 of signal
-in **23–68 adaptive steps vs the 160-step reference**, the error falling monotonically
-as `rtol` tightens — the payoff that amortizes the ~6× trapezoidal per-step cost.
-(One detail: the very first step from rest uses the σ_{n+1} proxy for σ_n, which the
-SLE ocean load makes O(Δt) → that one step is 2nd-order; every later step tracks σ_n
-and is 3rd-order locally. A proper σ_0 init would need an elastic SLE solve at t=0 —
-deferred as a minor first-step refinement.)
+fast ice ramp the controller converges to a fine fixed-Δt reference to ~1e-4 of signal,
+the error falling monotonically as `rtol` tightens. The **first step is also 3rd-order**:
+the start-of-step load σ_0 is seeded by a *report-only* SLE solve at t=0 (`sle_solve`'s
+`report_only`/`sigma_lm` args — converge the load against the rest memory, no advance,
+so σ_0 is the elastic-consistent load), via `ve_response%prime_sigma`. Without it the
+first step falls back to the σ_{n+1} proxy (O(Δt) for the relaxing SLE load); seeding σ_0
+makes that step 3rd-order **and** removes the startup reject storm (the controller no
+longer wastes steps shrinking through an inaccurate first step).
+
+**When adaptivity pays — cost vs accuracy (`test_timestep` part C; cost = SLE solves,
+the dominant unit; adaptive ≈ 3 solves/step for the coarse+2×fine estimate).** Two
+takeaways, both honest:
+- **Smooth / uniform dynamics → fixed wins.** On a load with no dynamic range (a single
+  ramp), the 3×/step estimate overhead is never amortized: fixed Δt=100 yr reaches
+  3.2e-5 rel-error in 20 solves, while adaptive `rtol=1e-2` gives a *worse* 2.2e-4 in 21.
+  Don't pay for error control you don't need.
+- **Dynamic range → adaptive wins.** With a fast 200-yr ramp then an 8-kyr hold, fixed
+  is *forced* to the small ramp Δt for the entire slow hold (≥200 solves, and then
+  over-accurate at 5e-7); adaptive grows Δt through the hold and hits a useful ~1e-4 in
+  **57 solves / 0.68 s vs the fixed floor of 200 solves / 1.1 s** — ~3.5× fewer solves,
+  ~1.6× wall-clock, the gap widening for looser tolerances. (The wall-clock win trails
+  the solve-count win because a larger Δt means a larger M = μΔt/η and so more SLE↔memory
+  co-convergence passes per solve — adaptive's big steps are individually dearer.)
+- **Unconditional value:** error *control* to a target tolerance without hand-tuning Δt.
+  Real ice-age loading (fast deglaciation + slow interglacial relaxation) is the
+  dynamic-range regime, so the controller is the right default there; a steady forcing
+  is better served by a fixed Δt.
 
 The long-time under-relaxation that originally motivated §3c is a separate
 `dt`/NMAX-resolution + slow-mode question, not an integrator issue. **§3c is now
@@ -393,7 +413,9 @@ All validated on Mac.fritz.box (gfortran 15.2, `OMP_NUM_THREADS=8`):
   the finest `dt` — trapezoidal 2nd order carried through the full driver.
 - **Adaptive-`dt` controller (§3c):** `fe_timestep%adaptive_stepper` — step-doubling
   accept/reject + step selection with linear load interpolation; `ve_response`
-  save/restore/set_dt primitives (`make check` 21/21 byte-identical, FE default
-  untouched). `test_timestep`: estimate ~`dt^2.97`; on a fast ice ramp the controller
-  matches a fine fixed-Δt reference to ~1e-4 of signal in ~⅓ the steps, error monotone
-  in `rtol`.
+  save/restore/set_dt + `prime_sigma` primitives, `sle_solve` `report_only`/`sigma_lm`
+  (`make check` 21/21 byte-identical, FE default untouched). `test_timestep`: estimate
+  ~`dt^2.97` including the σ_0-primed first step; error monotone in `rtol`. Cost/accuracy
+  (part C): adaptive does NOT beat tuned fixed Δt on a smooth load (3×/step overhead),
+  but on a fast-ramp+long-hold load it reaches ~1e-4 accuracy in ~3.5× fewer solves /
+  ~1.6× less wall-clock (fixed is pinned to the small ramp Δt through the slow hold).
