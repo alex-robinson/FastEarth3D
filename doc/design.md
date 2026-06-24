@@ -308,8 +308,8 @@ displacement `u`.
    needs a conservative regridding layer (fesm-utils `mapping_scrip`) — reusable
    for any lon-lat input, but built later. **Physics first.**
 
-**NEXT: rung 6 (3D laterally-varying viscosity).** Rung 5 (rotation) is DONE — 5a/5b/5c
-(§11).
+**Rung 6 (3D laterally-varying viscosity) — IN PROGRESS (6a DONE; §12).** Rung 5
+(rotation) is DONE — 5a/5b/5c (§11).
 
 ## 11. Rotational feedback / TPW (rung 5) — working notes
 
@@ -378,3 +378,47 @@ no-rotation SLE; `s_rot` matches Adhikari eq. 8 pointwise to 1.9e-14; ocean-mass
 residual 3e-16; the fixed point converges (ocean feedback on `m` ~0.7%);
 `|s_rot| ≈ 1.9 m`. End-to-end (`test_coupling`): an off-axis cap drives `|m| = 0.30°`,
 mass conserved, the bed shifts up to 6.7 m vs rotation-off.
+
+## 12. 3D laterally-varying viscosity (rung 6) — working notes
+
+**The one structural change.** Lateral viscosity makes the Maxwell factor
+`M = μΔt/η` a *field* `M(θ,φ)`, so the memory update `τ⁺ = (1−M)τ − 2μM·ε` has a
+pointwise lateral product that *couples* harmonics. Everything else is untouched:
+the per-degree elastic solve and the dissipative RHS `−∫τ^V:δε` are linear in the
+memory (no lateral product), so they stay the exact 1-D code path. Only **η** varies
+laterally — **μ and ρ stay radial** — which is why the operator/LU factorisation and
+the whole speed argument survive. This is the "3D-ready from day one" payoff (§2).
+
+**6a — pseudo-spectral memory advance — DONE (`test_response_3d`).** A new path
+`advance_memory_3d` (in `fe_response`, which owns the SHT grid + slot↔lm map;
+`fe_viscoelastic` stays grid-unaware) replaces the per-slot scalar advance when
+`lat_visc` is set. Per radial element `e` and tensor component `λ`, each radial
+shape-coefficient (A,B,C) of the memory `τ` and of the current strain `ε` (built
+from the nodal displacement `σ·xUn + drift` per slot, exactly as the FE path) is
+**synthesised** to the Gauss grid, advanced pointwise `τ⁺ = (1−M)τ − 2μM·ε` with the
+lateral field `Mk3(:,:,e)`, and **analysed** back to spectral. Cost ≈ 36·ne SHTs per
+step (NLAM=4 × {A,B,C} × {2 synth + 1 analysis}); serial for now (OpenMP over the
+element loop is the perf follow-up). Degree 0 carries no memory slot and is dropped
+(no deformation channel to act on). The lateral field is set via
+`ve%enable_lateral_visc(sht, pert_elem)` — a per-element `(nphi,nlat,ne)` log10
+viscosity perturbation, `η_eff = η·10^pert` ⇒ `MkPerDt3 = (μ/η)·10^(−pert)`; elastic
+/fluid elements keep `MkPerDt=0` so the **lithosphere stays exactly elastic**. `set_dt`
+rescales `Mk3 = MkPerDt3·Δt` like the 1-D `Mk`. Only the explicit FE scheme is wired
+in 3D; the implicit trapezoidal 3D path is a guarded `error stop` (later sub-step).
+Validated: a laterally-UNIFORM field reduces the pseudo-spectral advance to the 1-D
+advance (SHT round-trip is exact on band-limited fields) — zero perturbation matches
+the 1-D `ve_response` memory + uplift trajectory to ~5e-13 rel; a uniform `p` matches
+a 1-D run with Maxwell η scaled by `10^p` to ~1e-12 rel.
+
+**Open / next.**
+- **6b** — lateral viscosity field builder (synthetic low-viscosity zone) + the
+  FastIsostasy test-3b cross-check: a cylindrical disc load (R=100 km, H=100 m,
+  ramped 100 yr) over an LVZ (η=1e19 in a 100-km column vs 1e21, 70–170 km depth),
+  comparing central-uplift vs a FastIsostasy.jl test3b run (and ASPECT/Abaqus as a
+  secondary anchor; geometry caveat: FI/ASPECT are flat-Cartesian, curvature
+  negligible at 100 km). **De-aliasing matters here** (sharp lateral η step) —
+  use `nlat ~ 3·lmax/2`.
+- **6c** — load a real 3D viscosity field from netCDF into `earth%visc_3d`
+  (node-based); bridge node→element by log10-mean of the bracketing nodes.
+- **TRAP-3D** — extend the pseudo-spectral advance to the implicit trapezoidal
+  rule (needed before the adaptive controller runs with lateral viscosity).
