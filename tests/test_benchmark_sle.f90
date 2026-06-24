@@ -91,6 +91,10 @@ program test_benchmark_sle
    real(wp) :: dt, esl, bary, shift, rho_ratio, spinerr
    integer  :: spin
    logical  :: ok
+   ! warm-start instrumentation: per-history SLE iteration tallies (see FE_SLE_WARM)
+   integer  :: tot_inner = 0, tot_outer = 0
+   character(len=8) :: warmenv
+   integer  :: envstat
 
    ok = .true.
    call set_case()
@@ -102,6 +106,19 @@ program test_benchmark_sle
    sle%n_inner = 20     ! n_outer left at default 3 (converged: 3 == 12 on E2)
    sle%fixed_ocean = fixed_ocean_case   ! SLE1 (C2/D3) vs SLE2 migrating (E2/F1)
    sle%subgrid     = .not. binary_run   ! subgrid coast by default; "binary" 2nd arg opts out
+   ! Warm-start by DEFAULT (matches the coupling driver): the previous step's
+   ! converged rsl seeds the SLE fixed point. rsl persists across steps here, so
+   ! this just sets the flag. The benchmark answer is byte-identical to cold start
+   ! (the fixed point is unique); warming exercises the production path and keeps it
+   ! in view for real, strongly-migrating domains. Set FE_SLE_WARM=0 to force the
+   ! legacy cold start (for the cold-vs-warm A/B comparison).
+   call get_environment_variable("FE_SLE_WARM", warmenv, status=envstat)
+   sle%warm_start = .not. (envstat == 0 .and. trim(warmenv) == "0")
+   if (sle%warm_start) then
+      write(*,'(a)') '   SLE start mode: WARM (reuse previous step rsl)'
+   else
+      write(*,'(a)') '   SLE start mode: COLD (rsl=0 each step)'
+   end if
 
    allocate(topo0(sht%nphi,sht%nlat), basin(sht%nphi,sht%nlat), &
             ice_now(sht%nphi,sht%nlat), rsl(sht%nphi,sht%nlat), &
@@ -236,6 +253,7 @@ contains
       integer :: istep
       real(wp) :: frac, alpha, h
       call reset_memory()
+      tot_inner = 0;  tot_outer = 0
       do istep = 1, nsteps
          if (heaviside_case) then
             frac = 1.0_wp                                   ! T0: full ice every step
@@ -246,10 +264,15 @@ contains
          call spherical_cap(sht, ICE_COLAT, ICE_LON, alpha, h, ice_now)
          ! ice-free reference: d_ice (load) = ice (flotation) = current absolute cap
          call sle%solve(sht, resp, ice_now, ice_now, topo0, rsl, C, res)
+         tot_inner = tot_inner + res%n_inner_last   ! inner iters in the last outer pass
+         tot_outer = tot_outer + res%n_outer_done   ! coastline (outer) passes this step
          if (mod(istep,250) == 0 .or. istep == nsteps) &
             write(*,'(a,i4,a,f7.4,a,es10.2,a,f9.4,a,i3)') '   step ', istep, '  frac=', frac, &
                '  mass_resid=', res%mass_resid, '  esl=', res%esl, '  n_outer=', res%n_outer_done
       end do
+      write(*,'(a,i0,a,i0,a,f5.2,a,f5.2,a)') '   SLE iteration tally over ', nsteps, &
+         ' steps: outer=', tot_outer, ' (', real(tot_outer,wp)/real(nsteps,wp), &
+         '/step), last-pass inner=', real(tot_inner,wp)/real(nsteps,wp), '/step'
    end subroutine run_history
 
    subroutine reset_memory()
