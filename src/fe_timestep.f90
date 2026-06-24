@@ -43,6 +43,7 @@ module fe_timestep
       integer  :: n_reject  = 0           !! rejected attempts (cumulative)
       integer  :: n_floor   = 0           !! steps accepted at dt_min over tolerance
       integer  :: n_solve   = 0           !! SLE solves issued (the dominant cost unit)
+      real(wp) :: worst_mass_resid = 0.0_wp  !! worst SLE mass residual over the LAST advance()
    contains
       procedure :: advance => stepper_advance
    end type adaptive_stepper
@@ -76,6 +77,7 @@ contains
 
       span = t1 - t0
       if (span <= 0.0_wp) return
+      self%worst_mass_resid = 0.0_wp             ! per-interval diagnostic (reset each advance)
       if (.not. scheme_is_implicit(resp%scheme)) then
          ! 1st-order / explicit response carries no step-doubling order signal here;
          ! the adaptive controller is meaningful only for the trapezoidal scheme.
@@ -85,6 +87,7 @@ contains
          call resp%set_dt(span)
          ice_now = ice1;  dice_now = ice1 - ice_ref
          call sle%solve(sht, resp, dice_now, ice_now, topo0, rsl, C, res)
+         self%worst_mass_resid = max(self%worst_mass_resid, res%mass_resid)
          self%n_accept = self%n_accept + 1
          return
       end if
@@ -162,6 +165,7 @@ contains
          dice_now = ice_now - ice_ref
          self%n_solve = self%n_solve + 1
          call sle%solve(sht, resp, dice_now, ice_now, topo0, rsl, C, res)
+         self%worst_mass_resid = max(self%worst_mass_resid, res%mass_resid)
       end subroutine solve_at
 
    end subroutine stepper_advance

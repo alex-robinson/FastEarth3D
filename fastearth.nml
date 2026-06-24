@@ -1,0 +1,74 @@
+&fe3d
+    ! ====================================================================
+    ! FastEarth3D configuration — one namelist group read by fe_par_load.
+    ! This file is the CANONICAL, COMPLETE defaults set: every parameter is
+    ! present. A run can pass a sparse file overlaid on this one (fe_par_load
+    ! with defaults_file=...), setting only what it overrides. Used both by
+    ! the standalone driver (program fastearth) and as the record a host
+    ! model (CLIMBER-X) can fill in memory.
+    !
+    ! Time fields (dt_*, time_*) are in YEARS here and converted to SI
+    ! seconds on load; everything else is SI.
+    ! ====================================================================
+
+    ! --- spectral grid (fe_sht) ---------------------------------------
+    lmax      = 64          ! maximum spherical-harmonic degree
+    nlat      = 0           ! Gauss latitudes (0 => SHTns default = lmax+2)
+    nphi      = 0           ! longitudes      (0 => SHTns default)
+    mmax      = -1          ! maximum order   (<0 => = lmax)
+    mres      = 1           ! order stride
+    eps_polar = -1.0        ! polar-optimization threshold (<0 => library default)
+
+    ! --- earth structure (fe_earth_structure) -------------------------
+    ! earth = a named built-in model, or "custom" to assemble from the
+    ! surface-first layer arrays below (rheology: 0=elastic 1=Maxwell 2=fluid).
+    ! The arrays here are the M3-L70-V01 layers, shown as a worked example;
+    ! they are inert unless earth = "custom".
+    earth    = "M3-L70-V01"
+    n_layer  = 5
+    r_earth  = 6371.0e3
+    r_core   = 3480.0e3
+    r_bot    = 6301.0e3, 5951.0e3, 5701.0e3, 3480.0e3,    0.0
+    r_top    = 6371.0e3, 6301.0e3, 5951.0e3, 5701.0e3, 3480.0e3
+    rho      =   3037.0,   3438.0,   3871.0,   4978.0,  10750.0
+    mu       = 5.0605e10, 7.0363e10, 1.0549e11, 2.2834e11, 0.0
+    eta      = 1.0e40,    1.0e21,    1.0e21,    2.0e21,    0.0
+    rheology = 0, 1, 1, 1, 2
+
+    ! --- viscoelastic memory scheme (fe_response) ---------------------
+    scheme          = "trap"   ! fe | etd1 | trap | be  (trap = 2nd-order adaptive)
+    max_couple_iter = 20       ! SLE<->memory co-convergence cap (implicit schemes)
+
+    ! --- sea-level equation (fe_sle) ----------------------------------
+    sle_n_outer      = 3
+    sle_n_inner      = 20
+    sle_tol          = 1.0e-7
+    sle_max_mem_iter = 20
+    sle_fixed_ocean  = .false. ! .true. => coastline held fixed (no migration)
+    sle_subgrid      = .true.  ! sloping-coast (mass-correct) ocean load
+
+    ! --- adaptive time stepping (fe_timestep) -------------------------
+    dt_couple  = 1000.0        ! default coupling interval [years] in the driver
+    dt_init    = 0.0           ! first trial Δt [years] (0 => try the whole interval)
+    dt_min     = 0.0           ! Δt floor [years] (0 => none)
+    dt_max     = 1.0e30        ! Δt ceiling [years] (huge => no ceiling)
+    rtol       = 1.0e-4        ! relative local-error tolerance (memory norm)
+    atol       = 1.0e-3        ! absolute local-error floor
+    safety     = 0.9
+    grow_max   = 5.0
+    shrink_min = 0.2
+
+    ! --- rotational feedback (fe_rotation) ----------------------------
+    rotation = .false.         ! TPW feedback (off until validated)
+
+    ! --- driver I/O (program fastearth only) --------------------------
+    file_forcing  = ""                 ! ice-thickness forcing, h_ice(lon,lat,time)
+    name_ice      = "h_ice"
+    name_time     = "time"             ! time axis [years]
+    file_ref      = ""                 ! reference state (z_bed_eq, h_ice_ref)
+    name_zbed_eq  = "z_bed_eq"
+    name_hice_ref = "h_ice_ref"
+    file_out      = "fastearth_out.nc" ! step output
+    time_init     = -1.0e30            ! [years] (<= forcing start => full range)
+    time_end      =  1.0e30            ! [years] (>= forcing end   => full range)
+/

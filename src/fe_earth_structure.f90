@@ -13,6 +13,7 @@ module fe_earth_structure
    !! unallocated; the same solver path reduces to the spherically symmetric case.
    use fe_precision, only: wp
    use fe_constants, only: pi, grav_G
+   use fe_params,    only: fe_param_class, MAX_LAYER
    implicit none
    private
 
@@ -21,7 +22,7 @@ module fe_earth_structure
    integer, parameter, public :: RHEOL_MAXWELL = 1   !! Maxwell viscoelastic
    integer, parameter, public :: RHEOL_FLUID   = 2   !! inviscid fluid (mu = 0)
 
-   public :: earth_layer, earth_model, build_M3L70V01
+   public :: earth_layer, earth_model, build_M3L70V01, build_earth
 
    type :: earth_layer
       !! A homogeneous spherical shell, r_bot <= r <= r_top.
@@ -55,6 +56,33 @@ module fe_earth_structure
 contains
 
    ! --- Construction ----------------------------------------------------------
+
+   function build_earth(p) result(em)
+      !! Build the earth model selected by p%earth: a named built-in, or "custom"
+      !! assembled from the per-layer arrays (surface-first) in the parameter record.
+      type(fe_param_class), intent(in) :: p
+      type(earth_model) :: em
+      integer :: k, n
+
+      select case (trim(p%earth))
+      case ("M3-L70-V01")
+         em = build_M3L70V01()
+      case ("custom")
+         n = p%n_layer
+         if (n < 1 .or. n > MAX_LAYER) &
+            error stop 'build_earth: n_layer out of range for a custom earth model'
+         em%name    = "custom"
+         em%r_earth = p%r_earth
+         em%r_core  = p%r_core
+         allocate(em%layers(n))
+         do k = 1, n
+            em%layers(k) = earth_layer(p%r_bot(k), p%r_top(k), p%rho(k), &
+                                       p%mu(k), p%eta(k), p%rheology(k))
+         end do
+      case default
+         error stop 'build_earth: unknown earth model "'//trim(p%earth)//'"'
+      end select
+   end function build_earth
 
    function build_M3L70V01() result(em)
       !! Benchmark Earth model M3-L70-V01 (Spada et al. 2011, GJI 185:106,

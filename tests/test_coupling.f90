@@ -11,7 +11,7 @@ program test_coupling
    !!       the ocean draws down (adding land ice removes ocean water).
    use fe_precision,       only: wp
    use fe_constants,       only: kyr, pi
-   use fe_earth_structure, only: earth_model, build_M3L70V01
+   use fe_params,          only: fe_param_class
    use fe_radial_fe,       only: radial_fe_finalize
    use fe_sht,             only: sht_grid
    use fe_coupling,        only: solid_earth
@@ -19,17 +19,16 @@ program test_coupling
 
    integer, parameter :: LMAX = 16, NSTEP = 15
    type(sht_grid), target :: sht
-   type(earth_model)      :: e
+   type(fe_param_class)   :: p
    type(solid_earth)      :: se
    real(wp), allocatable  :: z_bed_eq(:,:), h_ice_ref(:,:), h_ice(:,:)
-   real(wp) :: dt_couple, dt_step, bed_eq_ice, bed_prev, bed_now, d_first, d_last
+   real(wp) :: dt_couple, bed_eq_ice, bed_prev, bed_now, d_first, d_last
    real(wp) :: ocean_rsl, worst_mass, net_subs
    integer  :: i, jice, jocean, step
    logical  :: ok, monotone
 
    ok = .true.
    call sht%init(LMAX, nlat=2*LMAX, nphi=4*LMAX)
-   e = build_M3L70V01()
 
    allocate(z_bed_eq(sht%nphi,sht%nlat), h_ice_ref(sht%nphi,sht%nlat), &
             h_ice(sht%nphi,sht%nlat))
@@ -40,15 +39,15 @@ program test_coupling
    jocean = nearest_row(70.0_wp)
    bed_eq_ice = z_bed_eq(1,jice)
 
-   dt_couple = 2.0_wp*kyr
-   dt_step   = 0.5_wp*kyr                          ! n_sub = 4 per coupling step
-   call se%init(e, sht, z_bed_eq, h_ice_ref, dt_couple, dt_step)
+   dt_couple    = 2.0_wp*kyr                        ! interval per se%update call
+   p%dt_couple  = dt_couple                         ! default cadence (M3-L70-V01, trapezoidal)
+   call se%init(p, sht, z_bed_eq, h_ice_ref)
 
-   write(*,'(a,i0,a,i0,a)') ' coupling: lmax=', LMAX, '  n_sub=', se%n_sub, &
-                            '  (dt_couple=2 kyr, dt_step=0.5 kyr)'
+   write(*,'(a,i0,a)') ' coupling: lmax=', LMAX, &
+                       '  (dt_couple=2 kyr, adaptive trapezoidal)'
 
    ! --- (0) reference consistency: no ice change -> no motion -----------------
-   call se%update(h_ice_ref)
+   call se%update(h_ice_ref, dt_couple)
    write(*,'(a,es10.2,a,es10.2)') '   ref: max|rsl|=', maxval(abs(se%rsl)), &
                                   '   max|z_bed-z_bed_eq|=', maxval(abs(se%z_bed - z_bed_eq))
    if (maxval(abs(se%rsl)) > 1.0e-9_wp .or. maxval(abs(se%z_bed - z_bed_eq)) > 1.0e-9_wp) then
@@ -60,7 +59,7 @@ program test_coupling
    write(*,'(a)') '       step   z_bed under ice [m]   d(subs) [m]   worst mass resid'
    bed_prev = bed_eq_ice;  worst_mass = 0.0_wp;  monotone = .true.
    do step = 1, NSTEP
-      call se%update(h_ice)
+      call se%update(h_ice, dt_couple)
       bed_now = se%z_bed(1,jice)
       worst_mass = max(worst_mass, se%worst_mass_resid)
       if (step == 1)     d_first = bed_prev - bed_now

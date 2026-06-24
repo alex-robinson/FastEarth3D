@@ -5,13 +5,14 @@ program test_restart
    !!   (1) direct state restore — read the last snapshot into a fresh model and
    !!       its z_bed/rsl match what was written;
    !!   (2) bit-for-bit continuation — restore the EARLIER snapshot's Maxwell
-   !!       memory and step forward; the trajectory reproduces the uninterrupted
-   !!       run exactly (the prognostic memory is all that is needed);
+   !!       memory + adaptive-Δt seed and step forward; the trajectory reproduces
+   !!       the uninterrupted run exactly (the restored prognostic state — memory
+   !!       and dt_try — is all that is needed);
    !!   (3) multi-snapshot file — two snapshots at different times coexist, and a
    !!       specific earlier time can be selected on read.
    use fe_precision,       only: wp
    use fe_constants,       only: kyr, pi
-   use fe_earth_structure, only: earth_model, build_M3L70V01
+   use fe_params,          only: fe_param_class
    use fe_radial_fe,       only: radial_fe_finalize
    use fe_sht,             only: sht_grid
    use fe_coupling,        only: solid_earth
@@ -22,33 +23,33 @@ program test_restart
    integer, parameter :: LMAX = 12, K1 = 3, K2 = 3
    character(len=*), parameter :: FILE = "obj/test_restart.nc"
    type(sht_grid), target :: sht
-   type(earth_model)      :: e
+   type(fe_param_class)   :: p
    type(solid_earth)      :: a, b, c
    real(wp), allocatable  :: z_bed_eq(:,:), h_ice_ref(:,:), h_ice(:,:)
    real(wp), allocatable  :: a6_zbed(:,:), a6_rsl(:,:)
-   real(wp) :: dt_couple, dt_step, t1, t2, d_restore, d_continue
+   real(wp) :: dt_couple, t1, t2, d_restore, d_continue
    integer  :: step, nt
    logical  :: ok
 
    ok = .true.
    call sht%init(LMAX, nlat=2*LMAX, nphi=4*LMAX)
-   e = build_M3L70V01()
    allocate(z_bed_eq(sht%nphi,sht%nlat), h_ice_ref(sht%nphi,sht%nlat), &
             h_ice(sht%nphi,sht%nlat))
    call make_fields(z_bed_eq, h_ice_ref, h_ice)
 
-   dt_couple = 1.0_wp*kyr;  dt_step = 0.5_wp*kyr      ! n_sub = 2
+   dt_couple = 1.0_wp*kyr              ! interval per update; M3-L70-V01, trapezoidal
+   p%dt_couple = dt_couple
 
    ! === reference run A =======================================================
-   call a%init(e, sht, z_bed_eq, h_ice_ref, dt_couple, dt_step)
+   call a%init(p, sht, z_bed_eq, h_ice_ref)
    do step = 1, K1
-      call a%update(h_ice)
+      call a%update(h_ice, dt_couple)
    end do
    t1 = a%time
    call fe_restart_write(a, FILE, t1, init=.true.)       ! snapshot 1 (memory @ K1)
 
    do step = 1, K2
-      call a%update(h_ice)
+      call a%update(h_ice, dt_couple)
    end do
    t2 = a%time
    call fe_restart_write(a, FILE, t2, init=.false.)      ! snapshot 2 (state @ K1+K2)
@@ -65,7 +66,7 @@ program test_restart
    end if
 
    ! === (1) direct state restore (default = last snapshot, t2) ================
-   call b%init(e, sht, z_bed_eq, h_ice_ref, dt_couple, dt_step)
+   call b%init(p, sht, z_bed_eq, h_ice_ref)
    call fe_restart_read(b, FILE)
    d_restore = max(maxval(abs(b%z_bed - a6_zbed)), maxval(abs(b%rsl - a6_rsl)))
    write(*,'(a,es11.2)') '   (1) state restore  max|B - A|     =', d_restore
@@ -74,10 +75,10 @@ program test_restart
    end if
 
    ! === (2) bit-for-bit continuation from the earlier snapshot (t1) ===========
-   call c%init(e, sht, z_bed_eq, h_ice_ref, dt_couple, dt_step)
+   call c%init(p, sht, z_bed_eq, h_ice_ref)
    call fe_restart_read(c, FILE, time=t1)                ! restore memory @ K1
    do step = 1, K2
-      call c%update(h_ice)                               ! same load, K2 steps
+      call c%update(h_ice, dt_couple)                               ! same load, K2 steps
    end do
    d_continue = max(maxval(abs(c%z_bed - a6_zbed)), maxval(abs(c%rsl - a6_rsl)))
    write(*,'(a,es11.2)') '   (2) continuation   max|C - A|     =', d_continue

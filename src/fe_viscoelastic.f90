@@ -33,7 +33,7 @@ module fe_viscoelastic
              advance_memory
    ! Time-integration schemes for the Maxwell memory update (advance_memory):
    public :: SCHEME_FE, SCHEME_ETD1, SCHEME_TRAP, SCHEME_BE
-   public :: scheme_is_implicit, scheme_order
+   public :: scheme_is_implicit, scheme_order, scheme_from_name
 
    ! Spheroidal strain keeps four tensor-harmonic components; LAM maps the local
    ! index 1..4 to Martinec's λ ∈ {1,2,5,6} (λ=3,4 are toroidal, dropped).
@@ -241,6 +241,18 @@ contains
       else;                             p = 1
       end if
    end function scheme_order
+
+   pure integer function scheme_from_name(name) result(scheme)
+      !! Map a namelist scheme string to its SCHEME_* code (see fe_params).
+      character(len=*), intent(in) :: name
+      select case (trim(name))
+      case ("fe");   scheme = SCHEME_FE
+      case ("etd1"); scheme = SCHEME_ETD1
+      case ("trap"); scheme = SCHEME_TRAP
+      case ("be");   scheme = SCHEME_BE
+      case default;  error stop 'scheme_from_name: unknown memory scheme (use fe|etd1|trap|be)'
+      end select
+   end function scheme_from_name
 
    subroutine ve_step_double(self, sigma, err_est)
       !! Step-doubling local-error estimate (Richardson). Advances one Δt by the FINE

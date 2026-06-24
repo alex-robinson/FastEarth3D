@@ -10,7 +10,9 @@ module fe_io
    !! table is both the I/O metadata source and the human documentation.
    !!
    !! Prognostic (restored on restart): the Maxwell memory-stress fields tau_*
-   !! (nlam,ne,nk) and the model time. Static (written once, checked on read):
+   !! (nlam,ne,nk), the model time, and the adaptive controller's next-step Δt
+   !! suggestion dt_try (so a restarted run sub-steps the same path → bit-for-bit
+   !! continuation). Static (written once, checked on read):
    !! the reference state z_bed_eq, h_ice_ref. Diagnostic: h_ice, rsl, z_bed,
    !! C_ocean (lon,lat) — written for inspection and restored if present.
    use fe_precision,    only: wp
@@ -28,9 +30,10 @@ module fe_io
 
    ! The full time-varying variable set written each step (a restart writes all
    ! of these). Static reference fields are written once in the init branch.
-   character(len=9), parameter :: ALL_VARS(10) = [character(len=9) :: &
-        "tau_a_re", "tau_a_im", "tau_b_re", "tau_b_im", "tau_c_re", "tau_c_im", &
-        "h_ice",    "rsl",      "z_bed",    "C_ocean"]
+   character(len=12), parameter :: ALL_VARS(14) = [character(len=12) :: &
+        "tau_a_re",   "tau_a_im",   "tau_b_re", "tau_b_im", "tau_c_re", "tau_c_im", &
+        "h_ice",      "rsl",        "z_bed",    "C_ocean",  "dt_try",   &
+        "sigma_n_re", "sigma_n_im", "sigma_primed"]
 
    character(len=256), save              :: table_file = "input/fastearth-variables.md"
    type(var_io_type), allocatable, save  :: vtable(:)
@@ -115,6 +118,8 @@ contains
       call nc_write_dim(filename, "ne",   x=1, dx=1, nx=self%resp%ne,  units="1")
       ! nk = # deforming (l>=1) coefficients, in the ve_response degree-grouped order
       call nc_write_dim(filename, "nk",   x=1, dx=1, nx=self%resp%nk,  units="1")
+      ! nlm = # spherical-harmonic (l,m) coefficients (carries the σ_n load vector)
+      call nc_write_dim(filename, "nlm",  x=1, dx=1, nx=self%resp%nlm, units="1")
       call nc_write_dim(filename, "time", x=time, dx=1.0_wp, nx=1, units="s", unlimited=.true.)
 
       call put2d(self, filename, "z_bed_eq",  self%z_bed_eq,  static=.true.)
@@ -137,6 +142,13 @@ contains
       case ("rsl");      call put2d(self, filename, name, self%rsl,   n=n, ncid=ncid)
       case ("z_bed");    call put2d(self, filename, name, self%z_bed, n=n, ncid=ncid)
       case ("C_ocean");  call put2d(self, filename, name, self%C,     n=n, ncid=ncid)
+      case ("dt_try");   call put_scalar(filename, name, self%stepper%dt_try, n, ncid)
+      case ("sigma_n_re"); call put_sigma(self, filename, name, want_re=.true.,  n=n, ncid=ncid)
+      case ("sigma_n_im"); call put_sigma(self, filename, name, want_re=.false., n=n, ncid=ncid)
+      case ("sigma_primed")
+         call put_scalar(filename, name, &
+              merge(1.0_wp, 0.0_wp, allocated(self%resp%sigma_n) .and. self%resp%sigma_primed), &
+              n, ncid)
       case default
          error stop 'fe_io: unknown variable "'//trim(name)//'"'
       end select
@@ -155,6 +167,41 @@ contains
            start=[1,1,1,n], count=[NLAM, self%resp%ne, self%resp%nk, 1], &
            units=trim(v%units), long_name=trim(v%long_name))
    end subroutine put3d
+
+   subroutine put_sigma(self, filename, name, want_re, n, ncid)
+      !! Write the real or imaginary part of the trapezoidal start-of-step load σ_n
+      !! (a spectral (nlm) vector) at time slice n; zeros if σ_n is not yet tracked.
+      class(solid_earth), intent(in) :: self
+      character(len=*),   intent(in) :: filename, name
+      logical,            intent(in) :: want_re
+      integer,            intent(in) :: n, ncid
+      type(var_io_type)     :: v
+      real(wp), allocatable :: dat(:)
+      integer :: nlm
+      nlm = self%resp%nlm
+      allocate(dat(nlm))
+      if (allocated(self%resp%sigma_n)) then
+         if (want_re) then;  dat = real(self%resp%sigma_n, wp)
+         else;               dat = aimag(self%resp%sigma_n)
+         end if
+      else
+         dat = 0.0_wp
+      end if
+      call find_var_io_in_table(v, name, vtable, with_error=.true.)
+      call nc_write(filename, name, dat, ncid=ncid, dim1="nlm", dim2="time", &
+           start=[1,n], count=[nlm,1], units=trim(v%units), long_name=trim(v%long_name))
+   end subroutine put_sigma
+
+   subroutine put_scalar(filename, name, val, n, ncid)
+      !! Write a single time-varying scalar (controller state) at time slice n.
+      character(len=*), intent(in) :: filename, name
+      real(wp),         intent(in) :: val
+      integer,          intent(in) :: n, ncid
+      type(var_io_type) :: v
+      call find_var_io_in_table(v, name, vtable, with_error=.true.)
+      call nc_write(filename, name, val, ncid=ncid, dim1="time", &
+           start=[n], count=[1], units=trim(v%units), long_name=trim(v%long_name))
+   end subroutine put_scalar
 
    subroutine put2d(self, filename, name, dat, n, ncid, static)
       !! Write a (lon,lat) field — static (no time) or at time slice n.
@@ -199,7 +246,7 @@ contains
       ! dimension validation
       if (nc_size(filename, "nlam") /= NLAM .or. nc_size(filename, "ne")  /= ne  .or. &
           nc_size(filename, "nk")   /= nk   .or. nc_size(filename, "lon") /= np  .or. &
-          nc_size(filename, "lat")  /= nl) &
+          nc_size(filename, "lat")  /= nl   .or. nc_size(filename, "nlm") /= self%resp%nlm) &
          error stop 'fe_restart_read: file dimensions do not match the initialised model'
 
       ! select the time slice
@@ -237,10 +284,35 @@ contains
       call get2d(filename, "z_bed",   self%z_bed, np, nl, n)
       call get2d(filename, "C_ocean", self%C,     np, nl, n)
 
-      ! restore the clock
+      ! restore the clock and the adaptive controller's step-size seed (so the
+      ! restarted run sub-steps the same path as the uninterrupted one)
       self%resp%time = tvals(n)
       self%time      = tvals(n)
+      call nc_read(filename, "dt_try", self%stepper%dt_try, start=[n], count=[1])
+
+      ! restore the trapezoidal start-of-step load σ_n (the other prognostic piece
+      ! of the implicit scheme); without it the first step would re-derive σ_n to
+      ! only the SLE solver tolerance, breaking bit-for-bit continuation.
+      call restore_sigma(self, filename, n)
    end subroutine fe_restart_read
+
+   subroutine restore_sigma(self, filename, n)
+      !! Restore σ_n at time slice n into the response, marking it primed, if the
+      !! snapshot recorded a tracked σ_n (sigma_primed flag set).
+      class(solid_earth), intent(inout) :: self
+      character(len=*),   intent(in)    :: filename
+      integer,            intent(in)    :: n
+      real(wp), allocatable :: sre(:), sim(:)
+      real(wp) :: primed
+      integer  :: nlm
+      call nc_read(filename, "sigma_primed", primed, start=[n], count=[1])
+      if (primed <= 0.5_wp) return
+      nlm = self%resp%nlm
+      allocate(sre(nlm), sim(nlm))
+      call nc_read(filename, "sigma_n_re", sre, start=[1,n], count=[nlm,1])
+      call nc_read(filename, "sigma_n_im", sim, start=[1,n], count=[nlm,1])
+      call self%resp%prime_sigma(cmplx(sre, sim, wp))
+   end subroutine restore_sigma
 
    subroutine get3d(filename, name, dat, ne, nk, n)
       character(len=*), intent(in)  :: filename, name

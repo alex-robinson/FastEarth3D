@@ -4,17 +4,19 @@ module fe_coupling
    !! CLIMBER-X (src/geo/vilma.F90): ice thickness goes in, relative sea level
    !! and bedrock elevation come out, on the model's own Gauss-Legendre grid.
    !!
-   !!   call se%init(earth, sht, z_bed_eq, h_ice_ref, dt_couple, dt_step)
+   !!   call se%init(p, sht, z_bed_eq, h_ice_ref)   ! p = fe_param_class (one &fe3d group)
    !!   ...
-   !!   call se%update(h_ice)       ! every coupling step; mutates se%rsl, se%z_bed
+   !!   call se%update(h_ice, dt)   ! advance time -> time+dt; mutates se%rsl, se%z_bed
    !!   ...
    !!   call se%finalize()
    !!
    !! The host maps between its grid and the model's Gauss grid (CLIMBER-X uses
    !! conservative/bilinear SCRIP weights); all spherical-harmonic work stays
    !! inside this model. update() advances the viscoelastic state and the
-   !! sea-level equation, then stores the results IN the derived type — the host
-   !! reads se%rsl (relative sea level) and se%z_bed (bedrock) afterwards.
+   !! sea-level equation across the interval [time, time+dt] — the ice load is
+   !! ramped linearly between the previous and current h_ice and the internal Δt
+   !! is chosen adaptively (fe_timestep) — then stores the results IN the derived
+   !! type — the host reads se%rsl (relative sea level) and se%z_bed (bedrock).
    !!
    !! Reference (equilibrium) state. The supplied (z_bed_eq, h_ice_ref) IS the
    !! relaxed state: the Maxwell memory starts at zero, so with h_ice = h_ice_ref
@@ -22,10 +24,13 @@ module fe_coupling
    !! ice load drive the deformation and sea-level change incrementally. The
    !! reference topography z_bed_eq doubles as the SLE's reference topo0.
    use fe_precision,       only: wp
+   use fe_params,          only: fe_param_class
    use fe_sht,             only: sht_grid
-   use fe_earth_structure, only: earth_model
+   use fe_earth_structure, only: earth_model, build_earth
+   use fe_viscoelastic,    only: scheme_from_name
    use fe_response,        only: ve_response
    use fe_sle,             only: sle_solver, sle_result
+   use fe_timestep,        only: adaptive_stepper
    use fe_rotation,        only: rotation_state
    implicit none
    private
@@ -37,6 +42,7 @@ module fe_coupling
       type(earth_model)        :: earth     !! radial (+ optional 3D) structure
       type(ve_response)        :: resp      !! viscoelastic field driver (load → u, N)
       type(sle_solver)         :: sle       !! sea-level equation
+      type(adaptive_stepper)   :: stepper   !! adaptive-Δt controller (fe_timestep)
       type(rotation_state)     :: rotation  !! TPW feedback (off by default)
       ! reference (equilibrium) state — set once at init
       real(wp), allocatable    :: z_bed_eq(:,:)   !! relaxed bedrock [m] (nphi,nlat)
@@ -46,14 +52,10 @@ module fe_coupling
       real(wp), allocatable    :: rsl(:,:)    !! relative sea level change [m] (full field)
       real(wp), allocatable    :: z_bed(:,:)  !! bedrock = z_bed_eq − rsl [m]
       real(wp), allocatable    :: C(:,:)      !! ocean function (1 ocean / 0 land)
-      ! configuration
-      real(wp) :: dt_couple = 0.0_wp   !! coupling interval [s]
-      real(wp) :: dt_step   = 0.0_wp   !! internal Maxwell time step [s]
-      integer  :: n_sub     = 0        !! steps per coupling interval = dt_couple/dt_step
+      ! configuration / clock
       real(wp) :: time      = 0.0_wp   !! model time [s] (mirrors resp%time)
       ! diagnostics from the last update
-      type(sle_result) :: last_res
-      real(wp) :: worst_mass_resid = 0.0_wp  !! worst SLE mass residual over the interval
+      real(wp) :: worst_mass_resid = 0.0_wp  !! worst SLE mass residual over the last interval
    contains
       procedure :: init     => solid_earth_init
       procedure :: update   => solid_earth_update
@@ -62,19 +64,20 @@ module fe_coupling
 
 contains
 
-   subroutine solid_earth_init(self, earth, sht, z_bed_eq, h_ice_ref, &
-                               dt_couple, dt_step)
-      !! Wire the sub-solvers to a (host-owned) transform grid and set the
-      !! reference state. The grid is borrowed by pointer — the host keeps it
-      !! alive for the model's lifetime and is responsible for destroying it.
-      class(solid_earth), intent(inout)        :: self
-      type(earth_model),  intent(in)           :: earth
-      type(sht_grid),     intent(in),   target :: sht
-      real(wp),           intent(in)           :: z_bed_eq(:,:)   !! (nphi,nlat) [m]
-      real(wp),           intent(in)           :: h_ice_ref(:,:)  !! (nphi,nlat) [m]
-      real(wp),           intent(in)           :: dt_couple       !! coupling interval [s]
-      real(wp),           intent(in)           :: dt_step         !! Maxwell step [s]
-      integer :: np, nl
+   subroutine solid_earth_init(self, p, sht, z_bed_eq, h_ice_ref)
+      !! Build the model from the parameter record and wire it to a (host-owned)
+      !! transform grid, setting the reference state. The earth structure is built
+      !! from p (named built-in or custom layers); the SLE, adaptive-Δt and memory-
+      !! scheme knobs are distributed from p to the sub-solvers. The grid is
+      !! borrowed by pointer — the host keeps it alive for the model's lifetime and
+      !! is responsible for destroying it.
+      class(solid_earth),   intent(inout)        :: self
+      type(fe_param_class), intent(in)           :: p
+      type(sht_grid),       intent(in),   target :: sht
+      real(wp),             intent(in)           :: z_bed_eq(:,:)   !! (nphi,nlat) [m]
+      real(wp),             intent(in)           :: h_ice_ref(:,:)  !! (nphi,nlat) [m]
+      integer  :: np, nl
+      real(wp) :: dt0
 
       call self%finalize()                       ! clean slate (safe on a fresh object)
 
@@ -83,23 +86,43 @@ contains
           size(h_ice_ref,1) /= np .or. size(h_ice_ref,2) /= nl) &
          error stop 'solid_earth_init: reference fields do not match the grid'
 
-      self%n_sub = nint(dt_couple/dt_step)
-      if (self%n_sub < 1 .or. &
-          abs(self%n_sub*dt_step - dt_couple) > 1.0e-6_wp*dt_couple) &
-         error stop 'solid_earth_init: dt_couple must be a positive multiple of dt_step'
+      self%sht   => sht
+      self%earth = build_earth(p)
+      self%time  = 0.0_wp
 
-      self%sht       => sht
-      self%earth     = earth
-      self%dt_couple = dt_couple
-      self%dt_step   = dt_step
-      self%time      = 0.0_wp
+      ! viscoelastic driver: operators assembled + factored once, memory zeroed.
+      ! Δt enters only through Mk = (μ/η)Δt, which the adaptive stepper rescales
+      ! per sub-step (resp%set_dt) — so the init Δt is just a nominal seed.
+      dt0 = p%dt_init;  if (dt0 <= 0.0_wp) dt0 = p%dt_couple
+      call self%resp%init(self%earth, sht, dt0)
+      self%resp%scheme          = scheme_from_name(p%scheme)
+      self%resp%max_couple_iter = p%max_couple_iter
 
-      ! Warm-start the SLE fixed point across sub-steps and coupling intervals:
-      ! self%rsl persists (seeded to 0 below), and between adjacent Maxwell steps
-      ! the coastline barely moves, so the previous solution is a near-converged
-      ! seed — sharply cutting the inner iteration count (the dominant per-step
-      ! cost is the SLE's spherical-harmonic transforms, ~linear in that count).
-      self%sle%warm_start = .true.
+      ! sea-level equation knobs. Warm-start the fixed point across steps: self%rsl
+      ! persists (seeded to 0 below), and between adjacent steps the coastline
+      ! barely moves, so the previous solution is a near-converged seed — sharply
+      ! cutting the inner iteration count (the dominant per-step cost is the SLE's
+      ! spherical-harmonic transforms, ~linear in that count).
+      self%sle%n_outer      = p%sle_n_outer
+      self%sle%n_inner      = p%sle_n_inner
+      self%sle%tol          = p%sle_tol
+      self%sle%max_mem_iter = p%sle_max_mem_iter
+      self%sle%fixed_ocean  = p%sle_fixed_ocean
+      self%sle%subgrid      = p%sle_subgrid
+      self%sle%warm_start   = .true.
+
+      ! adaptive-Δt controller (fe_timestep)
+      self%stepper%rtol       = p%rtol
+      self%stepper%atol       = p%atol
+      self%stepper%safety     = p%safety
+      self%stepper%grow_max   = p%grow_max
+      self%stepper%shrink_min = p%shrink_min
+      self%stepper%dt_min     = p%dt_min
+      self%stepper%dt_max     = p%dt_max
+      self%stepper%dt_try     = p%dt_init       ! 0 => first guess = whole interval
+
+      ! rotational feedback
+      self%rotation%enabled = p%rotation
 
       ! reference (equilibrium) state; z_bed_eq doubles as the SLE topo0
       allocate(self%z_bed_eq,  source=z_bed_eq)
@@ -110,36 +133,31 @@ contains
       allocate(self%rsl(np,nl),   source=0.0_wp)
       allocate(self%z_bed,        source=z_bed_eq)
       allocate(self%C(np,nl),     source=0.0_wp)
-
-      ! viscoelastic driver: operators assembled + factored once, memory zeroed
-      call self%resp%init(earth, sht, dt_step)
    end subroutine solid_earth_init
 
-   subroutine solid_earth_update(self, h_ice)
-      !! Advance one coupling interval under the ice thickness h_ice and store the
-      !! results in the derived type (se%rsl, se%z_bed, se%C, se%h_ice). The ice
-      !! load change relative to the reference, d_ice = h_ice − h_ice_ref, is held
-      !! constant across the n_sub internal Maxwell steps; each step solves the
-      !! SLE against the current relaxation state and advances the memory by Δt.
+   subroutine solid_earth_update(self, h_ice, dt)
+      !! Advance the model from time to time+dt under the ice thickness h_ice and
+      !! store the results in the derived type (se%rsl, se%z_bed, se%C, se%h_ice).
+      !! The ice load is ramped linearly from the previous h_ice to the new one
+      !! across the interval; the adaptive stepper (fe_timestep) chooses the
+      !! internal Δt, solving the SLE against the current relaxation state and
+      !! advancing the Maxwell memory at each sub-step.
       class(solid_earth), intent(inout) :: self
       real(wp),           intent(in)    :: h_ice(:,:)   !! grounded-ice thickness [m]
-      real(wp), allocatable :: d_ice(:,:)
-      integer :: k
+      real(wp),           intent(in)    :: dt           !! interval to advance [s]
+      real(wp) :: t0, t1
 
-      allocate(d_ice, source = h_ice - self%h_ice_ref)
-      self%h_ice = h_ice
-      self%worst_mass_resid = 0.0_wp
-
-      do k = 1, self%n_sub
-         call self%sle%solve(self%sht, self%resp, d_ice, h_ice, self%z_bed_eq, &
-                             self%rsl, self%C, self%last_res)
-         self%worst_mass_resid = max(self%worst_mass_resid, self%last_res%mass_resid)
-      end do
+      t0 = self%time;  t1 = t0 + dt
+      call self%stepper%advance(self%sht, self%resp, self%sle, self%z_bed_eq, &
+                                self%h_ice, h_ice, self%h_ice_ref, t0, t1, &
+                                self%rsl, self%C)
+      self%h_ice            = h_ice
+      self%worst_mass_resid = self%stepper%worst_mass_resid
 
       ! bedrock relative to the sea surface; rsl is the full RSL change field, so
       ! the bed subsides under grounded ice (land) as well as in the ocean.
       self%z_bed = self%z_bed_eq - self%rsl
-      self%time  = self%resp%time
+      self%time  = t1
    end subroutine solid_earth_update
 
    subroutine solid_earth_finalize(self)
@@ -152,7 +170,7 @@ contains
       if (allocated(self%rsl))       deallocate(self%rsl)
       if (allocated(self%z_bed))     deallocate(self%z_bed)
       if (allocated(self%C))         deallocate(self%C)
-      self%n_sub = 0;  self%time = 0.0_wp
+      self%time = 0.0_wp
    end subroutine solid_earth_finalize
 
 end module fe_coupling
