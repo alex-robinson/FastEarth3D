@@ -117,6 +117,12 @@ program test_couple_order
    ! practical tol: tightening past it buys iterations, not accuracy.
    call cost_curve()
 
+   ! --- step-doubling local-error estimate (§3c part ii) -------------------------
+   ! The Richardson estimate of an order-p method's LOCAL error scales as dt^(p+1):
+   ! ~dt^3 for trapezoidal (p=2), ~dt^2 for forward-Euler (p=1). Confirms the
+   ! estimate is a faithful, order-aware accept/reject signal for an adaptive dt.
+   call step_doubling_check()
+
    write(*,'(a)') ''
    write(*,'(a)') '   FINDING: iterating the coupling to consistency with a 1st-order rule (B)'
    write(*,'(a)') '            stays 1st order -- the iteration is not itself an order lever.'
@@ -219,6 +225,50 @@ contains
       end do
       write(*,'(a)') '   (cells are peak-iters/error; error stops improving once tol clears the floor)'
    end subroutine cost_curve
+
+   subroutine step_doubling_check()
+      !! Validate ve%step_double: the local-error estimate of the first step from the
+      !! relaxed (tau=0) start, swept over dt. For an order-p method it must scale as
+      !! dt^(p+1) -- order ~3 for trapezoidal, ~2 for forward-Euler. Reported AND
+      !! guarded (this is the §3c part-ii deliverable).
+      real(wp) :: esdT(NS), esdF(NS), pT, pF
+      integer  :: i
+      write(*,'(a)') ''
+      write(*,'(a)') '   Step-doubling local-error estimate vs dt (first step from tau=0)'
+      write(*,'(a)') '   dt[yr]   M      est FE       est TRAP'
+      write(*,'(a)') '   ---------------------------------------------'
+      do i = 1, NS
+         esdF(i) = one_estimate(SCHEME_FE,   1,     dtsweep(i))
+         esdT(i) = one_estimate(SCHEME_TRAP, MAXIT, dtsweep(i))
+         write(*,'(a,f6.1,f7.3,2es13.3)') '   ', dtsweep(i), &
+              mu*dtsweep(i)*yr/eta, esdF(i), esdT(i)
+      end do
+      pF = order(esdF(NS-1), esdF(NS))     ! expect ~2 (FE local error ~ dt^2)
+      pT = order(esdT(NS-1), esdT(NS))     ! expect ~3 (TRAP local error ~ dt^3)
+      write(*,'(a,2f7.2)') '   est scaling order (p+1)  FE, TRAP = ', pF, pT
+      if (pF < 1.6_wp .or. pF > 2.4_wp) then
+         write(*,'(a,f5.2)') '   FAIL: FE step-doubling estimate not ~dt^2, p+1=', pF; ok = .false.
+      end if
+      if (pT < 2.6_wp .or. pT > 3.4_wp) then
+         write(*,'(a,f5.2)') '   FAIL: TRAP step-doubling estimate not ~dt^3, p+1=', pT; ok = .false.
+      end if
+   end subroutine step_doubling_check
+
+   function one_estimate(scheme, max_iter, dt_yr) result(est)
+      !! One step-doubling estimate of the first step from a fresh (relaxed) stepper.
+      integer,  intent(in) :: scheme, max_iter
+      real(wp), intent(in) :: dt_yr
+      real(wp) :: est
+      type(earth_model) :: e
+      type(radial_mesh) :: m
+      type(ve_degree)   :: ve
+      call mk_earth(e)
+      call m%build(e)
+      call ve%init(e, m, j, dt_yr*yr)
+      ve%scheme = scheme;  ve%max_couple_iter = max_iter;  ve%couple_tol = TOL_TIGHT
+      call ve%step_double(1.0_wp, est)
+      call ve%destroy()
+   end function one_estimate
 
    pure function order(e_coarse, e_fine) result(p)
       !! Observed convergence order from a dt -> dt/2 error pair: p = log2(e/e_half).

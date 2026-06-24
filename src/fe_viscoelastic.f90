@@ -81,6 +81,7 @@ module fe_viscoelastic
    contains
       procedure :: init  => ve_init
       procedure :: step  => ve_step
+      procedure :: step_double => ve_step_double
       procedure :: destroy => ve_destroy
    end type ve_degree
 
@@ -230,6 +231,55 @@ contains
       integer, intent(in) :: scheme
       imp = (scheme == SCHEME_BE .or. scheme == SCHEME_TRAP)
    end function scheme_is_implicit
+
+   pure integer function scheme_order(scheme) result(p)
+      !! Global time-accuracy order of each memory rule (sets the step-doubling
+      !! Richardson factor 2^p − 1). Trapezoidal is 2nd-order; the rest 1st.
+      integer, intent(in) :: scheme
+      if (scheme == SCHEME_TRAP) then;  p = 2
+      else;                             p = 1
+      end if
+   end function scheme_order
+
+   subroutine ve_step_double(self, sigma, err_est)
+      !! Step-doubling local-error estimate (Richardson). Advances one Δt by the FINE
+      !! path — two Δt/2 sub-steps, the more accurate result, which `self` is left in —
+      !! and returns the estimated local error of the carried memory state from the
+      !! coarse/fine difference:  err = ‖τ_fine − τ_coarse‖∞ / (2^p − 1),  p = scheme
+      !! order (3 for trapezoidal). The observable is algebraic in τ, so this is also
+      !! the observable's local error — the accept/reject + Δt signal a controller needs.
+      !! No exponential integrator required: FE/trapezoidal are stable here (§3b/§3c).
+      !! M = μΔt/η is linear in Δt, so halving Δt just halves Mk — no re-init needed.
+      class(ve_degree), intent(inout) :: self
+      real(wp),         intent(in)    :: sigma
+      real(wp),         intent(out)   :: err_est
+      real(wp), allocatable :: Am_s(:,:), Bm_s(:,:), Cm_s(:,:), Mk_s(:)
+      real(wp), allocatable :: Up_s(:), Vp_s(:), Am_c(:,:), Bm_c(:,:), Cm_c(:,:)
+      real(wp) :: t_s, dt_s, t1, u1, v1, f1, fac
+      integer  :: p
+
+      ! Snapshot the entering state ve_step reads: memory, time, ε_n, and dt/Mk.
+      Am_s = self%Am;  Bm_s = self%Bm;  Cm_s = self%Cm
+      Up_s = self%Un_prev;  Vp_s = self%Vn_prev
+      Mk_s = self%Mk;  t_s = self%time;  dt_s = self%dt
+
+      ! Coarse: one full Δt step; keep its memory state τ_coarse.
+      call self%step(sigma, t1, u1, v1, f1)
+      Am_c = self%Am;  Bm_c = self%Bm;  Cm_c = self%Cm
+
+      ! Restore the entering state, then take two Δt/2 sub-steps (the fine path).
+      self%Am = Am_s;  self%Bm = Bm_s;  self%Cm = Cm_s
+      self%Un_prev = Up_s;  self%Vn_prev = Vp_s;  self%time = t_s
+      self%dt = 0.5_wp*dt_s;  self%Mk = 0.5_wp*Mk_s
+      call self%step(sigma, t1, u1, v1, f1)
+      call self%step(sigma, t1, u1, v1, f1)
+      self%dt = dt_s;  self%Mk = Mk_s    ! restore Δt/Mk; self left in the fine τ at t_s+Δt
+
+      p   = scheme_order(self%scheme)
+      fac = real(2**p - 1, wp)
+      err_est = max(maxval(abs(self%Am - Am_c)), maxval(abs(self%Bm - Bm_c)), &
+                    maxval(abs(self%Cm - Cm_c))) / fac
+   end subroutine ve_step_double
 
    ! --- internals -------------------------------------------------------------
 
