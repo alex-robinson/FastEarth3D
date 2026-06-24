@@ -109,6 +109,14 @@ test_etd1: fastearth-static | $(bindir)
 		-o $(bindir)/test_etd1.x $(objdir)/libfastearth.a $(LFLAGS)
 	@echo "    $(bindir)/test_etd1.x is ready."
 
+# Coupling-order characterization (§3c): measures the convergence order of the
+# strain<->memory coupling. Standalone like test_etd1 -- a dt-sweep diagnostic,
+# intentionally NOT in TESTS / `make check`. Build + run directly.
+test_couple_order: fastearth-static | $(bindir)
+	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(testdir)/test_couple_order.f90 \
+		-o $(bindir)/test_couple_order.x $(objdir)/libfastearth.a $(LFLAGS)
+	@echo "    $(bindir)/test_couple_order.x is ready."
+
 test_response: fastearth-static | $(bindir)
 	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(testdir)/test_response.f90 \
 		-o $(bindir)/test_response.x $(objdir)/libfastearth.a $(LFLAGS)
