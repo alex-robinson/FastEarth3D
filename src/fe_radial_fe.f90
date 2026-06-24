@@ -31,7 +31,7 @@ module fe_radial_fe
    private
 
    public :: radial_mesh, radial_operator
-   public :: loading_love, radial_fe_finalize
+   public :: loading_love, tidal_love, radial_fe_finalize
    ! Assembly building blocks (public so the unit tests can inspect them).
    public :: build_dense_operator, shell_Rk, uniq_weight
    public :: idx_u, idx_v, idx_f, idx_p, ndof_of
@@ -92,6 +92,7 @@ module fe_radial_fe
       procedure :: solve     => radial_operator_solve
       procedure :: solve_vec  => radial_operator_solve_vec
       procedure :: load_rhs   => radial_operator_load_rhs
+      procedure :: tidal_rhs  => radial_operator_tidal_rhs
       procedure :: destroy   => radial_operator_destroy
    end type radial_operator
 
@@ -493,6 +494,26 @@ contains
       b(idx_f(self%nr)) = -self%r_earth**2 * sigma
    end function radial_operator_load_rhs
 
+   function radial_operator_tidal_rhs(self, phi_t) result(b)
+      !! Build the physical RHS for forcing by an EXTERNAL degree-j potential of
+      !! surface coefficient `phi_t` [m² s⁻²] — a tide-raising / centrifugal
+      !! potential that does NOT load the surface (no surface mass, no traction).
+      !!
+      !! Matching φ₁ and ∂φ₁/∂r at r = a (no Gauss jump, σ = 0) leaves the SAME
+      !! interior operator as loading; only the natural surface term changes. In
+      !! Martinec's φ₁ sign convention the external potential couples to F(a) with the
+      !! SAME sign as the load's own potential φ^L, i.e. −(a/4πG)(2j+1)φ_t, but with
+      !! NO traction on U(a): an external potential exerts only the distributed body
+      !! force −ρ₀∇φ₁ (captured through F), not a surface-mass weight. So tidal_rhs is
+      !! load_rhs with φ^L → φ_t on the F term and the −a²σg₀ U-traction dropped —
+      !! which is exactly why a load subsides while a tide-raising potential uplifts.
+      class(radial_operator), intent(in) :: self
+      real(wp),               intent(in) :: phi_t
+      real(wp), allocatable :: b(:)
+      allocate(b(self%ndof));  b = 0.0_wp
+      b(idx_f(self%nr)) = -self%r_earth/(4.0_wp*pi*grav_G) * real(2*self%j+1, wp) * phi_t
+   end function radial_operator_tidal_rhs
+
    subroutine radial_operator_solve_vec(self, b, x, iters, resid, info, options)
       !! Solve A x = b for an arbitrary physical RHS b (length ndof), returning
       !! the full physical solution x. Applies the stored row/column equilibration
@@ -602,6 +623,33 @@ contains
       l =  g*V_a/phiL
       k = -F_a/phiL - 1.0_wp
    end subroutine loading_love
+
+   subroutine tidal_love(earth, j, phi_t, U_a, V_a, F_a, h, l, k)
+      !! Tidal Love numbers from the surface response to an external degree-j
+      !! potential of coefficient `phi_t` (response computed via tidal_rhs).
+      !!
+      !!     h^T = g U(a)/φ_t,   l^T = g V(a)/φ_t,   k^T = −F(a)/φ_t − 1.
+      !!
+      !! Here F(a) is Martinec's φ₁ surface coefficient (φ₁ → −φ_t for a rigid sphere,
+      !! exactly as for loading), so the induced (deformation) potential is −F − φ_t and
+      !! k^T = −F/φ_t − 1 — the SAME convention as loading_love, since tidal_rhs forces
+      !! F with the same sign as the load potential (only the U-traction differs).
+      !!
+      !! Pinned by the homogeneous incompressible self-gravitating sphere limits
+      !! (degree n): fluid (μ→0) k^T_f → 3/(2(n−1)), h^T_f → (2n+1)/(2(n−1)); rigid
+      !! (μ→∞) h,l,k → 0. Degree-2 elastic: k^T = (3/2)/(1+μ̃), h^T = (5/2)/(1+μ̃),
+      !! μ̃ = 19μ/(2ρga) (Munk & MacDonald 1960; the secular k^T_f = k_s in the
+      !! Liouville feedback, eq 11 of Spada et al. 2011).
+      type(earth_model), intent(in)  :: earth
+      integer,           intent(in)  :: j
+      real(wp),          intent(in)  :: phi_t, U_a, V_a, F_a
+      real(wp),          intent(out) :: h, l, k
+      real(wp) :: g
+      g = earth%gravity_at(earth%r_earth)
+      h =  g*U_a/phi_t
+      l =  g*V_a/phi_t
+      k = -F_a/phi_t - 1.0_wp
+   end subroutine tidal_love
 
    subroutine radial_fe_finalize()
       !! No-op kept for API compatibility (callers invoke it at program end). The
