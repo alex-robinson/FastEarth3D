@@ -59,7 +59,7 @@ rewrite.
 | `fe_gravity` | self-gravitation / Poisson coupling | stub |
 | `fe_sle` | sea-level equation (ocean function, migration) | done + tested (elastic + VE) |
 | `fe_timestep` | adaptive-Δt controller (step-doubling on the Maxwell memory) | done + tested |
-| `fe_rotation` | rotational feedback / TPW | stub (rung 5, next) |
+| `fe_rotation` | rotational feedback / TPW (degree-2 Liouville + tidal VE channels) | done + tested (5a/5b; SLE feedback 5c pending) |
 | `fe_coupling` | CLIMBER-X-compatible init/update/finalize API (adaptive-coupled) | done + tested |
 | `fe_io` | netCDF restart + step output (yelmo variable-table convention) | done + tested |
 | `fe_drive` | standalone forced-run loop (`program fastearth`) | done + tested |
@@ -88,7 +88,9 @@ phase, Gauss grid, phi-contiguous layout; spectral arrays hold `m >= 0`.
 3. **Deformation / geoid** for a disc load vs Spada (2011) tests 1/2–2/2.
 4. **Sea-level equation** vs **Martinec et al. (2018)**, *GJI* 215:389, cases
    A→E (the migrating-coastline benchmark VILMA itself passed).
-5. **Rotation** vs Spada (2011) test 3/2 (polar motion).
+5. **Rotation** vs Spada (2011) test 3/2 (polar motion) — **DONE** (`test_rotation`):
+   degree-2 Liouville polar motion `|m(t)|` matches Table 14 (Cw=0) to <1% for the
+   cap + disc loads at t=0–20 kyr; SLE feedback (5c) pending. See §11.
 6. **3D** vs ASPECT / TABOO cross-checks (no closed published 3D benchmark yet;
    Klemann et al. 2022 effort ongoing).
 
@@ -305,5 +307,53 @@ displacement `u`.
    needs a conservative regridding layer (fesm-utils `mapping_scrip`) — reusable
    for any lon-lat input, but built later. **Physics first.**
 
-**NEXT (rung 5): rotational feedback / true polar wander** (`fe_rotation`), vs
-Spada (2011) test 3/2 (polar motion). Then rung 6 (3D laterally-varying viscosity).
+**NEXT: rung-5c (rotational feedback → SLE) then rung 6 (3D viscosity).** Rung 5a/5b
+are DONE (§11). 5c feeds the centrifugal potential from `m` back into the SLE as an
+extra degree-2 geoid forcing (the two-way coupling); the standalone polar motion is
+already validated.
+
+## 11. Rotational feedback / TPW (rung 5) — working notes
+
+**Formulation (Spada et al. 2011 §2.1.1; time-domain à la Martinec & Hagedoorn 2014,
+i.e. VILMA).** Equatorial polar motion `m = m₁ + i m₂` from the GIA (quasi-static)
+Liouville equation with the Chandler wobble neglected (eq. 7, justified since the
+Chandler period ≪ GIA timescales):
+
+    [1 − k^T(t)/k_s] ∗ m(t) = Ψ_L(t),   Ψ_L = I/(C−A),   I = [δ+k^L] ∗ I_rigid,
+
+with `k^T,k^L` the degree-2 tidal/loading Love numbers and `k_s ≡ k^T_f` the secular
+(fluid) tidal Love number (eq. 11). No explicit Ω — it is absorbed into `m = ω/Ω`
+and `k_s`. Validated against the Cw-excluded column of Table 14 (the regime this
+quasi-static form models; the Cw≠0 Chandler transient is deliberately out of scope).
+
+**5a — tidal forcing path (`fe_radial_fe`).** An external degree-j potential reuses
+the SAME per-degree operator as a surface load; only the natural surface term differs.
+In Martinec's φ₁ convention the external potential couples to F(a) with the SAME sign
+as the load's own potential, `−(a/4πG)(2j+1)φ_t`, but with NO U-traction (a load
+subsides; a tide-raising potential uplifts). `tidal_rhs` + `tidal_love`
+(`k^T=−F/φ_t−1`). Validated (`test_tidal`) against the homogeneous-sphere Kelvin
+tidal Love numbers: fluid `k^T_f=3/(2(n−1))`, `h^T_f=(2n+1)/(2(n−1))`; rigid →0;
+degree-2 elastic `(3/2)/(1+μ̃)`, `μ̃=19μ/(2ρga)`.
+
+**5b — Liouville solve (`fe_rotation`), self-contained, degree-2 only.** Two compact
+degree-2 *complex* viscoelastic channels (reusing the `fe_viscoelastic` Maxwell
+kernel; no normal modes, no convolution quadrature) carry the convolutions as memory:
+a LOADING channel returns `(1+k^L)∗I_rigid = I(t)`; a TIDAL channel (`tidal_rhs`,
+forced by the centrifugal potential ∝ `m`) returns `k^T∗m`. The feedback makes the
+step ALGEBRAIC in `m` (the affine begin/apply/commit structure of the field driver):
+
+    m_n = [ Ψ_L,n − dF_tidal/k_s ] / [ 1 − k^T_e/k_s ],
+
+then both channels' memory is advanced. The rigid inertia `I₁₃+iI₂₃ =
+−a⁴∫σ sinθcosθ e^{iφ}dΩ` is a DIRECT Gauss-grid quadrature of the load (3-D-ready —
+no spherical-harmonic normalization assumption; verified by reproducing the paper's
+published `G_cap/G_disc` to <0.5%). `k_s = k^T_f` from fluidizing the Maxwell mantle.
+
+**Pitfall (designed-in): the lithosphere-thickness paradox (Mitrovica et al. 2005).**
+The secular polar-motion slope is *pathologically* sensitive to `k_s` — a 0.5% change
+in `k_s` moved the t=20 kyr `|m|` by ~6%. So `k_s` must be the consistent fluid limit:
+fluidize ONLY `RHEOL_MAXWELL` layers (the viscous mantle); keeping the lithosphere
+elastic is essential (fluidizing it by mistake inflated `k^T_f` 0.967→0.975 and
+under-drove the late-time motion ~11%). For deep-time runs `k_s` is a parameter,
+overridable to the observed-flattening value. Validated (`test_rotation`): cap + disc
+`|m(t)|` match Table 14 (Cw=0) to <1% at t=0–20 kyr; `k^T_e=0.303`, `k_s=0.967`.
