@@ -117,6 +117,15 @@ test_couple_order: fastearth-static | $(bindir)
 		-o $(bindir)/test_couple_order.x $(objdir)/libfastearth.a $(LFLAGS)
 	@echo "    $(bindir)/test_couple_order.x is ready."
 
+# SLE<->memory coupling-order characterization (§3c 3b): drives a fast-evolving load
+# through the full sea-level driver and measures the order restored by co-converging
+# the ocean load σ and the end-of-step memory τ. Standalone dt-sweep diagnostic, like
+# test_couple_order -- intentionally NOT in TESTS / `make check`. Build + run directly.
+test_sle_couple_order: fastearth-static | $(bindir)
+	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(testdir)/test_sle_couple_order.f90 \
+		-o $(bindir)/test_sle_couple_order.x $(objdir)/libfastearth.a $(LFLAGS)
+	@echo "    $(bindir)/test_sle_couple_order.x is ready."
+
 test_response: fastearth-static | $(bindir)
 	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(testdir)/test_response.f90 \
 		-o $(bindir)/test_response.x $(objdir)/libfastearth.a $(LFLAGS)
