@@ -73,8 +73,8 @@ Ranked by return on effort for transient runs. ✅ = implemented now; ⏭ = defe
 | 1 | **Optimization compiler flags** (`-O3 -mcpu=native -funroll-loops -ffast-math`) | **1.3× measured** (free) | low | ✅ |
 | 2 | **Warm-start the SLE fixed point** from the previous step's `rsl` | **~1.5% on E2**; up to ~2× only on strongly-migrating coastlines (unverified) | low | ✅ |
 | 3 | ~~**ETD0** exponential memory update → larger `dt`~~ | **rejected — fails benchmarks** | — | ✗ |
-| 3b | ~~**ETD1** (linear-strain φ-weights) → larger `dt`~~ | **rejected — coupling, not the integrator, is the bottleneck** | — | ✗ |
-| 3c | **Iterate strain↔memory coupling** + **FE step-doubling** error estimate | enables adaptive `dt` | med | ⏭ |
+| 3b | ~~**ETD1** (linear-strain φ-weights) → larger `dt`~~ | **rejected — the memory *rule*, not the strain coupling, sets the order** | — | ✗ |
+| 3c | **Trapezoidal memory rule solved by coupling iteration** → 2nd-order (1-D done); FE/trap **step-doubling** estimate next | **order 1→2; ~1300× accuracy at fixed `dt`** | med | ✅ |
 | 4 | **OpenMP SHTns as the default** (offline *and* coupled) | several× at lmax ≥ 256 | low | ⏭ |
 | 5 | **Fuse the two syntheses** to one synthesis of `N_lm − u_lm` | ~33% of inner-loop SHTs | low | ⏭ |
 | 6 | **Batched multi-RHS band solve** over all `m`/re-im at fixed `l`; kill the dense degree-1 LU via nullspace projection | high at production lmax | med | ⏭ |
@@ -83,9 +83,11 @@ Ranked by return on effort for transient runs. ✅ = implemented now; ⏭ = defe
 | — | Restart I/O: write the full `tau_*` memory state only at checkpoints, not per step | avoid a multi-GB/step footgun | low | note |
 
 Measured so far: flags + warm-start give ~1.3× on E2. ETD1 (the would-be step-count
-lever) was tested and rejected (§3b). The remaining large multipliers live in the
-deferred items (OpenMP-SHTns at high lmax; coupling-iteration + step-doubling for
-adaptive `dt`) and in real-coastline iteration counts the benchmark does not exercise.
+lever) was tested and rejected (§3b), but it pointed the way: §3c then found the real
+larger-`dt` lever — a **2nd-order trapezoidal memory rule solved by coupling iteration**
+(order 1→2 in the 1-D stepper, validated; field-driver wiring + step-doubling pending).
+The remaining large multipliers live there and in the deferred items (OpenMP-SHTns at
+high lmax) and in real-coastline iteration counts the benchmark does not exercise.
 
 ## Implemented now
 
@@ -196,13 +198,54 @@ stability would matter only with a genuinely weak (low-η) layer, which no bench
 model has.
 
 **Where the larger-`dt` lever actually is (for the adaptive-stepping goal):** not the
-memory integrator. (i) **Iterate the strain↔memory coupling to consistency** per step
-— lifts the 1st-order lag that caps the whole scheme. (ii) **Forward-Euler step-
-doubling** for the local-error estimate the controller needs — FE is already stable,
-so no exponential integrator is required. The scheme-pluggable kernel and `test_etd1`
-are kept as the reproducible evidence (so neither ETD0 nor ETD1 is re-attempted) and
-as infrastructure for (ii). The long-time under-relaxation that originally motivated
-this is a separate `dt`/NMAX-resolution + slow-mode question, not an integrator issue.
+memory integrator family that ETD belongs to, but a higher-order *memory rule*. The
+ETD1 study's stated cause — "the explicit strain↔memory coupling is the 1st-order
+bottleneck" — was half right and is corrected in §3c below.
+
+**3c. TRAPEZOIDAL MEMORY RULE + COUPLING ITERATION — IMPLEMENTED, MEASURED, 2ND-ORDER
+(1-D stepper, this session).** The decisive observation: in this affine scheme the
+surface observable is an *exact algebraic function* of the memory `τ` (the balance
+solve `K ε = load + D τ` is exact given `τ`), so **the observable's convergence order
+equals the order of the memory time-integration alone.** Two consequences, both
+measured (`test_couple_order`, held degree-2 load, homogeneous Maxwell sphere, resolved
+regime `M < 0.4`):
+
+| variant | order | err @ `dt`=5 yr |
+|---|---|---|
+| A — forward-Euler (explicit, historical) | 1.00 | 1.1e-3 |
+| B — backward-Euler, coupling iterated to consistency | 1.00 | 1.1e-3 |
+| C — trapezoidal, single predictor (no fixed point) | 0.99 | 4.2e-3 |
+| **D — trapezoidal, coupling iterated** | **2.00** | **8.3e-7** |
+
+- **Iterating the coupling is NOT itself an order lever.** Variant B makes the coupling
+  fully implicit/consistent but keeps a 1st-order rule → stays 1st-order. This corrects
+  the §3b framing: the original explicit scheme is *not* balance-lag-limited (it already
+  uses current-time memory `τ_n` in the balance at `t_n`); it is simply forward-Euler on
+  the memory ODE. The order bottleneck is the **memory rule**, not the strain coupling.
+- **2nd order comes from the trapezoidal (Crank–Nicolson) rule (D)** — A-stable, and
+  ~1300× more accurate than FE at fixed `dt` here. But trapezoidal is *implicit* in the
+  end-of-step strain, so it must be solved by a Picard fixed point over the endpoint
+  balance. **So the two original §3c "levers" are one:** an implicit 2nd-order advance
+  *solved by* coupling iteration. The fixed point is cheap — `couple_tol=1e-6` reaches
+  the trapezoidal truncation floor in **5–8 iterations** (the measured knee; tightening
+  past it buys iterations, not accuracy).
+
+Implementation: `SCHEME_TRAP` (+ `SCHEME_BE` as the 1st-order control) in
+`advance_memory`, and a restructured `ve_step` that separates the time-aligned REPORT
+(always the balance against the entering `τ_n`, exactly elastic on the first call) from
+the ADVANCE (explicit single-pass for FE/ETD1 — byte-identical; iterated endpoint for
+BE/TRAP). Default unchanged (`scheme=FE`, `max_couple_iter=1`); `make check` 21/21.
+
+**Still pending (next):** (i) **FE/trapezoidal step-doubling** for the local-error
+estimate an adaptive controller needs — now `p=2`, so the Richardson factor is
+`2²−1 = 3`. (ii) **Wiring trapezoidal+iteration into the per-`(l,m)` field driver**
+(`fe_response`), where the endpoint iteration means re-solving the drift inside the
+coupling loop. The long-time under-relaxation that originally motivated this is a
+separate `dt`/NMAX-resolution + slow-mode question, not an integrator issue.
+
+`test_etd1` (and the scheme-pluggable kernel) are kept as the reproducible evidence
+that ETD0/ETD1 are not re-attempted, and `test_couple_order` as the evidence for the
+trapezoidal result.
 
 **4. OpenMP SHTns as the default.** SHTns is currently linked serial
 (`config/common.mk`) — a deliberate choice to avoid OpenMP nesting inside
@@ -263,8 +306,14 @@ All validated on Mac.fritz.box (gfortran 15.2, `OMP_NUM_THREADS=8`):
   unverified pending a real migrating coastline. The coupling driver already opts in.
 - **ETD0:** re-run and **rejected** (fails Martinec A geoid, 4.48% > 3%); see §3.
 - **ETD1:** implemented behind a scheme flag (FE default, `make check` byte-identical)
-  and **rejected** — ~8× less accurate than FE in the resolved regime; the explicit
-  strain↔memory coupling is the 1st-order bottleneck, and FE is practically
+  and **rejected** — ~8× less accurate than FE in the resolved regime; the memory
+  *rule* (not the strain coupling) sets the order, and FE is practically
   unconditionally stable for these models (§3b). Kept as `test_etd1` + the scheme-
-  pluggable kernel (reproducible evidence; infrastructure for FE step-doubling).
-  Forward-Euler retained as the integrator.
+  pluggable kernel (reproducible evidence). Forward-Euler retained as the default.
+- **Trapezoidal + coupling iteration (§3c):** implemented (`SCHEME_TRAP`/`SCHEME_BE`,
+  iterated `ve_step`; FE default `make check` 21/21 byte-identical) and **adopted as
+  the adaptive-`dt` core** — **2nd-order** in the 1-D stepper (`test_couple_order`:
+  order 2.00, ~1300× more accurate than FE at fixed `dt`), the fixed point converging
+  in 5–8 iterations at `couple_tol=1e-6`. The control (backward-Euler, iterated) stays
+  1st-order, confirming the iteration is not itself an order lever. Field-driver wiring
+  and step-doubling pending.
