@@ -74,7 +74,7 @@ Ranked by return on effort for transient runs. ✅ = implemented now; ⏭ = defe
 | 2 | **Warm-start the SLE fixed point** from the previous step's `rsl` | **~1.5% on E2**; up to ~2× only on strongly-migrating coastlines (unverified) | low | ✅ |
 | 3 | ~~**ETD0** exponential memory update → larger `dt`~~ | **rejected — fails benchmarks** | — | ✗ |
 | 3b | ~~**ETD1** (linear-strain φ-weights) → larger `dt`~~ | **rejected — the memory *rule*, not the strain coupling, sets the order** | — | ✗ |
-| 3c | **Trapezoidal memory rule solved by coupling iteration** → 2nd-order (1-D + field driver 3a + step-doubling + SLE-coupled 3b done; adaptive-`dt` controller next) | **order 1→2; ~1300× accuracy (1-D) / ~270× (SLE, fast load) at fixed `dt`; ~6× per-step cost** | med | ✅ |
+| 3c | **Trapezoidal memory rule solved by coupling iteration** → 2nd-order, with an adaptive-`dt` controller (1-D + field driver 3a + step-doubling + SLE-coupled 3b + `fe_timestep` controller — all DONE) | **order 1→2; ~1300× accuracy (1-D) / ~270× (SLE, fast load) at fixed `dt`; adaptive: reference accuracy in ~⅓ the steps** | med | ✅ |
 | 4 | **OpenMP SHTns as the default** (offline *and* coupled) | several× at lmax ≥ 256 | low | ⏭ |
 | 5 | **Fuse the two syntheses** to one synthesis of `N_lm − u_lm` | ~33% of inner-loop SHTs | low | ⏭ |
 | 6 | **Batched multi-RHS band solve** over all `m`/re-im at fixed `l`; kill the dense degree-1 LU via nullspace projection | high at production lmax | med | ⏭ |
@@ -280,10 +280,30 @@ ramp through the full SLE under fixed ocean to isolate the integrator): a single
 combined pass is **order 0.98**, co-convergence is **order 2.08** and ~270× more
 accurate at the finest `dt` — the trapezoidal 2nd order carried through the driver.
 
-**Still pending:** the **adaptive-`dt` controller** itself (accept/reject + step
-selection) on top of the step-doubling estimate. The long-time under-relaxation that
-originally motivated this is a separate `dt`/NMAX-resolution + slow-mode question, not
-an integrator issue.
+**Adaptive-`dt` controller — DONE (`fe_timestep`).** The accept/reject + step-size
+loop on top of the step-doubling estimate, isolated in its own module (room for more
+than one stepping strategy). `adaptive_stepper%advance(t0,t1)` crosses a coupling
+interval with the ice load **linearly interpolated** between its endpoints, choosing
+Δt by step-doubling on the Maxwell memory: each candidate step is taken once at Δt and
+once as two Δt/2 sub-steps; the coarse/fine memory ∞-norm difference / (2^p−1) is the
+local error, scaled by `atol + rtol·‖τ‖`. Accept (keep the more accurate fine state,
+grow Δt by `safety·err^{-1/(p+1)}`) or reject (roll back, shrink). Rollback uses new
+`ve_response` primitives `save_state`/`restore_state` (buffer A = τ_n) +
+`stash_coarse`/`coarse_fine_error` (buffer B = τ_coarse); Δt changes via `set_dt`, a
+cheap `Mk = (μ/η)·Δt` rescale (no operator re-factor — the band LU is Δt-independent).
+`test_timestep`: the field step-doubling estimate scales as Δt³ (order 2.97), and on a
+fast ice ramp the controller converges to a fine fixed-Δt reference to ~1e-4 of signal
+in **23–68 adaptive steps vs the 160-step reference**, the error falling monotonically
+as `rtol` tightens — the payoff that amortizes the ~6× trapezoidal per-step cost.
+(One detail: the very first step from rest uses the σ_{n+1} proxy for σ_n, which the
+SLE ocean load makes O(Δt) → that one step is 2nd-order; every later step tracks σ_n
+and is 3rd-order locally. A proper σ_0 init would need an elastic SLE solve at t=0 —
+deferred as a minor first-step refinement.)
+
+The long-time under-relaxation that originally motivated §3c is a separate
+`dt`/NMAX-resolution + slow-mode question, not an integrator issue. **§3c is now
+complete** (1-D + 3a + step-doubling + 3b + controller); the default scheme stays FE
+until a driver opts into the trapezoidal adaptive path.
 
 `test_etd1` (and the scheme-pluggable kernel) are kept as the reproducible evidence
 that ETD0/ETD1 are not re-attempted, and `test_couple_order` as the evidence for the
@@ -358,8 +378,9 @@ All validated on Mac.fritz.box (gfortran 15.2, `OMP_NUM_THREADS=8`):
   order 2.00, ~1300× more accurate than FE at fixed `dt`), the fixed point converging
   in 5–8 iterations at `couple_tol=1e-6`. The control (backward-Euler, iterated) stays
   1st-order, confirming the iteration is not itself an order lever.
-- **Step-doubling (§3c ii):** `ve_degree%step_double` Richardson estimate validated to
-  scale as `dt^(p+1)` (`dt^2.00` FE, `dt^2.99` trapezoidal). Estimate-only; controller pending.
+- **Step-doubling (§3c ii):** `ve_degree%step_double` (1-D) Richardson estimate validated
+  to scale as `dt^(p+1)` (`dt^2.00` FE, `dt^2.99` trapezoidal); the field-level estimate
+  (via the controller primitives) scales as `dt^2.97` (`test_timestep`).
 - **Field driver (§3c 3a):** trapezoidal+iteration wired into `ve_response` behind the
   scheme flag (FE default byte-identical, `make check` 21/21). Reproduces the 1-D
   `ve_degree` TRAP to 3.6e-13 / 1.4e-16 (`test_ve_response`). E2 cost ~6.0× per-step at
@@ -370,3 +391,9 @@ All validated on Mac.fritz.box (gfortran 15.2, `OMP_NUM_THREADS=8`):
   varying load needs. `test_sle_couple_order` (fast ice ramp, fixed ocean): a single
   combined pass is order 0.98, co-convergence is order 2.08 and ~270× more accurate at
   the finest `dt` — trapezoidal 2nd order carried through the full driver.
+- **Adaptive-`dt` controller (§3c):** `fe_timestep%adaptive_stepper` — step-doubling
+  accept/reject + step selection with linear load interpolation; `ve_response`
+  save/restore/set_dt primitives (`make check` 21/21 byte-identical, FE default
+  untouched). `test_timestep`: estimate ~`dt^2.97`; on a fast ice ramp the controller
+  matches a fine fixed-Δt reference to ~1e-4 of signal in ~⅓ the steps, error monotone
+  in `rtol`.
