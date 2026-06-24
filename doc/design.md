@@ -59,7 +59,7 @@ rewrite.
 | `fe_gravity` | self-gravitation / Poisson coupling | stub |
 | `fe_sle` | sea-level equation (ocean function, migration) | done + tested (elastic + VE) |
 | `fe_timestep` | adaptive-Δt controller (step-doubling on the Maxwell memory) | done + tested |
-| `fe_rotation` | rotational feedback / TPW (degree-2 Liouville + tidal VE channels) | done + tested (5a/5b; SLE feedback 5c pending) |
+| `fe_rotation` | rotational feedback / TPW (degree-2 Liouville + tidal VE channels, SLE-coupled) | done + tested (5a/5b/5c) |
 | `fe_coupling` | CLIMBER-X-compatible init/update/finalize API (adaptive-coupled) | done + tested |
 | `fe_io` | netCDF restart + step output (yelmo variable-table convention) | done + tested |
 | `fe_drive` | standalone forced-run loop (`program fastearth`) | done + tested |
@@ -88,9 +88,10 @@ phase, Gauss grid, phi-contiguous layout; spectral arrays hold `m >= 0`.
 3. **Deformation / geoid** for a disc load vs Spada (2011) tests 1/2–2/2.
 4. **Sea-level equation** vs **Martinec et al. (2018)**, *GJI* 215:389, cases
    A→E (the migrating-coastline benchmark VILMA itself passed).
-5. **Rotation** vs Spada (2011) test 3/2 (polar motion) — **DONE** (`test_rotation`):
-   degree-2 Liouville polar motion `|m(t)|` matches Table 14 (Cw=0) to <1% for the
-   cap + disc loads at t=0–20 kyr; SLE feedback (5c) pending. See §11.
+5. **Rotation** vs Spada (2011) test 3/2 (polar motion) — **DONE** (`test_rotation`,
+   `test_rotation_sle`): degree-2 Liouville polar motion `|m(t)|` matches Table 14
+   (Cw=0) to <1% for cap + disc at t=0–20 kyr; the SLE-coupled feedback (5c) matches
+   Adhikari et al. (2016) eq. 8 to 1e-14 and conserves ocean mass. See §11.
 6. **3D** vs ASPECT / TABOO cross-checks (no closed published 3D benchmark yet;
    Klemann et al. 2022 effort ongoing).
 
@@ -307,10 +308,8 @@ displacement `u`.
    needs a conservative regridding layer (fesm-utils `mapping_scrip`) — reusable
    for any lon-lat input, but built later. **Physics first.**
 
-**NEXT: rung-5c (rotational feedback → SLE) then rung 6 (3D viscosity).** Rung 5a/5b
-are DONE (§11). 5c feeds the centrifugal potential from `m` back into the SLE as an
-extra degree-2 geoid forcing (the two-way coupling); the standalone polar motion is
-already validated.
+**NEXT: rung 6 (3D laterally-varying viscosity).** Rung 5 (rotation) is DONE — 5a/5b/5c
+(§11).
 
 ## 11. Rotational feedback / TPW (rung 5) — working notes
 
@@ -355,5 +354,27 @@ in `k_s` moved the t=20 kyr `|m|` by ~6%. So `k_s` must be the consistent fluid 
 fluidize ONLY `RHEOL_MAXWELL` layers (the viscous mantle); keeping the lithosphere
 elastic is essential (fluidizing it by mistake inflated `k^T_f` 0.967→0.975 and
 under-drove the late-time motion ~11%). For deep-time runs `k_s` is a parameter,
-overridable to the observed-flattening value. Validated (`test_rotation`): cap + disc
+overridable to the observed-flattening value (§5c). Validated (`test_rotation`): cap + disc
 `|m(t)|` match Table 14 (Cw=0) to <1% at t=0–20 kyr; `k^T_e=0.303`, `k_s=0.967`.
+
+**5c — feedback into the SLE.** The centrifugal potential of `m` perturbs the sea
+surface and deforms the solid, adding a degree-2 contribution to relative sea level
+`s_rot = N_rot − u_rot` with (Adhikari et al. 2016, eq. 8) `N_rot = (1+k^T)Λ/g`,
+`u_rot = h^T Λ/g`, `Λ = Ω²a² sinθcosθ(m₁cosφ+m₂sinφ)`. The VE `(1+k^T)`,`h^T` reuse
+the 5b tidal channel (which now exposes the uplift readout); the rotational fields
+reuse the `m`-forced channel exactly. `s_rot` enters the SLE geometry (`Sraw`) but NOT
+the surface mass load — the rotational potential forces the Earth through the tidal
+channel, not as a load — and `Δφ` is recomputed so ocean mass stays conserved. The
+rotation ↔ SLE coupling is a fixed point (`m` responds to the ice+ocean load);
+`fe_rotation` is split into begin_step / solve_m / s_rot / commit (affine, no memory
+advance until commit) so it can be iterated. In the coupling driver it is applied at
+the interval level (a predictor: `s_rot` held across the interval, `m` refreshed from
+the end load; the explicit-FE channels are sub-stepped to the Maxwell stability
+ceiling `dt_fe_max`). `k_s` exposes two values: the model fluid limit `k_s_fluid`
+(default, reproduces Spada) and the observed-flattening closed form
+`k_s_flat = 3G(C−A)/(a⁵Ω²) = 0.943` (Adhikari/Mitrovica — the recommended deep-time
+value). Validated (`test_rotation_sle`, elastic): hook-off is bit-for-bit the
+no-rotation SLE; `s_rot` matches Adhikari eq. 8 pointwise to 1.9e-14; ocean-mass
+residual 3e-16; the fixed point converges (ocean feedback on `m` ~0.7%);
+`|s_rot| ≈ 1.9 m`. End-to-end (`test_coupling`): an off-axis cap drives `|m| = 0.30°`,
+mass conserved, the bed shifts up to 6.7 m vs rotation-off.
