@@ -74,7 +74,7 @@ Ranked by return on effort for transient runs. ✅ = implemented now; ⏭ = defe
 | 2 | **Warm-start the SLE fixed point** from the previous step's `rsl` | **~1.5% on E2**; up to ~2× only on strongly-migrating coastlines (unverified) | low | ✅ |
 | 3 | ~~**ETD0** exponential memory update → larger `dt`~~ | **rejected — fails benchmarks** | — | ✗ |
 | 3b | ~~**ETD1** (linear-strain φ-weights) → larger `dt`~~ | **rejected — the memory *rule*, not the strain coupling, sets the order** | — | ✗ |
-| 3c | **Trapezoidal memory rule solved by coupling iteration** → 2nd-order (1-D + field driver 3a + step-doubling done; SLE-coupled 3b + controller next) | **order 1→2; ~1300× accuracy at fixed `dt`; ~6× per-step cost** | med | ✅ |
+| 3c | **Trapezoidal memory rule solved by coupling iteration** → 2nd-order (1-D + field driver 3a + step-doubling + SLE-coupled 3b done; adaptive-`dt` controller next) | **order 1→2; ~1300× accuracy (1-D) / ~270× (SLE, fast load) at fixed `dt`; ~6× per-step cost** | med | ✅ |
 | 4 | **OpenMP SHTns as the default** (offline *and* coupled) | several× at lmax ≥ 256 | low | ⏭ |
 | 5 | **Fuse the two syntheses** to one synthesis of `N_lm − u_lm` | ~33% of inner-loop SHTs | low | ⏭ |
 | 6 | **Batched multi-RHS band solve** over all `m`/re-im at fixed `l`; kill the dense degree-1 LU via nullspace projection | high at production lmax | med | ⏭ |
@@ -256,13 +256,34 @@ to `couple_tol`). Validated against the 1-D `ve_degree` TRAP to 3.6e-13 (displac
 `couple_tol`=1e-6; ~8–10 drift re-solves/step) — the overhead the larger adaptive
 step must amortize. E2 still passes to tolerance under the frozen-load approximation.
 
-**Still pending:** (i) lift the memory iteration into the SLE driver (part **3b**) so
-σ and τ co-converge for **fast-evolving loads** — the frozen-load endpoint of 3a is
-exact only for held/slow loads; 3b wraps 3a's `solve_drift`+trapezoid as its inner
-body. (ii) the **adaptive-`dt` controller** itself (accept/reject + step selection)
-on top of the step-doubling estimate. The long-time under-relaxation that originally
-motivated this is a separate `dt`/NMAX-resolution + slow-mode question, not an
-integrator issue.
+**SLE-coupled endpoint (part 3b) — DONE, behind `sle_solver%max_mem_iter`.** For a
+**fast-evolving load** σ and τ_{n+1} are a mutual fixed point (the ocean load depends
+on the relaxation state, and the trapezoidal endpoint depends on the load), so 3a's
+frozen-σ endpoint is only 1st-order. 3b lifts the memory advance into `sle_solve` as a
+single combined Picard loop: `prepare_endpoint` (snapshot τ_n) once, then each pass
+re-converges the water load against the current τ_{n+1} estimate and calls
+`advance_endpoint` — one trapezoid pass that **refreshes the report drift to the new
+τ_{n+1}** so the next σ-convergence (and coastline migration) sees the advanced memory
+— until the surface drift settles; `finalize_step` advances time. `commit_step` and
+3a's frozen endpoint are kept intact (and DRY-shared via `trapezoid_advance_all` /
+`fe_advance`) for the held-load path that `test_ve_response` pins. FE / elastic / null
+report converged after one pass, so the loop is inert for them and the FE default is
+byte-identical (`make check` 21/21).
+
+A latent bug surfaced here and was fixed: the trapezoidal rule ½(ε_n+ε_{n+1}) needs
+the **start-of-step** load σ_n in ε_n, but the code used the current σ_{n+1}. Invisible
+for a held load (σ_n = σ_{n+1} — why 3a, `test_couple_order` and `test_ve_response`
+never caught it), but an O(`dt`) error for a varying load that caps the order at 1.
+Tracking σ_n (`sigma_n`, primed after the first step so the held path stays
+byte-identical) restores 2nd order. Validated by `test_sle_couple_order` (a fast ice
+ramp through the full SLE under fixed ocean to isolate the integrator): a single
+combined pass is **order 0.98**, co-convergence is **order 2.08** and ~270× more
+accurate at the finest `dt` — the trapezoidal 2nd order carried through the driver.
+
+**Still pending:** the **adaptive-`dt` controller** itself (accept/reject + step
+selection) on top of the step-doubling estimate. The long-time under-relaxation that
+originally motivated this is a separate `dt`/NMAX-resolution + slow-mode question, not
+an integrator issue.
 
 `test_etd1` (and the scheme-pluggable kernel) are kept as the reproducible evidence
 that ETD0/ETD1 are not re-attempted, and `test_couple_order` as the evidence for the
@@ -342,5 +363,10 @@ All validated on Mac.fritz.box (gfortran 15.2, `OMP_NUM_THREADS=8`):
 - **Field driver (§3c 3a):** trapezoidal+iteration wired into `ve_response` behind the
   scheme flag (FE default byte-identical, `make check` 21/21). Reproduces the 1-D
   `ve_degree` TRAP to 3.6e-13 / 1.4e-16 (`test_ve_response`). E2 cost ~6.0× per-step at
-  fixed `dt` (frozen-load endpoint; passes E2 to tolerance). SLE-coupled (3b) for
-  fast-evolving loads still pending.
+  fixed `dt` (frozen-load endpoint; passes E2 to tolerance).
+- **SLE-coupled endpoint (§3c 3b):** σ↔τ co-convergence lifted into `sle_solve`
+  (`sle_solver%max_mem_iter`; FE / elastic / null inert, `make check` 21/21 byte-
+  identical). Fixes the start-of-step-load (σ_n) term in the trapezoidal ε_n that a
+  varying load needs. `test_sle_couple_order` (fast ice ramp, fixed ocean): a single
+  combined pass is order 0.98, co-convergence is order 2.08 and ~270× more accurate at
+  the finest `dt` — trapezoidal 2nd order carried through the full driver.
