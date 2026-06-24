@@ -37,6 +37,7 @@ module fe_sle
    type :: sle_result
       !! Diagnostics returned by a solve.
       integer  :: n_outer_done = 0      !! coastline iterations performed
+      integer  :: n_couple_done = 0     !! SLE<->memory co-convergence passes (§3c 3b)
       integer  :: n_inner_last = 0      !! inner iterations in the last outer pass
       real(wp) :: resid        = 0.0_wp !! last inner max|ΔS| [m]
       real(wp) :: mass_resid   = 0.0_wp !! relative ocean-mass-conservation error
@@ -50,6 +51,16 @@ module fe_sle
       integer  :: n_outer = 3          !! paleotopography / coastline iterations
       integer  :: n_inner = 20         !! water-load fixed-point iterations
       real(wp) :: tol     = 1.0e-7_wp  !! inner convergence on max|ΔS| / max|S| [-]
+      !! SLE<->memory co-convergence cap (§3c part 3b). When the response carries
+      !! viscoelastic memory under an implicit (trapezoidal) scheme and the load
+      !! evolves fast within a step, the ocean load σ and the end-of-step memory
+      !! τ_{n+1} are a mutual fixed point: each pass re-converges the water load
+      !! against the latest τ_{n+1} estimate, then advances the memory one trapezoid
+      !! pass. The response signals convergence (surface drift settled) to exit
+      !! early; 1st-order / stateless responses converge in a single pass regardless,
+      !! so this is inert for them (and for the FE default). > 1 enables the 2nd-order
+      !! co-convergence for the trapezoidal scheme.
+      integer  :: max_mem_iter = 20
       !! Ocean geometry. .false. (default) = time-varying: the coastline migrates
       !! each outer pass from the deformed surface topo0 − rsl (Martinec 2018 §2.2,
       !! the SLE2 suite). .true. = fixed: the ocean function is held at the initial
@@ -118,7 +129,7 @@ contains
       real(wp), allocatable :: C0(:,:), wcorr(:,:)
       complex(wp), allocatable :: load_lm(:), u_lm(:), N_lm(:)
       real(wp) :: rho_ratio, ice_int, dphi, C_int, Cs_int, zeta_int, smax, dmax
-      integer  :: io, ii, np, nl
+      integer  :: im, io, ii, np, nl
 
       np = sht%nphi;  nl = sht%nlat
       allocate(load(np,nl), u(np,nl), N(np,nl), Sraw(np,nl), rsl_new(np,nl))
@@ -145,7 +156,14 @@ contains
       ! Freeze the response's relaxation drift for this time step; for elastic /
       ! null responses this is a no-op.
       call resp%begin_step(sht)
+      ! Open the SLE<->memory co-convergence (§3c 3b): snapshot τ_n. The im loop
+      ! re-converges the water load against the latest end-of-step memory estimate
+      ! and advances the memory one trapezoid pass each time, until the response's
+      ! report drift settles. For FE / elastic / null it runs exactly once (they
+      ! report converged after a single advance).
+      call resp%prepare_endpoint(sht)
 
+      do im = 1, self%max_mem_iter
       do io = 1, self%n_outer
          if (self%fixed_ocean) then
             ! Fixed ocean geometry (Martinec 2018 §2.1): hold the coastline at the
@@ -209,12 +227,22 @@ contains
          if (self%fixed_ocean) exit         ! C is fixed: one coastline pass converges
       end do
 
-      ! Commit the relaxation memory using the converged total load (no-op for
-      ! elastic / null), advancing the response by one time step. Same grounded-
-      ! ice masking + subgrid sloping-coast term (wcorr) as the inner load.
+      ! Advance the relaxation memory one co-convergence pass with the converged
+      ! total load (no-op for elastic / null; one Maxwell update for FE; one
+      ! trapezoid endpoint pass for TRAP). Same grounded-ice masking + subgrid
+      ! sloping-coast term (wcorr) as the inner load. advance_endpoint also refreshes
+      ! the report drift to the new τ_{n+1}, so the next im pass's σ-convergence and
+      ! coastline migration see the advanced memory.
       load = rho_ice*d_ice*(1.0_wp - C) + rho_water*(C*rsl) + wcorr
       call sht%analysis(load, load_lm)
-      call resp%commit_step(sht, load_lm)
+      call resp%advance_endpoint(sht, load_lm)
+      res%n_couple_done = im
+      ! Converged when the report drift has settled (the σ<->τ fixed point); 1st-order
+      ! / stateless responses report converged after a single pass.
+      if (resp%endpoint_converged()) exit
+      end do
+
+      call resp%finalize_step(sht)
 
       ! diagnostics. The conserved ocean-water volume is ∫s dΩ = ∫C·rsl − ζ̄⁽⁰⁾
       ! (the subgrid sloping-coast term; ζ̄⁽⁰⁾ = 0 in the binary case), which must
