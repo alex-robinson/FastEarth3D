@@ -186,6 +186,21 @@ module fe_response
       ! reproduces the historical first step exactly for a load present at t=0.
       complex(wp), allocatable :: sigma_n(:), sigma_next(:)  !! (nlm)
       logical :: sigma_primed = .false.
+      ! Δt-invariant memory rate Mk/Δt = μ/η (set once in init): set_dt rescales the
+      ! memory factor Mk = MkPerDt·Δt exactly, so the adaptive controller can change
+      ! Δt with no operator re-factor and no drift from repeated rescaling.
+      real(wp), allocatable :: MkPerDt(:)                 !! (ne)
+      ! Controller state snapshots (§3c controller, lazily allocated): buffer A holds
+      ! the entering state τ_n that a rejected/fine step restores to; buffer B holds the
+      ! coarse τ_{n+1} for the step-doubling error estimate. Distinct from Are0 (which
+      ! sle_solve overwrites internally each step). See save_state/stash_coarse.
+      real(wp), allocatable :: Are_s(:,:,:), Aim_s(:,:,:), Bre_s(:,:,:), Bim_s(:,:,:)
+      real(wp), allocatable :: Cre_s(:,:,:), Cim_s(:,:,:)            !! buffer A (τ_n)
+      real(wp), allocatable :: Are_c(:,:,:), Aim_c(:,:,:), Bre_c(:,:,:), Bim_c(:,:,:)
+      real(wp), allocatable :: Cre_c(:,:,:), Cim_c(:,:,:)            !! buffer B (τ_coarse)
+      real(wp)    :: time_s = 0.0_wp                       !! saved time (buffer A)
+      complex(wp), allocatable :: sigma_n_s(:)             !! saved σ_n (buffer A)
+      logical     :: sigma_primed_s = .false.
    contains
       procedure :: init        => ve_response_init
       procedure :: begin_step  => ve_response_begin
@@ -196,6 +211,12 @@ module fe_response
       procedure :: advance_endpoint   => ve_response_advance_endpoint
       procedure :: endpoint_converged => ve_response_endpoint_converged
       procedure :: finalize_step      => ve_response_finalize_step
+      ! Adaptive-Δt controller primitives (§3c controller; see fe_timestep)
+      procedure :: set_dt            => ve_response_set_dt
+      procedure :: save_state        => ve_response_save_state
+      procedure :: restore_state     => ve_response_restore_state
+      procedure :: stash_coarse      => ve_response_stash_coarse
+      procedure :: coarse_fine_error => ve_response_coarse_fine_error
       procedure :: destroy     => ve_response_destroy
    end type ve_response
 
@@ -375,15 +396,17 @@ contains
 
       ! degree-independent element fields: node radii, shear, Maxwell factor
       allocate(self%r(self%nr));  self%r = mesh%r
-      allocate(self%mu(self%ne), self%Mk(self%ne))
+      allocate(self%mu(self%ne), self%Mk(self%ne), self%MkPerDt(self%ne))
       do e = 1, self%ne
          lay = mesh%elem_layer(e)
          self%mu(e) = earth%layers(lay)%mu
          eta_e      = earth%layers(lay)%eta
          if (eta_e > 0.0_wp) then
-            self%Mk(e) = self%mu(e)*dt/eta_e
+            self%Mk(e)      = self%mu(e)*dt/eta_e     ! historical form (byte-identical)
+            self%MkPerDt(e) = self%mu(e)/eta_e        ! Δt-invariant; set_dt rescales Mk
          else
-            self%Mk(e) = 0.0_wp
+            self%Mk(e)      = 0.0_wp                  ! elastic layer: no memory
+            self%MkPerDt(e) = 0.0_wp
          end if
       end do
 
@@ -796,6 +819,78 @@ contains
       self%time = self%time + self%dt
    end subroutine ve_response_finalize_step
 
+   subroutine ve_response_set_dt(self, dt)
+      !! Change the step size. Δt enters only through Mk = (μ/η)·Δt, so rescale Mk from
+      !! the Δt-invariant rate MkPerDt — exact (no drift from repeated halving/restoring)
+      !! and no operator re-factor (the band LU is Δt-independent). The adaptive
+      !! controller uses this to try a step, halve for the fine sub-steps, and restore.
+      class(ve_response), intent(inout) :: self
+      real(wp),           intent(in)    :: dt
+      self%dt = dt
+      self%Mk = self%MkPerDt * dt
+   end subroutine ve_response_set_dt
+
+   subroutine ensure_state_scratch(self)
+      !! Lazily allocate the controller's state buffers A (τ_n) and B (τ_coarse).
+      class(ve_response), intent(inout) :: self
+      if (allocated(self%Are_s)) return
+      allocate(self%Are_s(NLAM,self%ne,self%nk), self%Aim_s(NLAM,self%ne,self%nk))
+      allocate(self%Bre_s(NLAM,self%ne,self%nk), self%Bim_s(NLAM,self%ne,self%nk))
+      allocate(self%Cre_s(NLAM,self%ne,self%nk), self%Cim_s(NLAM,self%ne,self%nk))
+      allocate(self%Are_c(NLAM,self%ne,self%nk), self%Aim_c(NLAM,self%ne,self%nk))
+      allocate(self%Bre_c(NLAM,self%ne,self%nk), self%Bim_c(NLAM,self%ne,self%nk))
+      allocate(self%Cre_c(NLAM,self%ne,self%nk), self%Cim_c(NLAM,self%ne,self%nk))
+      allocate(self%sigma_n_s(self%nlm))
+   end subroutine ensure_state_scratch
+
+   subroutine ve_response_save_state(self)
+      !! Snapshot the entering prognostic state (memory τ_n + time + σ_n) into buffer A.
+      !! A rejected step or the fine sub-step path restores to this with restore_state.
+      class(ve_response), intent(inout) :: self
+      call ensure_state_scratch(self)
+      self%Are_s = self%Are;  self%Aim_s = self%Aim
+      self%Bre_s = self%Bre;  self%Bim_s = self%Bim
+      self%Cre_s = self%Cre;  self%Cim_s = self%Cim
+      self%time_s = self%time
+      if (allocated(self%sigma_n)) self%sigma_n_s = self%sigma_n
+      self%sigma_primed_s = self%sigma_primed
+   end subroutine ve_response_save_state
+
+   subroutine ve_response_restore_state(self)
+      !! Restore the prognostic state saved by save_state (buffer A).
+      class(ve_response), intent(inout) :: self
+      self%Are = self%Are_s;  self%Aim = self%Aim_s
+      self%Bre = self%Bre_s;  self%Bim = self%Bim_s
+      self%Cre = self%Cre_s;  self%Cim = self%Cim_s
+      self%time = self%time_s
+      if (allocated(self%sigma_n)) self%sigma_n = self%sigma_n_s
+      self%sigma_primed = self%sigma_primed_s
+   end subroutine ve_response_restore_state
+
+   subroutine ve_response_stash_coarse(self)
+      !! Snapshot the current memory (the coarse one-Δt τ_{n+1}) into buffer B for the
+      !! step-doubling error estimate, to be compared against the fine result.
+      class(ve_response), intent(inout) :: self
+      call ensure_state_scratch(self)
+      self%Are_c = self%Are;  self%Aim_c = self%Aim
+      self%Bre_c = self%Bre;  self%Bim_c = self%Bim
+      self%Cre_c = self%Cre;  self%Cim_c = self%Cim
+   end subroutine ve_response_stash_coarse
+
+   subroutine ve_response_coarse_fine_error(self, err_inf, tau_inf)
+      !! After the fine path, return the coarse↔fine memory difference ‖τ_fine−τ_coarse‖∞
+      !! (buffer B is τ_coarse, self%Are… is τ_fine) and the memory magnitude ‖τ_fine‖∞,
+      !! for the controller's scaled local-error estimate.
+      class(ve_response), intent(in)  :: self
+      real(wp),           intent(out) :: err_inf, tau_inf
+      err_inf = max(maxval(abs(self%Are - self%Are_c)), maxval(abs(self%Aim - self%Aim_c)), &
+                    maxval(abs(self%Bre - self%Bre_c)), maxval(abs(self%Bim - self%Bim_c)), &
+                    maxval(abs(self%Cre - self%Cre_c)), maxval(abs(self%Cim - self%Cim_c)))
+      tau_inf = max(maxval(abs(self%Are)), maxval(abs(self%Aim)), &
+                    maxval(abs(self%Bre)), maxval(abs(self%Bim)), &
+                    maxval(abs(self%Cre)), maxval(abs(self%Cim)))
+   end subroutine ve_response_coarse_fine_error
+
    subroutine ensure_commit_scratch(self)
       !! Lazily allocate the implicit-commit scratch (the τ_n memory snapshot doubles
       !! the memory footprint, so it is only paid when a TRAP commit is first used).
@@ -862,8 +957,14 @@ contains
       if (allocated(self%dUa_prev)) deallocate(self%dUa_prev)
       if (allocated(self%sigma_n))    deallocate(self%sigma_n)
       if (allocated(self%sigma_next)) deallocate(self%sigma_next)
+      if (allocated(self%MkPerDt))    deallocate(self%MkPerDt)
+      if (allocated(self%Are_s))      deallocate(self%Are_s, self%Aim_s, self%Bre_s, &
+                                                 self%Bim_s, self%Cre_s, self%Cim_s)
+      if (allocated(self%Are_c))      deallocate(self%Are_c, self%Aim_c, self%Bre_c, &
+                                                 self%Bim_c, self%Cre_c, self%Cim_c)
+      if (allocated(self%sigma_n_s))  deallocate(self%sigma_n_s)
       self%lmax = 0;  self%nlm = 0;  self%nk = 0
-      self%sigma_primed = .false.
+      self%sigma_primed = .false.;  self%sigma_primed_s = .false.
    end subroutine ve_response_destroy
 
 end module fe_response

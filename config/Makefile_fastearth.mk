@@ -15,6 +15,7 @@ obj_fastearth = \
 	$(objdir)/fe_response.o \
 	$(objdir)/fe_gravity.o \
 	$(objdir)/fe_sle.o \
+	$(objdir)/fe_timestep.o \
 	$(objdir)/fe_rotation.o \
 	$(objdir)/fe_coupling.o \
 	$(objdir)/fe_io.o \
@@ -36,6 +37,9 @@ $(objdir)/fe_response.o:         $(objdir)/fe_radial_fe.o $(objdir)/fe_earth_str
 $(objdir)/fe_gravity.o:          $(objdir)/fe_earth_structure.o
 $(objdir)/fe_sle.o:              $(objdir)/fe_sht.o $(objdir)/fe_constants.o \
                                  $(objdir)/fe_response.o
+$(objdir)/fe_timestep.o:         $(objdir)/fe_response.o $(objdir)/fe_sle.o \
+                                 $(objdir)/fe_sht.o $(objdir)/fe_viscoelastic.o \
+                                 $(objdir)/fe_precision.o
 $(objdir)/fe_rotation.o:         $(objdir)/fe_sht.o $(objdir)/fe_constants.o
 $(objdir)/fe_coupling.o:         $(objdir)/fe_response.o $(objdir)/fe_sle.o \
                                  $(objdir)/fe_rotation.o $(objdir)/fe_earth_structure.o \
@@ -125,6 +129,14 @@ test_sle_couple_order: fastearth-static | $(bindir)
 	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(testdir)/test_sle_couple_order.f90 \
 		-o $(bindir)/test_sle_couple_order.x $(objdir)/libfastearth.a $(LFLAGS)
 	@echo "    $(bindir)/test_sle_couple_order.x is ready."
+
+# Adaptive-Δt controller (§3c): field step-doubling estimate order + the adaptive
+# stepper converging to a fine reference with far fewer steps. Standalone diagnostic,
+# NOT in `make check`.
+test_timestep: fastearth-static | $(bindir)
+	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(testdir)/test_timestep.f90 \
+		-o $(bindir)/test_timestep.x $(objdir)/libfastearth.a $(LFLAGS)
+	@echo "    $(bindir)/test_timestep.x is ready."
 
 test_response: fastearth-static | $(bindir)
 	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(testdir)/test_response.f90 \

@@ -33,7 +33,7 @@ module fe_viscoelastic
              advance_memory
    ! Time-integration schemes for the Maxwell memory update (advance_memory):
    public :: SCHEME_FE, SCHEME_ETD1, SCHEME_TRAP, SCHEME_BE
-   public :: scheme_is_implicit
+   public :: scheme_is_implicit, scheme_order
 
    ! Spheroidal strain keeps four tensor-harmonic components; LAM maps the local
    ! index 1..4 to Martinec's λ ∈ {1,2,5,6} (λ=3,4 are toroidal, dropped).
