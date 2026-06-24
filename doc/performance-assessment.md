@@ -74,7 +74,7 @@ Ranked by return on effort for transient runs. ✅ = implemented now; ⏭ = defe
 | 2 | **Warm-start the SLE fixed point** from the previous step's `rsl` | **~1.5% on E2**; up to ~2× only on strongly-migrating coastlines (unverified) | low | ✅ |
 | 3 | ~~**ETD0** exponential memory update → larger `dt`~~ | **rejected — fails benchmarks** | — | ✗ |
 | 3b | ~~**ETD1** (linear-strain φ-weights) → larger `dt`~~ | **rejected — the memory *rule*, not the strain coupling, sets the order** | — | ✗ |
-| 3c | **Trapezoidal memory rule solved by coupling iteration** → 2nd-order (1-D done); FE/trap **step-doubling** estimate next | **order 1→2; ~1300× accuracy at fixed `dt`** | med | ✅ |
+| 3c | **Trapezoidal memory rule solved by coupling iteration** → 2nd-order (1-D + field driver 3a + step-doubling done; SLE-coupled 3b + controller next) | **order 1→2; ~1300× accuracy at fixed `dt`; ~6× per-step cost** | med | ✅ |
 | 4 | **OpenMP SHTns as the default** (offline *and* coupled) | several× at lmax ≥ 256 | low | ⏭ |
 | 5 | **Fuse the two syntheses** to one synthesis of `N_lm − u_lm` | ~33% of inner-loop SHTs | low | ⏭ |
 | 6 | **Batched multi-RHS band solve** over all `m`/re-im at fixed `l`; kill the dense degree-1 LU via nullspace projection | high at production lmax | med | ⏭ |
@@ -236,12 +236,33 @@ Implementation: `SCHEME_TRAP` (+ `SCHEME_BE` as the 1st-order control) in
 the ADVANCE (explicit single-pass for FE/ETD1 — byte-identical; iterated endpoint for
 BE/TRAP). Default unchanged (`scheme=FE`, `max_couple_iter=1`); `make check` 21/21.
 
-**Still pending (next):** (i) **FE/trapezoidal step-doubling** for the local-error
-estimate an adaptive controller needs — now `p=2`, so the Richardson factor is
-`2²−1 = 3`. (ii) **Wiring trapezoidal+iteration into the per-`(l,m)` field driver**
-(`fe_response`), where the endpoint iteration means re-solving the drift inside the
-coupling loop. The long-time under-relaxation that originally motivated this is a
-separate `dt`/NMAX-resolution + slow-mode question, not an integrator issue.
+**Step-doubling (part ii) — DONE.** `ve_degree%step_double` gives the Richardson
+local-error estimate a controller needs: advance one Δt by two Δt/2 sub-steps (the
+kept result) and scale the coarse/fine memory difference by `2^p−1` (3 for
+trapezoidal). M = μΔt/η is linear in Δt, so halving Δt just halves Mk — no re-init.
+Validated to scale as `dt^(p+1)`: measured `dt^2.00` for FE (p=1), `dt^2.99` for
+trapezoidal (p=2). Estimate-only; the accept/reject + Δt controller is the remaining
+piece.
+
+**Field driver (part 3a) — DONE, behind a flag.** Trapezoidal+iteration is wired
+into the per-`(l,m)` `ve_response` (default FE = unchanged). The report (`apply`, via
+`begin_step`'s frozen drift from τ_n) was already time-aligned; only `commit_step`
+changes — its drift solve is factored into a reusable `solve_drift(τ)`, and the TRAP
+commit Picard-iterates the endpoint with the load **frozen** at the converged σ
+(re-solve drift against trial τ_{n+1}, trapezoid-advance from a τ_n snapshot, repeat
+to `couple_tol`). Validated against the 1-D `ve_degree` TRAP to 3.6e-13 (displacement)
+/ 1.4e-16 (geoid) in `test_ve_response`; FE byte-identical; `make check` 21/21.
+**Measured E2 cost: ~6.0× per-step at fixed `dt`** (serial, lmax 128, 750 steps,
+`couple_tol`=1e-6; ~8–10 drift re-solves/step) — the overhead the larger adaptive
+step must amortize. E2 still passes to tolerance under the frozen-load approximation.
+
+**Still pending:** (i) lift the memory iteration into the SLE driver (part **3b**) so
+σ and τ co-converge for **fast-evolving loads** — the frozen-load endpoint of 3a is
+exact only for held/slow loads; 3b wraps 3a's `solve_drift`+trapezoid as its inner
+body. (ii) the **adaptive-`dt` controller** itself (accept/reject + step selection)
+on top of the step-doubling estimate. The long-time under-relaxation that originally
+motivated this is a separate `dt`/NMAX-resolution + slow-mode question, not an
+integrator issue.
 
 `test_etd1` (and the scheme-pluggable kernel) are kept as the reproducible evidence
 that ETD0/ETD1 are not re-attempted, and `test_couple_order` as the evidence for the
@@ -315,5 +336,11 @@ All validated on Mac.fritz.box (gfortran 15.2, `OMP_NUM_THREADS=8`):
   the adaptive-`dt` core** — **2nd-order** in the 1-D stepper (`test_couple_order`:
   order 2.00, ~1300× more accurate than FE at fixed `dt`), the fixed point converging
   in 5–8 iterations at `couple_tol=1e-6`. The control (backward-Euler, iterated) stays
-  1st-order, confirming the iteration is not itself an order lever. Field-driver wiring
-  and step-doubling pending.
+  1st-order, confirming the iteration is not itself an order lever.
+- **Step-doubling (§3c ii):** `ve_degree%step_double` Richardson estimate validated to
+  scale as `dt^(p+1)` (`dt^2.00` FE, `dt^2.99` trapezoidal). Estimate-only; controller pending.
+- **Field driver (§3c 3a):** trapezoidal+iteration wired into `ve_response` behind the
+  scheme flag (FE default byte-identical, `make check` 21/21). Reproduces the 1-D
+  `ve_degree` TRAP to 3.6e-13 / 1.4e-16 (`test_ve_response`). E2 cost ~6.0× per-step at
+  fixed `dt` (frozen-load endpoint; passes E2 to tolerance). SLE-coupled (3b) for
+  fast-evolving loads still pending.
