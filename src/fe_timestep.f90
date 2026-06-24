@@ -51,7 +51,7 @@ module fe_timestep
 contains
 
    subroutine stepper_advance(self, sht, resp, sle, topo0, ice0, ice1, ice_ref, &
-                              t0, t1, rsl, C)
+                              t0, t1, rsl, C, s_rot)
       !! Advance the VE+SLE model from t0 to t1 with the ice load interpolated linearly
       !! ice(t) = ice0 + (t−t0)/(t1−t0)·(ice1−ice0), absolute; the SLE load is
       !! d_ice(t) = ice(t) − ice_ref (total change from the reference state). Δt is
@@ -67,6 +67,10 @@ contains
       real(wp),                 intent(in)    :: t0, t1
       real(wp),                 intent(inout) :: rsl(:,:)
       real(wp),                 intent(out)   :: C(:,:)
+      !! s_rot (optional): the rotational-feedback contribution to RSL (fe_rotation),
+      !! held constant across this interval and added to the SLE geometry (the caller
+      !! runs the rotation ↔ SLE coupling at the interval level). Absent ⇒ no rotation.
+      real(wp),       optional, intent(in)    :: s_rot(:,:)
 
       type(sle_result)      :: res
       real(wp), allocatable :: rsl_n(:,:), ice_now(:,:), dice_now(:,:)
@@ -86,7 +90,7 @@ contains
          allocate(ice_now(np,nl), dice_now(np,nl))
          call resp%set_dt(span)
          ice_now = ice1;  dice_now = ice1 - ice_ref
-         call sle%solve(sht, resp, dice_now, ice_now, topo0, rsl, C, res)
+         call sle%solve(sht, resp, dice_now, ice_now, topo0, rsl, C, res, s_rot=s_rot)
          self%worst_mass_resid = max(self%worst_mass_resid, res%mass_resid)
          self%n_accept = self%n_accept + 1
          return
@@ -104,7 +108,7 @@ contains
          allocate(sig0(sht%nlm))
          ice_now = ice0;  dice_now = ice0 - ice_ref
          call sle%solve(sht, resp, dice_now, ice_now, topo0, rsl, C, res, &
-                        report_only=.true., sigma_lm=sig0)
+                        report_only=.true., sigma_lm=sig0, s_rot=s_rot)
          call resp%prime_sigma(sig0)
       end if
 
@@ -164,7 +168,7 @@ contains
          ice_now  = ice0 + frac*(ice1 - ice0)
          dice_now = ice_now - ice_ref
          self%n_solve = self%n_solve + 1
-         call sle%solve(sht, resp, dice_now, ice_now, topo0, rsl, C, res)
+         call sle%solve(sht, resp, dice_now, ice_now, topo0, rsl, C, res, s_rot=s_rot)
          self%worst_mass_resid = max(self%worst_mass_resid, res%mass_resid)
       end subroutine solve_at
 

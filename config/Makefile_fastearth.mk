@@ -143,6 +143,11 @@ test_rotation: fastearth-static | $(bindir)
 		-o $(bindir)/test_rotation.x $(objdir)/libfastearth.a $(LFLAGS)
 	@echo "    $(bindir)/test_rotation.x is ready."
 
+test_rotation_sle: fastearth-static | $(bindir)
+	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(testdir)/test_rotation_sle.f90 \
+		-o $(bindir)/test_rotation_sle.x $(objdir)/libfastearth.a $(LFLAGS)
+	@echo "    $(bindir)/test_rotation_sle.x is ready."
+
 test_etd1: fastearth-static | $(bindir)
 	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(testdir)/test_etd1.f90 \
 		-o $(bindir)/test_etd1.x $(objdir)/libfastearth.a $(LFLAGS)
@@ -251,7 +256,7 @@ test_sle_subgrid: fastearth-static | $(bindir)
 		-o $(bindir)/test_sle_subgrid.x $(objdir)/libfastearth.a $(LFLAGS)
 	@echo "    $(bindir)/test_sle_subgrid.x is ready."
 
-TESTS = test_params test_drive test_band test_sht test_earth test_mesh test_integrals test_assembly test_love test_relax test_tidal test_rotation test_response test_sle test_flotation test_flotation_load test_ve_response test_sle_ve test_benchmark_love test_coupling test_restart test_benchmark_disc test_benchmark_martinec test_field test_sle_subgrid
+TESTS = test_params test_drive test_band test_sht test_earth test_mesh test_integrals test_assembly test_love test_relax test_tidal test_rotation test_rotation_sle test_response test_sle test_flotation test_flotation_load test_ve_response test_sle_ve test_benchmark_love test_coupling test_restart test_benchmark_disc test_benchmark_martinec test_field test_sle_subgrid
 
 check: $(TESTS)
 	@echo ""

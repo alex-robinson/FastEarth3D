@@ -94,7 +94,7 @@ module fe_sle
 contains
 
    subroutine sle_solve(self, sht, resp, d_ice, ice, topo0, rsl, C, res, &
-                        report_only, sigma_lm)
+                        report_only, sigma_lm, s_rot)
       !! Solve for the relative-sea-level change rsl [m] driven by a grounded-ice
       !! thickness change d_ice [m], on a reference topography topo0 [m] (solid
       !! surface relative to the reference sea surface; ocean where < 0).
@@ -133,6 +133,17 @@ contains
       !! spectral surface load, in either mode.
       logical,          optional, intent(in)  :: report_only
       complex(wp),      optional, intent(out) :: sigma_lm(:)
+      !! s_rot (optional, default 0): the rotational-feedback contribution to relative
+      !! sea level, s_rot = N_rot − u_rot [m] (geoid minus uplift from the centrifugal
+      !! potential of polar motion; fe_rotation builds it). It is a degree-2 field HELD
+      !! constant over this solve — the rotation ↔ SLE fixed point is iterated by the
+      !! caller (the polar motion responds to the ice + ocean load). It enters the
+      !! sea-surface geometry (Sraw) but NOT the surface mass load that drives the
+      !! load response / Maxwell memory: the rotational potential forces the Earth
+      !! through fe_rotation's own tidal channel, not as a surface mass. Mass is still
+      !! conserved — Δφ is recomputed from Sraw including s_rot. With s_rot absent the
+      !! solve is bit-for-bit the no-rotation result.
+      real(wp),         optional, intent(in)  :: s_rot(:,:)
 
       real(wp), allocatable :: load(:,:), u(:,:), N(:,:), Sraw(:,:), rsl_new(:,:)
       real(wp), allocatable :: C0(:,:), wcorr(:,:)
@@ -226,6 +237,7 @@ contains
             call sht%synthesis(N_lm, N)
 
             Sraw = N - u
+            if (present(s_rot)) Sraw = Sraw + s_rot     ! rotational feedback (held)
             Cs_int = sht%surface_integral(C*Sraw)
             dphi   = (ice_int - Cs_int + zeta_int)/C_int ! mass-conservation offset
             rsl_new = Sraw + dphi                        ! full field, everywhere

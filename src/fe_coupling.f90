@@ -24,6 +24,7 @@ module fe_coupling
    !! ice load drive the deformation and sea-level change incrementally. The
    !! reference topography z_bed_eq doubles as the SLE's reference topo0.
    use fe_precision,       only: wp
+   use fe_constants,       only: rho_ice, rho_water
    use fe_params,          only: fe_param_class
    use fe_sht,             only: sht_grid
    use fe_earth_structure, only: earth_model, build_earth
@@ -52,6 +53,7 @@ module fe_coupling
       real(wp), allocatable    :: rsl(:,:)    !! relative sea level change [m] (full field)
       real(wp), allocatable    :: z_bed(:,:)  !! bedrock = z_bed_eq − rsl [m]
       real(wp), allocatable    :: C(:,:)      !! ocean function (1 ocean / 0 land)
+      real(wp), allocatable    :: s_rot(:,:)  !! rotational-feedback RSL contribution [m] (if enabled)
       ! configuration / clock
       real(wp) :: time      = 0.0_wp   !! model time [s] (mirrors resp%time)
       ! diagnostics from the last update
@@ -121,8 +123,17 @@ contains
       self%stepper%dt_max     = p%dt_max
       self%stepper%dt_try     = p%dt_init       ! 0 => first guess = whole interval
 
-      ! rotational feedback
+      ! rotational feedback (degree-2 Liouville polar motion → centrifugal potential
+      ! fed back into the SLE; fe_rotation). When enabled, build the two degree-2 VE
+      ! channels and the secular Love number. k_s defaults to the model fluid limit
+      ! (k^T_f); for deep time the observed-flattening value rotation%k_s_flat is the
+      ! recommended override (avoids the lithosphere-thickness paradox).
       self%rotation%enabled = p%rotation
+      if (p%rotation) then
+         call self%rotation%init(self%earth, sht, dt0)
+         self%rotation%enabled = .true.          ! init clears it; turn back on
+         allocate(self%s_rot(np,nl), source=0.0_wp)
+      end if
 
       ! reference (equilibrium) state; z_bed_eq doubles as the SLE topo0
       allocate(self%z_bed_eq,  source=z_bed_eq)
@@ -145,12 +156,40 @@ contains
       class(solid_earth), intent(inout) :: self
       real(wp),           intent(in)    :: h_ice(:,:)   !! grounded-ice thickness [m]
       real(wp),           intent(in)    :: dt           !! interval to advance [s]
-      real(wp) :: t0, t1
+      real(wp), allocatable :: load(:,:)
+      real(wp) :: t0, t1, dt_sub
+      integer  :: n_sub, k
 
       t0 = self%time;  t1 = t0 + dt
-      call self%stepper%advance(self%sht, self%resp, self%sle, self%z_bed_eq, &
-                                self%h_ice, h_ice, self%h_ice_ref, t0, t1, &
-                                self%rsl, self%C)
+
+      if (self%rotation%enabled) then
+         ! Rotational feedback, coupled at the interval level (polar motion relaxes on
+         ! ~kyr, ≫ the coupling interval, and the ocean→m feedback is weak, so the
+         ! degree-2 rotational RSL s_rot is held across the interval from the entering
+         ! polar motion and refreshed at the end — a predictor coupling; the rigorous
+         ! per-step fixed point is validated in test_rotation_sle). Open the rotation
+         ! step, build s_rot from the current m, drive the interval with it, then update
+         ! the polar motion from the end-of-interval load and commit.
+         call self%rotation%begin_step(self%sht, dt)
+         call self%rotation%s_rot(self%sht, self%s_rot)
+         call self%stepper%advance(self%sht, self%resp, self%sle, self%z_bed_eq, &
+                                   self%h_ice, h_ice, self%h_ice_ref, t0, t1, &
+                                   self%rsl, self%C, s_rot=self%s_rot)
+         ! Advance the polar motion to the end of the interval under the end-of-interval
+         ! load (held). The explicit-FE rotation channels are sub-stepped to respect the
+         ! Maxwell stability ceiling dt_fe_max (a coupling interval far exceeds it).
+         load = rho_ice*(h_ice - self%h_ice_ref)*(1.0_wp - self%C) &
+              + rho_water*(self%C*self%rsl)            ! end-of-interval surface load
+         n_sub  = max(1, ceiling(dt/self%rotation%dt_fe_max))
+         dt_sub = dt/real(n_sub, wp)
+         do k = 1, n_sub
+            call self%rotation%update(self%sht, load, dt_sub)
+         end do
+      else
+         call self%stepper%advance(self%sht, self%resp, self%sle, self%z_bed_eq, &
+                                   self%h_ice, h_ice, self%h_ice_ref, t0, t1, &
+                                   self%rsl, self%C)
+      end if
       self%h_ice            = h_ice
       self%worst_mass_resid = self%stepper%worst_mass_resid
 
@@ -163,7 +202,9 @@ contains
    subroutine solid_earth_finalize(self)
       class(solid_earth), intent(inout) :: self
       call self%resp%destroy()
+      call self%rotation%destroy()
       self%sht => null()                 ! borrowed grid — the host destroys it
+      if (allocated(self%s_rot))     deallocate(self%s_rot)
       if (allocated(self%z_bed_eq))  deallocate(self%z_bed_eq)
       if (allocated(self%h_ice_ref)) deallocate(self%h_ice_ref)
       if (allocated(self%h_ice))     deallocate(self%h_ice)

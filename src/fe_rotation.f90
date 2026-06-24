@@ -68,11 +68,13 @@ module fe_rotation
       real(wp), allocatable :: r(:), mu(:), Mk(:), MkPerDt(:)
       real(wp) :: norm(NLAM), sa(4,NLAM), sb(4,NLAM), sc(4,NLAM)
       real(wp) :: Fe = 0.0_wp                      !! elastic surface-F per unit forcing
+      real(wp) :: Ue = 0.0_wp                      !! elastic surface-U per unit forcing (→ h^T)
       real(wp), allocatable :: xUn(:), xVn(:)      !! unit-forcing nodal U,V
       ! per-element memory stress, real/imag (NLAM, ne)
       real(wp), allocatable :: Are(:,:), Aim(:,:), Bre(:,:), Bim(:,:), Cre(:,:), Cim(:,:)
       ! frozen drift from the entering memory τ_n (begin_step)
       complex(wp) :: dF = (0.0_wp, 0.0_wp)         !! surface F drift
+      complex(wp) :: dU = (0.0_wp, 0.0_wp)         !! surface U drift (uplift)
       real(wp), allocatable :: dUn_re(:), dUn_im(:), dVn_re(:), dVn_im(:)  !! nodal ε_n drift
    contains
       procedure :: init       => channel_init
@@ -88,16 +90,28 @@ module fe_rotation
       real(wp)    :: time = 0.0_wp            !! model time [s]
       ! physics constants (defaults: Spada 2011 Table 2; overridable for deep time)
       real(wp)    :: a       = 6.371e6_wp     !! Earth radius [m]
+      real(wp)    :: g       = 9.81_wp        !! surface gravity [m s⁻²]
       real(wp)    :: CminusA = 2.63e35_wp     !! C − A [kg m²]
-      real(wp)    :: k_s     = 0.0_wp         !! secular (fluid) tidal Love number k^T_f
-      logical     :: k_s_set = .false.        !! .true. if k_s was supplied (deep-time override)
+      real(wp)    :: Omega   = 7.292115e-5_wp !! mean rotation rate Ω [s⁻¹]
+      real(wp)    :: k_s     = 0.0_wp         !! secular tidal Love number used (k_s)
+      real(wp)    :: k_s_fluid = 0.0_wp       !! model relaxed limit k^T_f (Spada eq. 11 benchmark value)
+      real(wp)    :: k_s_flat  = 0.0_wp       !! observed-flattening k_s = 3G(C−A)/(a⁵Ω²) (Adhikari/Mitrovica)
       real(wp)    :: kTe     = 0.0_wp         !! elastic tidal Love number k^T_e (degree 2)
+      real(wp)    :: hTe     = 0.0_wp         !! elastic tidal Love number h^T_e (degree 2)
+      real(wp)    :: dt_fe_max = huge(1.0_wp) !! forward-Euler stability ceiling Δt < 2 min(η/μ)
+                                              !! (the channels use explicit FE; the driver
+                                              !! sub-steps a coupling interval to respect this)
+      complex(wp) :: cload   = (0.0_wp,0.0_wp)!! load-channel operator coefficient (set by solve_m, used by commit)
       type(deg2_channel) :: load_ch          !! (1+k^L)∗ channel
       type(deg2_channel) :: tidal_ch         !! k^T∗ channel
    contains
-      procedure :: init    => rotation_init
-      procedure :: update  => rotation_update
-      procedure :: destroy => rotation_destroy
+      procedure :: init       => rotation_init
+      procedure :: begin_step => rotation_begin_step
+      procedure :: solve_m    => rotation_solve_m
+      procedure :: s_rot      => rotation_s_rot
+      procedure :: commit     => rotation_commit
+      procedure :: update     => rotation_update
+      procedure :: destroy    => rotation_destroy
    end type rotation_state
 
 contains
@@ -119,64 +133,126 @@ contains
       call self%destroy()
       call mesh%build(earth)
       self%a = earth%r_earth
+      self%g = earth%gravity_at(earth%r_earth)
       call self%load_ch%init(earth, mesh, dt, tidal=.false.)
       call self%tidal_ch%init(earth, mesh, dt, tidal=.true.)
-      ! elastic tidal Love number from the tidal channel's unit response:
-      ! k^T = −F(a)/φ_t − 1 (tidal_love convention), φ_t = 1 ⇒ k^T_e = −Fe − 1.
+      ! elastic tidal Love numbers from the tidal channel's unit response (φ_t = 1):
+      ! k^T = −F(a)/φ_t − 1, h^T = g U(a)/φ_t (tidal_love convention).
       self%kTe = -self%tidal_ch%Fe - 1.0_wp
+      self%hTe =  earth%gravity_at(earth%r_earth) * self%tidal_ch%Ue
+      ! two secular Love numbers (Spada eq. 11 vs Adhikari/Mitrovica): the model
+      ! relaxed limit k^T_f reproduces the Spada Test 3/2 benchmark; the observed-
+      ! flattening closed form k_s = 3G(C−A)/(a⁵Ω²) avoids the lithosphere-thickness
+      ! paradox and is the recommended deep-time value.
+      self%k_s_fluid = fluid_tidal_k(earth, mesh)
+      self%k_s_flat  = 3.0_wp*grav_G*self%CminusA/(self%a**5*self%Omega**2)
+      ! Forward-Euler stability ceiling: Mk = (μ/η)Δt < 2 ⇒ Δt < 2/max(μ/η), with a
+      ! 0.5 safety factor. The driver sub-steps any coupling interval larger than this.
+      if (maxval(self%load_ch%MkPerDt) > 0.0_wp) &
+         self%dt_fe_max = 1.0_wp/maxval(self%load_ch%MkPerDt)
       if (present(k_s)) then
-         self%k_s = k_s;  self%k_s_set = .true.
+         self%k_s = k_s                       ! explicit override (e.g. observed flattening)
       else
-         self%k_s = fluid_tidal_k(earth, mesh)
-         self%k_s_set = .false.
+         self%k_s = self%k_s_fluid            ! default: model fluid limit (benchmark)
       end if
       self%m = (0.0_wp, 0.0_wp);  self%time = 0.0_wp
    end subroutine rotation_init
 
-   subroutine rotation_update(self, sht, load, dt)
-      !! Advance the polar motion one step under the surface mass load `load`
-      !! [kg m⁻²] on the Gauss grid, returning the time BEFORE advancing in
-      !! self%time-aligned fashion (first call ⇒ elastic m₀). Solves the algebraic
-      !! Liouville equation with the tidal feedback frozen, then advances both
-      !! channels' memory.
+   subroutine rotation_begin_step(self, sht, dt)
+      !! Open a timestep: set Δt and freeze both channels' relaxation drift from the
+      !! entering memory τ_n. The polar motion (solve_m) and the rotational SLE field
+      !! (s_rot) are then AFFINE in the current load / m, so the caller may iterate the
+      !! rotation ↔ SLE fixed point without advancing memory; commit closes the step.
       class(rotation_state), intent(inout) :: self
       type(sht_grid),        intent(in)    :: sht
-      real(wp),              intent(in)    :: load(:,:)   !! surface mass load [kg m⁻²]
       real(wp),              intent(in)    :: dt
-      complex(wp) :: Irig, cload, Itot, psiL, m_new
-      real(wp)    :: scl
-
       if (.not. self%enabled) return
       if (dt /= self%load_ch%dt) then
          call self%load_ch%set_dt(dt);  call self%tidal_ch%set_dt(dt)
       end if
-
-      ! (2,1) rigid inertia of the current load (direct grid quadrature).
-      Irig = inertia21(sht, load, self%a)
-
-      ! Freeze both channels' relaxation drift from the entering memory τ_n.
       call self%load_ch%begin_step()
       call self%tidal_ch%begin_step()
+   end subroutine rotation_begin_step
 
-      ! LOADING: feed the channel a load whose own degree-2 potential equals I_rigid
-      ! (φ^L = 4πGa σ/(2j+1) ⇒ σ = I_rigid·(2j+1)/(4πGa)); then −F = [1+k^L]∗I_rigid
-      ! = I(t), and Ψ_L = I/(C−A).
-      scl   = real(2*JROT+1, wp)/(4.0_wp*pi*grav_G*self%a)
-      cload = Irig*scl
-      Itot  = -(self%load_ch%Fe*cload + self%load_ch%dF)
-      psiL  = Itot/self%CminusA
+   subroutine rotation_solve_m(self, sht, load)
+      !! Solve the algebraic (Chandler-neglected) Liouville equation for the polar
+      !! motion under the surface mass load `load` [kg m⁻²], using the drift frozen by
+      !! begin_step (pure — no memory advance, safe inside the fixed point). Sets
+      !! self%m and self%cload (the load-channel coefficient commit will advance with).
+      class(rotation_state), intent(inout) :: self
+      type(sht_grid),        intent(in)    :: sht
+      real(wp),              intent(in)    :: load(:,:)
+      complex(wp) :: Irig, Itot, psiL
+      real(wp)    :: scl
+      if (.not. self%enabled) return
+      Irig = inertia21(sht, load, self%a)
+      ! LOADING: feed σ whose own degree-2 potential equals I_rigid (φ^L = 4πGaσ/(2j+1)),
+      ! so −F = [1+k^L]∗I_rigid = I(t); Ψ_L = I/(C−A).
+      scl        = real(2*JROT+1, wp)/(4.0_wp*pi*grav_G*self%a)
+      self%cload = Irig*scl
+      Itot       = -(self%load_ch%Fe*self%cload + self%load_ch%dF)
+      psiL       = Itot/self%CminusA
+      ! Liouville: m = Ψ_L + (1/k_s)(k^T_e m − dF_tidal) ⇒ solve for m.
+      self%m = (psiL - self%tidal_ch%dF/self%k_s)/(1.0_wp - self%kTe/self%k_s)
+   end subroutine rotation_solve_m
 
-      ! Liouville (algebraic): the tidal feedback's induced potential is
-      ! k^T∗m = k^T_e·m − dF_tidal (units cancel: feed φ_t = m, read −F − φ_t).
-      ! m = Ψ_L + (1/k_s)(k^T_e m − dF_tidal) ⇒ solve for m.
-      m_new = (psiL - self%tidal_ch%dF/self%k_s) / (1.0_wp - self%kTe/self%k_s)
+   subroutine rotation_s_rot(self, sht, srot)
+      !! Build the rotational-feedback contribution to relative sea level on the Gauss
+      !! grid, s_rot = N_rot − u_rot, from the current self%m (call after solve_m). The
+      !! centrifugal potential Λ = Ω²a² sinθcosθ (m₁cosφ + m₂sinφ) is a degree-2 order-1
+      !! field; the sea surface and solid respond with the tidal Love numbers (Adhikari
+      !! et al. 2016, eq. 8): N_rot = (1+k^T)Λ/g, u_rot = h^T Λ/g. The VE (1+k^T),h^T are
+      !! the tidal channel's affine response to m: total potential coeff = m + P_ind with
+      !! P_ind = k^T_e m − dF_tidal, uplift coeff C_u = U_e m + dU_tidal (so g·C_u = h^T∗m).
+      class(rotation_state), intent(inout) :: self
+      type(sht_grid),        intent(in)    :: sht
+      real(wp),              intent(out)   :: srot(:,:)
+      complex(wp) :: cN, cU
+      real(wp)    :: kN, ku, gam, cphi, sphi
+      integer     :: il, ip
+      if (.not. self%enabled) then
+         srot = 0.0_wp;  return
+      end if
+      cN = self%m + (self%kTe*self%m - self%tidal_ch%dF)     ! (1+k^T)∗m total potential coeff
+      cU = self%tidal_ch%Ue*self%m + self%tidal_ch%dU        ! uplift coeff (g·cU = h^T∗m)
+      ! N_rot = (Ω²a²/g)·γ·[Re(cN)cosφ+Im(cN)sinφ]; u_rot = Ω²a²·γ·[Re(cU)cosφ+Im(cU)sinφ]
+      kN = self%Omega**2 * self%a**2 / self%g
+      ku = self%Omega**2 * self%a**2
+      do il = 1, sht%nlat
+         gam = sin(sht%colat(il))*cos(sht%colat(il))
+         do ip = 1, sht%nphi
+            cphi = cos(sht%lon(ip));  sphi = sin(sht%lon(ip))
+            srot(ip,il) = gam*( kN*(real(cN,wp)*cphi + aimag(cN)*sphi) &
+                              -  ku*(real(cU,wp)*cphi + aimag(cU)*sphi) )
+         end do
+      end do
+   end subroutine rotation_s_rot
 
-      ! Advance memory: loading with cload (load-driven), tidal with the converged m.
-      call self%load_ch%commit(cload)
-      call self%tidal_ch%commit(m_new)
+   subroutine rotation_commit(self, sht)
+      !! Close the step: advance both channels' Maxwell memory with the converged
+      !! state (loading with self%cload, tidal with self%m) and advance time.
+      class(rotation_state), intent(inout) :: self
+      type(sht_grid),        intent(in)    :: sht
+      if (.not. self%enabled) return
+      call self%load_ch%commit(self%cload)
+      call self%tidal_ch%commit(self%m)
+      self%time = self%time + self%load_ch%dt
+   end subroutine rotation_commit
 
-      self%m = m_new
-      self%time = self%time + dt
+   subroutine rotation_update(self, sht, load, dt)
+      !! Standalone (no SLE feedback) one-step advance of the polar motion under the
+      !! surface mass load `load` [kg m⁻²]: begin_step + solve_m + commit. Reports m at
+      !! the entry time (first call ⇒ elastic m₀), then advances both channels' memory.
+      !! The SLE-coupled driver instead calls begin_step / solve_m / s_rot / commit so
+      !! it can iterate the rotation ↔ sea-level fixed point before committing.
+      class(rotation_state), intent(inout) :: self
+      type(sht_grid),        intent(in)    :: sht
+      real(wp),              intent(in)    :: load(:,:)
+      real(wp),              intent(in)    :: dt
+      if (.not. self%enabled) return
+      call self%begin_step(sht, dt)
+      call self%solve_m(sht, load)
+      call self%commit(sht)
    end subroutine rotation_update
 
    subroutine rotation_destroy(self)
@@ -184,7 +260,7 @@ contains
       call self%load_ch%destroy()
       call self%tidal_ch%destroy()
       self%m = (0.0_wp, 0.0_wp);  self%time = 0.0_wp
-      self%k_s = 0.0_wp;  self%kTe = 0.0_wp;  self%k_s_set = .false.
+      self%k_s = 0.0_wp;  self%kTe = 0.0_wp;  self%hTe = 0.0_wp
    end subroutine rotation_destroy
 
    ! === degree-2 inertia from the load (3-D-ready grid quadrature) =============
@@ -292,6 +368,7 @@ contains
          call self%op%solve_vec(self%op%load_rhs(1.0_wp), x)
       end if
       self%Fe = x(idx_f(self%nr))
+      self%Ue = x(idx_u(self%nr))
       do node = 1, self%nr
          self%xUn(node) = x(idx_u(node));  self%xVn(node) = x(idx_v(node))
       end do
@@ -331,6 +408,7 @@ contains
       call self%op%solve_vec(fre, xre)
       call self%op%solve_vec(fim, xim)
       self%dF = cmplx(xre(idx_f(self%nr)), xim(idx_f(self%nr)), wp)
+      self%dU = cmplx(xre(idx_u(self%nr)), xim(idx_u(self%nr)), wp)
       do node = 1, self%nr
          self%dUn_re(node) = xre(idx_u(node));  self%dUn_im(node) = xim(idx_u(node))
          self%dVn_re(node) = xre(idx_v(node));  self%dVn_im(node) = xim(idx_v(node))

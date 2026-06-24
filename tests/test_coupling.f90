@@ -100,12 +100,20 @@ program test_coupling
    end if
 
    call se%finalize()
+
+   ! --- (3) rotational feedback through the coupling driver (off-axis load) ----
+   ! An off-axis ice cap drives polar motion; rotation must run, conserve mass, and
+   ! perceptibly change the bed vs the rotation-off run (the centrifugal sea-level
+   ! feedback). On-axis loads (the cap above) carry no (2,1) inertia, so use a load
+   ! centred away from the pole here.
+   call rotation_check()
+
    call sht%destroy()
 
    write(*,'(a)') ''
    if (ok) then
       write(*,'(a)') ' PASS: coupling init/update/finalize conserves ocean mass,'
-      write(*,'(a)') '       holds the reference state, and relaxes a steady load'
+      write(*,'(a)') '       holds the reference state, relaxes a load, + rotation'
    else
       write(*,'(a)') ' FAIL: coupling validation did not all pass'
       call radial_fe_finalize()
@@ -142,6 +150,65 @@ contains
          end do
       end do
    end subroutine make_load
+
+   subroutine rotation_check()
+      !! Drive the coupling with an off-axis cap, rotation OFF then ON. Assert: the
+      !! rotation-on run conserves ocean mass, develops a finite polar motion, and the
+      !! bed differs from the rotation-off run (the feedback has an effect).
+      type(fe_param_class) :: pr
+      type(solid_earth)    :: se_off, se_on
+      real(wp), allocatable :: h_off(:,:), zoff(:,:)
+      real(wp) :: wmass, mdeg, dzmax
+      integer  :: s
+      allocate(h_off(sht%nphi,sht%nlat), zoff(sht%nphi,sht%nlat))
+      call make_load_offaxis(h_off)
+
+      pr%dt_couple = dt_couple
+      pr%rotation  = .false.
+      call se_off%init(pr, sht, z_bed_eq, h_ice_ref)
+      do s = 1, NSTEP;  call se_off%update(h_off, dt_couple);  end do
+      zoff = se_off%z_bed
+      call se_off%finalize()
+
+      pr%rotation = .true.
+      call se_on%init(pr, sht, z_bed_eq, h_ice_ref)
+      wmass = 0.0_wp
+      do s = 1, NSTEP
+         call se_on%update(h_off, dt_couple)
+         wmass = max(wmass, se_on%worst_mass_resid)
+      end do
+      mdeg  = abs(se_on%rotation%m)*180.0_wp/(acos(-1.0_wp))
+      dzmax = maxval(abs(se_on%z_bed - zoff))
+      write(*,'(a)') ''
+      write(*,'(a,f10.5,a,es10.2,a,f9.4,a)') '   rotation: |m|=', mdeg, &
+           ' deg   worst mass=', wmass, '   max|Δz_bed on-off|=', dzmax, ' m'
+      if (wmass > 1.0e-10_wp) then
+         write(*,'(a)') '   FAIL: rotation broke ocean-mass conservation'; ok = .false.
+      end if
+      if (mdeg <= 0.0_wp .or. mdeg /= mdeg) then
+         write(*,'(a)') '   FAIL: no (finite) polar motion under an off-axis load'; ok = .false.
+      end if
+      if (dzmax < 1.0e-3_wp) then
+         write(*,'(a)') '   FAIL: rotational feedback had no effect on the bed'; ok = .false.
+      end if
+      call se_on%finalize()
+   end subroutine rotation_check
+
+   subroutine make_load_offaxis(h_ice)
+      !! A 2 km grounded cap centred at colat 35°, lon 90° (off the rotation axis, on
+      !! land), radius ~20°.
+      real(wp), intent(out) :: h_ice(:,:)
+      real(wp) :: tc, lc, cg, ca
+      integer  :: i, j
+      tc = 35.0_wp*pi/180.0_wp;  lc = 90.0_wp*pi/180.0_wp;  ca = cos(20.0_wp*pi/180.0_wp)
+      h_ice = 0.0_wp
+      do j = 1, sht%nlat
+         do i = 1, sht%nphi
+            cg = cos(tc)*cos(sht%colat(j)) + sin(tc)*sin(sht%colat(j))*cos(sht%lon(i)-lc)
+            if (cg >= ca) h_ice(i,j) = 2000.0_wp
+         end do
+      end do
+   end subroutine make_load_offaxis
 
    integer function nearest_row(colat_deg) result(jbest)
       real(wp), intent(in) :: colat_deg
