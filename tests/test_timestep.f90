@@ -50,6 +50,7 @@ program test_timestep
 
    call part_A_estimate_order()
    call part_B_controller()
+   call part_C_benchmark()
 
    write(*,'(a)') ''
    if (ok) then
@@ -64,17 +65,16 @@ program test_timestep
 contains
 
    subroutine part_A_estimate_order()
-      !! Step-doubling local-error estimate vs Δt (held load), measured AFTER one warmup
-      !! step so the start-of-step load σ_n is tracked (the controller's normal regime;
-      !! the very first step from rest uses the σ_{n+1} proxy for σ_n, which the SLE
-      !! ocean load makes O(Δt) and so caps that one step at 2nd order). Must scale as
-      !! Δt^{p+1}=Δt^3 (p=2 trapezoidal).
+      !! Step-doubling local-error estimate vs Δt for the FIRST step from rest, held
+      !! load, with σ_0 primed (the report-only elastic load at t=0). Must scale as
+      !! Δt^{p+1}=Δt^3 (p=2 trapezoidal) — i.e. the σ_0 init makes even the first step
+      !! locally 3rd order (without it the σ_{n+1} proxy caps that step at 2nd order).
       integer,  parameter :: NS = 4
       real(wp), parameter :: dts(NS) = [160.0_wp, 80.0_wp, 40.0_wp, 20.0_wp]  ! yr
       real(wp) :: est(NS), p
       integer  :: i
       write(*,'(a)') ''
-      write(*,'(a)') '  (A) step-doubling estimate vs Δt (held load, after a warmup step)'
+      write(*,'(a)') '  (A) step-doubling estimate vs Δt (held load, first step, σ_0 primed)'
       write(*,'(a)') '      Δt[yr]      est ‖τ_f−τ_c‖∞/3'
       do i = 1, NS
          est(i) = one_estimate(dts(i)*yr)
@@ -91,19 +91,22 @@ contains
       !! One field step-doubling estimate of the first step from rest under a held load,
       !! exercising the controller primitives directly.
       real(wp), intent(in) :: dt
-      real(wp), parameter  :: dt_warm = 40.0_wp*yr   ! fixed → identical warmed state per Δt
       real(wp) :: est
       type(ve_response) :: resp
       type(sle_solver)  :: sle
       type(sle_result)  :: res
       real(wp), allocatable :: rsl(:,:), C(:,:), rsl_n(:,:)
+      complex(wp), allocatable :: sig0(:)
       real(wp) :: err_inf, tau_inf
       allocate(rsl(sht%nphi,sht%nlat), C(sht%nphi,sht%nlat), rsl_n(sht%nphi,sht%nlat))
+      allocate(sig0(sht%nlm))
       call setup(resp, sle, dt)
       rsl = 0.0_wp
-      ! one warmup step so σ_n is tracked (τ≠0, sigma_primed) before measuring
-      call resp%set_dt(dt_warm)
-      call sle%solve(sht, resp, iceF, iceF, topo0, rsl, C, res)
+      ! prime σ_0 (elastic-consistent load at t=0, report-only — no memory advance), so
+      ! the FIRST step from rest is measured with σ_n tracked, like every later step
+      call sle%solve(sht, resp, iceF, iceF, topo0, rsl, C, res, &
+                     report_only=.true., sigma_lm=sig0)
+      call resp%prime_sigma(sig0)
       call resp%save_state();  rsl_n = rsl
       call resp%set_dt(dt)
       call sle%solve(sht, resp, iceF, iceF, topo0, rsl, C, res)     ! coarse (held load)
@@ -115,7 +118,7 @@ contains
       call resp%coarse_fine_error(err_inf, tau_inf)
       est = err_inf/3.0_wp                                          ! 2^p−1 = 3
       call resp%destroy()
-      deallocate(rsl, C, rsl_n)
+      deallocate(rsl, C, rsl_n, sig0)
    end function one_estimate
 
    subroutine part_B_controller()
@@ -155,6 +158,107 @@ contains
       end if
       deallocate(rref, rad, C)
    end subroutine part_B_controller
+
+   subroutine part_C_benchmark()
+      !! Cost vs accuracy: NAIVE fixed Δt (1 solve/step, no error control) against the
+      !! adaptive controller (step-doubling = 3 solves/step + reject retries), both vs a
+      !! fine fixed reference. Cost unit = SLE solves (the dominant, hardware-independent
+      !! cost); wall-clock alongside. Reporting only (no pass/fail). TWO load histories:
+      !! (1) a smooth ramp over the whole window — no dynamic range, so fixed wins
+      !!     (adaptive's 3×/step overhead is not amortized);
+      !! (2) a fast ramp then a long hold — the relaxation slows by orders of magnitude
+      !!     in the hold, so adaptive grows Δt and beats fixed (which must keep the small
+      !!     ramp Δt throughout).
+      write(*,'(a)') ''
+      write(*,'(a)') '  (C) cost vs accuracy  (cost = SLE solves; adaptive ≈ 3/step + retries)'
+      call bench_case('(1) smooth ramp 0→full over 2 kyr   ', 2.0_wp*kyr, 2.0_wp*kyr, T_END)
+      call bench_case('(2) fast ramp 0→full (200 yr)+8 kyr hold', 0.2_wp*kyr, 8.0_wp*kyr, &
+                      8.0_wp*kyr)
+   end subroutine part_C_benchmark
+
+   subroutine bench_case(label, t_ramp, dt_cap, t_end)
+      !! One cost/accuracy table for a ramp-then-hold load: ice(t)=min(t/t_ramp,1)·full.
+      character(*), intent(in) :: label
+      real(wp),     intent(in) :: t_ramp, dt_cap, t_end
+      real(wp), allocatable :: rref(:,:), r(:,:)
+      real(wp) :: sig, err, c0, c1, dt
+      integer  :: i, nsol, nref
+      real(wp), parameter :: tols(4) = [1.0e-2_wp, 1.0e-3_wp, 1.0e-4_wp, 1.0e-5_wp]
+      allocate(rref(sht%nphi,sht%nlat), r(sht%nphi,sht%nlat))
+      call run_ramphold_fixed(2.5_wp*yr, t_ramp, t_end, rref, nref)   ! fine reference
+      sig = maxval(abs(rref))
+      write(*,'(a)') ''
+      write(*,'(2a)') '      ', label
+      write(*,'(a,i5,a)') '      reference: naive fixed Δt=2.5 yr (', nref, ' solves)'
+      write(*,'(a)') '      method            knob         rel err    SLE solves   cpu[ms]'
+      write(*,'(a)') '      -----------------------------------------------------------------'
+      do i = 1, 4
+         dt = t_ramp/real(5*2**(i-1), wp)         ! resolve the ramp; halve each row
+         call cpu_time(c0);  call run_ramphold_fixed(dt, t_ramp, t_end, r, nsol)
+         call cpu_time(c1);  err = maxval(abs(r - rref))/sig
+         write(*,'(a,f7.1,a,es12.2,i10,f11.2)') '      fixed   Δt=', dt/yr, ' yr', &
+              err, nsol, (c1-c0)*1.0e3_wp
+      end do
+      do i = 1, 4
+         call cpu_time(c0);  call run_ramphold_adapt(tols(i), t_ramp, dt_cap, t_end, r, nsol)
+         call cpu_time(c1);  err = maxval(abs(r - rref))/sig
+         write(*,'(a,es8.1,a,es12.2,i10,f11.2)') '      adapt   rtol=', tols(i), ' ', &
+              err, nsol, (c1-c0)*1.0e3_wp
+      end do
+      deallocate(rref, r)
+   end subroutine bench_case
+
+   subroutine run_ramphold_fixed(dt_fixed, t_ramp, t_end, rsl, nsolve)
+      !! Naive fixed-Δt run over [0,t_end] with ice(t)=min(t/t_ramp,1)·full, 1 solve/step.
+      real(wp), intent(in)  :: dt_fixed, t_ramp, t_end
+      real(wp), intent(out) :: rsl(:,:)
+      integer,  intent(out) :: nsolve
+      type(ve_response)     :: resp
+      type(sle_solver)      :: sle
+      type(sle_result)      :: res
+      real(wp), allocatable :: C(:,:), ice_now(:,:)
+      complex(wp), allocatable :: sig0(:)
+      real(wp) :: t, dt
+      allocate(C(sht%nphi,sht%nlat), ice_now(sht%nphi,sht%nlat), sig0(sht%nlm))
+      call setup(resp, sle, dt_fixed)
+      rsl = 0.0_wp
+      call sle%solve(sht, resp, ice0, ice0, topo0, rsl, C, res, &
+                     report_only=.true., sigma_lm=sig0)
+      call resp%prime_sigma(sig0)
+      nsolve = 0;  t = 0.0_wp
+      do
+         if (t >= t_end - 1.0e-9_wp*t_end) exit
+         dt = min(dt_fixed, t_end - t)
+         call resp%set_dt(dt)
+         ice_now = min((t + dt)/t_ramp, 1.0_wp)*iceF
+         call sle%solve(sht, resp, ice_now, ice_now, topo0, rsl, C, res)
+         nsolve = nsolve + 1;  t = t + dt
+      end do
+      call resp%destroy();  deallocate(C, ice_now, sig0)
+   end subroutine run_ramphold_fixed
+
+   subroutine run_ramphold_adapt(rtol, t_ramp, dt_cap, t_end, rsl, nsolve)
+      !! Adaptive run of the same ramp-then-hold load as two interpolation intervals:
+      !! [0,t_ramp] ice 0→full, then [t_ramp,t_end] held at full (the slow phase where
+      !! the controller grows Δt). One stepper carries Δt + counters across both.
+      real(wp), intent(in)  :: rtol, t_ramp, dt_cap, t_end
+      real(wp), intent(out) :: rsl(:,:)
+      integer,  intent(out) :: nsolve
+      type(ve_response)     :: resp
+      type(sle_solver)      :: sle
+      type(adaptive_stepper):: st
+      real(wp), allocatable :: C(:,:)
+      allocate(C(sht%nphi,sht%nlat))
+      call setup(resp, sle, t_ramp)
+      st%rtol = rtol;  st%atol = 1.0e-3_wp
+      st%dt_try = 0.2_wp*t_ramp;  st%dt_min = 0.0_wp;  st%dt_max = dt_cap
+      rsl = 0.0_wp
+      call st%advance(sht, resp, sle, topo0, ice0, iceF,  zero, 0.0_wp,  t_ramp, rsl, C)
+      if (t_end > t_ramp) &
+         call st%advance(sht, resp, sle, topo0, iceF, iceF, zero, t_ramp, t_end, rsl, C)
+      nsolve = st%n_solve
+      call resp%destroy();  deallocate(C)
+   end subroutine run_ramphold_adapt
 
    subroutine run_fixed(dt_fixed, rsl, nsteps)
       real(wp), intent(in)  :: dt_fixed
