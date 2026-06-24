@@ -10,6 +10,34 @@ For the per-step measured anchor and the lmax-scaling extrapolation see
 (band LU, degree-grouped memory, skip-negligible, OpenMP over the degree loop) see
 §Performance of [`design.md`](design.md). This note sits on top of both.
 
+## Measured results (validated this session)
+
+The flag and warm-start changes have now been built and timed on the target
+machine (Mac.fritz.box, 10-core Apple Silicon, `OMP_NUM_THREADS=8`). Anchor =
+Martinec-2018 **E2**, lmax 128, 750 steps. `user` is total CPU work (the
+low-noise measure); `real` is wall clock.
+
+| build / mode | real | user | ms/step | notes |
+|---|---|---|---|---|
+| `-O2` (controlled baseline) | 58.8 s | 239 s | 78 | parallelizes ~4× (`user/real`≈4) |
+| `-O3 -mcpu=native -funroll-loops -ffast-math` | **45.6 s** | 175 s | 61 | **1.29× wall / 1.36× CPU** vs `-O2` |
+| `-O3` + warm start | 41.0 s | 172 s | 55 | warm adds ~1.5% CPU on E2 (see §2) |
+
+**Three corrections to the prior notes fall out of this:**
+
+1. **The flag speedup is ~1.3×, not 1.5–3×.** Real and free, but the lower bound.
+2. **The model is *not* serial-bound at lmax 128.** Both `-O2` and `-O3` show
+   `user/real ≈ 4` — the degree-loop OpenMP delivers ~4× here. This contradicts the
+   "effectively serial, SHT-bound" diagnosis below and in [`performance.md`](performance.md).
+3. **The `performance.md` anchor (162.5 s / 216 ms-step) does not reproduce.** The
+   controlled `-O2` number on this machine is 58.8 s / 78 ms-step. The old run was
+   likely serial (`openmp=0` / `OMP_NUM_THREADS=1`) or otherwise differently
+   configured; treat `performance.md`'s extrapolation table as stale until rebased
+   on these numbers.
+
+Correctness under `-ffast-math`: full `make check` = **21/21 pass**, SLE
+mass-conservation residuals unchanged at ~1e-16, E2 figure errors bit-identical.
+
 ## Cost model
 
 For a transient run the wall time is
@@ -22,10 +50,14 @@ SLE_fixed_point  ≈  n_outer × n_inner × (~3 SHTs per inner iteration)
 
 - `begin_step` (`fe_response`) does ~2 real banded solves per active `(l,m)`; the
   band LU + OpenMP-over-degree work already made this cheap (~58 ms at lmax 128).
-- The **SLE fixed point's spherical-harmonic transforms now dominate.** At lmax 128
-  the run is *effectively serial* and **SHT-bound** (~216 ms/step, `user ≈ real`),
-  because SHTns is linked serial and the per-step cost is roughly linear in
-  `n_outer × n_inner`. SHT cost scales ≈ O(lmax³).
+- The **SLE fixed point's spherical-harmonic transforms dominate the *serial*
+  fraction.** SHTns is linked serial and the per-step SLE cost is roughly linear in
+  `n_outer × n_inner`; SHT cost scales ≈ O(lmax³). **But the step as a whole is not
+  serial-bound at lmax 128** — measured `user/real ≈ 4` (the degree-loop OpenMP in
+  `begin_step` parallelizes well), so wall time ≈ 61 ms/step at `-O3`, *not* the
+  216 ms/step quoted in `performance.md`. The serial SHTs cap the *achievable*
+  speedup (Amdahl), which is why OpenMP-SHTns (#4) still matters at higher lmax —
+  but they do not make the present run single-core.
 
 So the two highest-value levers for transient runs are **(a) the step count** (the
 `dt` lever) and **(b) the SLE iteration count × per-SHT cost**. The benchmarks hide
@@ -38,9 +70,10 @@ Ranked by return on effort for transient runs. ✅ = implemented now; ⏭ = defe
 
 | # | Option | Payoff | Effort/risk | Status |
 |---|--------|--------|-------------|--------|
-| 1 | **Optimization compiler flags** (`-O3 -mcpu=native -funroll-loops -ffast-math`) | 1.5–3× (free) | low | ✅ |
-| 2 | **Warm-start the SLE fixed point** from the previous step's `rsl` | ~2× (cuts iteration count) | low | ✅ |
-| 3 | **ETD0 / exponential memory update** → larger stable `dt` | 2–5× (step count) | med–high | ⏭ |
+| 1 | **Optimization compiler flags** (`-O3 -mcpu=native -funroll-loops -ffast-math`) | **1.3× measured** (free) | low | ✅ |
+| 2 | **Warm-start the SLE fixed point** from the previous step's `rsl` | **~1.5% on E2**; up to ~2× only on strongly-migrating coastlines (unverified) | low | ✅ |
+| 3 | ~~**ETD0** exponential memory update → larger `dt`~~ | **rejected — fails benchmarks** | — | ✗ |
+| 3b | **ETD1** (linear-strain φ-weights) → larger `dt` | 2–5× (step count) | med | ⏭ |
 | 4 | **OpenMP SHTns as the default** (offline *and* coupled) | several× at lmax ≥ 256 | low | ⏭ |
 | 5 | **Fuse the two syntheses** to one synthesis of `N_lm − u_lm` | ~33% of inner-loop SHTs | low | ⏭ |
 | 6 | **Batched multi-RHS band solve** over all `m`/re-im at fixed `l`; kill the dense degree-1 LU via nullspace projection | high at production lmax | med | ⏭ |
@@ -48,7 +81,9 @@ Ranked by return on effort for transient runs. ✅ = implemented now; ⏭ = defe
 | — | Memory footprint ~O(lmax²): ~0.5 GB @128, ~2 GB @256, ~8 GB @512 | feasibility gate | — | note |
 | — | Restart I/O: write the full `tau_*` memory state only at checkpoints, not per step | avoid a multi-GB/step footgun | low | note |
 
-Items 1–3 alone plausibly compound to ~5–15× on a real glacial cycle.
+Measured so far: flags + warm-start give ~1.3× on E2. The large multipliers live in
+the *deferred* items (ETD1 step-count, OpenMP-SHTns at high lmax) and in
+real-coastline iteration counts the benchmark does not exercise.
 
 ## Implemented now
 
@@ -69,8 +104,11 @@ DFLAGS_NODEBUG = -O3 -mcpu=native -funroll-loops -ffast-math
   build (the host enables it, and the coupled build cannot reliably be configured
   differently). It relaxes IEEE semantics, so this is the one change that **must
   be validated on the target machine**: re-run `make check` and confirm the SLE
-  mass-conservation tests (~1e-16) still pass. (This container has neither
-  gfortran nor the `fesm-utils` deps, so the build could not be exercised here.)
+  mass-conservation tests (~1e-16) still pass.
+
+**Measured:** built and validated on the target machine. `make check` = 21/21 pass,
+SLE mass residuals unchanged at ~1e-16 under `-ffast-math`. E2 wall time
+58.8 s → 45.6 s = **1.29× (1.36× CPU)** — real, but the low end of the estimate.
 
 ### 2. Warm-start the SLE fixed point — `fe_sle.f90`, `fe_coupling.f90`
 
@@ -93,25 +131,47 @@ kind → a contraction) and mass is rebalanced every iteration via Δφ, so the
 (typically to 1–2, and it tames the pathological strongly-migrating-coastline case
 that can otherwise need tens of iterations).
 
+**Measured:** E2 is now warm-start-by-default (`test_benchmark_sle`); all four cases
+(C2/D3/E2/F1) give **bit-identical figures** to cold start. Last-pass inner iters
+drop **1.45 → 1.00/step** (the floor). But the E2 wall-time/CPU win is only **~1.5%**,
+because E2's clean spherical cap already converges in ~1.45 inner iters cold — there
+is almost nothing to save, and the inner loop is a small part of per-step cost (3
+outer coastline passes + `begin_step` dominate). **The "~2×" upside is therefore
+*unverified*** and will only appear on a strongly-migrating *real* coastline
+(ICE-6G-style), which no benchmark exercises — consistent with caveat #1 below.
+Warm-start is kept on regardless: free, correct, and the right default for real
+domains. `FE_SLE_WARM=0` forces cold start for the A/B.
+
 ## Deferred — roadmap (next sessions)
 
-**3. ETD0 / exponential memory update (highest upside).** `dt` is currently capped
-by the *stability* limit of the forward-Euler Maxwell recurrence
-(`Δt ≲ 2η_min/μ`, the reason for the viscosity floor), not by accuracy. The fix is
-a one-line, fully local substitution in `advance_memory`
-(`fe_viscoelastic.f90:216-235`): `(1−M) → exp(−M)` and `2μM → 2μ(1−exp(−M))`. This
-is unconditionally stable and exact for piecewise-constant strain; the operator,
-banded LU, and the `begin_step/apply/commit` structure are untouched, and the
-elastic (M→0) / fluid (μ=0) limits are preserved. Plausibly lifts `dt` from
-2.5–20 yr toward 25–100 yr.
+**3. ETD0 — REJECTED (reproduced failure, this session).** ETD0 is the exact
+held-strain exponential update: a one-line substitution in `advance_memory`
+(`fe_viscoelastic.f90:216-235`), `(1−M) → exp(−M)` and `2μM → 2μ(1−exp(−M))`. It is
+unconditionally stable and was proposed here as the highest-value `dt` lever.
+**It does not work.** Applied to the current code, it worsens benchmark agreement
+and fails a test:
 
-> ⚠️ **The claim that ETD0 "was tried and abandoned" has no trace in this repo** —
-> no commit (`git log -S ETD`), branch, or note, only two lines of prose in
-> `performance.md`/`design.md`. Treat it as unsubstantiated and revisit. The real
-> risk is *accuracy* at large `dt` (time truncation through the multi-element
-> coupled solve), not stability — so implement behind a flag and run a
-> `dt`-convergence sweep against `test_relax` and a Martinec-2018 case before
-> trusting it. This is the single highest-value experiment available.
+| metric | forward-Euler | ETD0 | tol |
+|---|---|---|---|
+| disc VE centre, t=1 kyr (rel) | ~0.5% | **2.19%** (−68.6 m vs Spada −70.1) | — (passes, degraded) |
+| Martinec-2018 A geoid | 1.94% | **4.48%** | 3% → **FAILS** |
+| Martinec-2018 A uplift / horizontal | 0.52 / 0.69% | 0.83 / 0.91% | 3% |
+
+The root cause is *accuracy, not stability*: ETD0 is exact only if strain is held
+constant over the step, but in the fast early transient strain varies within a step,
+so ETD0 under-relaxes (weight `1−exp(−M) < M`) — the **wrong direction** for the
+known long-time under-relaxation. The Spada/Martinec benchmarks are the `dt→0`
+normal-mode truth, and forward-Euler is empirically closer at our `dt`. (This had
+been recorded only in project memory, never committed — hence the earlier "no trace
+in the repo" note; the experiment has now been re-run and confirmed.)
+
+**3b. ETD1 — the actual next step (if the larger-`dt` lever is wanted).** ETD1 uses
+linear-strain φ-function weights, which account for exactly the within-step strain
+variation that breaks ETD0. It must be implemented **behind a flag** and validated
+with a `dt`-convergence sweep against `test_relax` and a Martinec-2018 case before
+being trusted. (Step-doubling error control around the single-solve step is the
+alternative. The long-time under-relaxation that motivated this is a separate
+`dt`/NMAX-resolution + slow-mode question, not an integrator-scheme artifact.)
 
 **4. OpenMP SHTns as the default.** SHTns is currently linked serial
 (`config/common.mk`) — a deliberate choice to avoid OpenMP nesting inside
@@ -163,9 +223,12 @@ warm-starting (#2).
 
 ## Validation status of this change set
 
-- **Warm-start:** default-off preserves all existing benchmark/test behavior
-  exactly; only the coupling path opts in. The `intent(out) → intent(inout)` change
-  is benign for existing callers (the cold-start reset still defines `rsl`).
-- **Compiler flags:** could not be exercised here (no toolchain/deps in this
-  container). **Run `make check` on the target machine after pulling**, paying
-  particular attention to the SLE mass-conservation tolerances under `-ffast-math`.
+All validated on Mac.fritz.box (gfortran 15.2, `OMP_NUM_THREADS=8`):
+
+- **Compiler flags:** `make check` 21/21 pass under `-ffast-math`; SLE
+  mass-conservation residuals unchanged at ~1e-16. E2 1.29× wall / 1.36× CPU.
+- **Warm-start:** now default-on in the benchmark; C2/D3/E2/F1 all give
+  bit-identical figures to cold start. ~1.5% CPU win on E2 (see §2); larger benefit
+  unverified pending a real migrating coastline. The coupling driver already opts in.
+- **ETD0:** re-run and **rejected** (fails Martinec A geoid, 4.48% > 3%); see §3.
+  Forward-Euler retained. ETD1 is the deferred follow-up.

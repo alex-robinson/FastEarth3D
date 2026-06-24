@@ -1,5 +1,13 @@
 # FastEarth3D — performance note
 
+> ⚠️ **Superseded numbers (see [`performance-assessment.md`](performance-assessment.md)
+> §Measured results).** The 162.5 s / 216 ms-step anchor below and the
+> "effectively serial" diagnosis do **not** reproduce on a controlled rebuild:
+> measured `-O2` E2 is **58.8 s / 78 ms-step**, and the run **parallelizes ~4×**
+> (`user/real ≈ 4`), not serial. The lmax-scaling table here is therefore optimistic
+> on absolute times and should be rebased before use. Kept for the scaling *shape*
+> and the caveats, which still hold.
+
 End-to-end timing of the coupled solid-earth + sea-level solver, and an
 extrapolation to production-scale global domains. For the per-degree solver
 micro-optimisations (band LU, degree-grouped memory, skip-negligible, OpenMP over
