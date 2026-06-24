@@ -20,7 +20,8 @@ obj_fastearth = \
 	$(objdir)/fe_rotation.o \
 	$(objdir)/fe_coupling.o \
 	$(objdir)/fe_io.o \
-	$(objdir)/fastearth.o
+	$(objdir)/fe_drive.o \
+	$(objdir)/fastearth3d.o
 
 # --- Inter-module dependencies (so `make -j` stays correct) ------------------
 $(objdir)/fe_constants.o:        $(objdir)/fe_precision.o
@@ -51,8 +52,12 @@ $(objdir)/fe_coupling.o:         $(objdir)/fe_response.o $(objdir)/fe_sle.o \
 $(objdir)/fe_io.o:               $(objdir)/fe_coupling.o $(objdir)/fe_response.o \
                                  $(objdir)/fe_viscoelastic.o $(objdir)/fe_sht.o \
                                  $(objdir)/fe_constants.o
+$(objdir)/fe_drive.o:            $(objdir)/fe_params.o $(objdir)/fe_sht.o \
+                                 $(objdir)/fe_coupling.o $(objdir)/fe_io.o \
+                                 $(objdir)/fe_constants.o $(objdir)/fe_precision.o
 # The umbrella module re-exports every component, so it compiles last.
-$(objdir)/fastearth.o:           $(objdir)/fe_coupling.o $(objdir)/fe_io.o
+$(objdir)/fastearth3d.o:         $(objdir)/fe_coupling.o $(objdir)/fe_io.o \
+                                 $(objdir)/fe_drive.o $(objdir)/fe_params.o
 
 # --- Pattern rule ------------------------------------------------------------
 $(objdir)/%.o: $(srcdir)/%.f90 | $(objdir)
@@ -71,11 +76,22 @@ fastearth-static: $(obj_fastearth)
 	@echo "    $(objdir)/libfastearth.a is ready."
 	@echo ""
 
+# --- Standalone driver -------------------------------------------------------
+fastearth: fastearth-static | $(bindir)
+	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(srcdir)/fastearth_main.f90 \
+		-o $(bindir)/fastearth.x $(objdir)/libfastearth.a $(LFLAGS)
+	@echo "    $(bindir)/fastearth.x is ready."
+
 # --- Tests -------------------------------------------------------------------
 test_params: fastearth-static | $(bindir)
 	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(testdir)/test_params.f90 \
 		-o $(bindir)/test_params.x $(objdir)/libfastearth.a $(LFLAGS)
 	@echo "    $(bindir)/test_params.x is ready."
+
+test_drive: fastearth-static | $(bindir)
+	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(testdir)/test_drive.f90 \
+		-o $(bindir)/test_drive.x $(objdir)/libfastearth.a $(LFLAGS)
+	@echo "    $(bindir)/test_drive.x is ready."
 
 test_band: fastearth-static | $(bindir)
 	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(testdir)/test_band.f90 \
@@ -225,7 +241,7 @@ test_sle_subgrid: fastearth-static | $(bindir)
 		-o $(bindir)/test_sle_subgrid.x $(objdir)/libfastearth.a $(LFLAGS)
 	@echo "    $(bindir)/test_sle_subgrid.x is ready."
 
-TESTS = test_params test_band test_sht test_earth test_mesh test_integrals test_assembly test_love test_relax test_response test_sle test_flotation test_flotation_load test_ve_response test_sle_ve test_benchmark_love test_coupling test_restart test_benchmark_disc test_benchmark_martinec test_field test_sle_subgrid
+TESTS = test_params test_drive test_band test_sht test_earth test_mesh test_integrals test_assembly test_love test_relax test_response test_sle test_flotation test_flotation_load test_ve_response test_sle_ve test_benchmark_love test_coupling test_restart test_benchmark_disc test_benchmark_martinec test_field test_sle_subgrid
 
 check: $(TESTS)
 	@echo ""
@@ -238,13 +254,14 @@ check: $(TESTS)
 	@echo "=== All tests passed ==="
 
 # --- Housekeeping ------------------------------------------------------------
-.PHONY: usage check clean showconfig
+.PHONY: usage check clean showconfig fastearth fastearth-static
 
 usage:
 	@echo ""
 	@echo "    * FastEarth3D build *"
 	@echo ""
 	@echo " make fastearth-static : build libfastearth.a"
+	@echo " make fastearth        : build the standalone driver (bin/fastearth.x)"
 	@echo " make check            : build + run the test suite"
 	@echo " make test_sht         : build the SHT round-trip test"
 	@echo " make clean            : remove objects and binaries"
