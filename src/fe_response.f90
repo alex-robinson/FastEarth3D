@@ -28,7 +28,7 @@ module fe_response
    use fe_radial_fe,       only: radial_mesh, radial_operator, &
                                  idx_u, idx_v, idx_f, ndof_of
    use fe_viscoelastic,    only: NLAM, ve_strain_constants, dissipative_rhs, &
-                                 advance_memory, scheme_is_implicit, &
+                                 advance_memory, strain_coeffs, scheme_is_implicit, &
                                  SCHEME_FE, SCHEME_TRAP
    use fe_sht,             only: sht_grid
    implicit none
@@ -132,6 +132,17 @@ module fe_response
       ! degree-independent element fields
       real(wp), allocatable :: r(:)                     !! node radii (nr)
       real(wp), allocatable :: mu(:), Mk(:)             !! (ne) shear, M=μΔt/η
+      ! Rung 6 — laterally-varying viscosity (3D). When lat_visc is set the Maxwell
+      ! memory advance goes pseudo-spectral: the lateral product M(θ,φ)·τ couples
+      ! harmonics, so per (element, component, radial shape-coeff) the memory and
+      ! the current strain are synthesised to the Gauss grid, advanced pointwise
+      ! τ⁺=(1−M)τ−2μM·ε with the lateral M-field, and analysed back (advance_memory_3d).
+      ! MkPerDt3 is the Δt-invariant rate μ/η_eff on the grid per element; set_dt
+      ! rescales Mk3 = MkPerDt3·Δt exactly, as for the 1-D Mk. With a laterally
+      ! UNIFORM field this reproduces the 1-D advance to SHT round-trip precision.
+      logical  :: lat_visc = .false.                    !! 3D lateral viscosity active
+      real(wp), allocatable :: Mk3(:,:,:)               !! (nphi,nlat,ne) M=μΔt/η_eff
+      real(wp), allocatable :: MkPerDt3(:,:,:)          !! (nphi,nlat,ne) μ/η_eff
       ! per-degree constants and unit-load response
       real(wp), allocatable :: Jr(:)                    !! (1:lmax) l(l+1)
       real(wp), allocatable :: nrmc(:,:)                !! (NLAM,1:lmax) Z:Z norms
@@ -207,6 +218,7 @@ module fe_response
       procedure :: apply       => ve_response_apply
       procedure :: horizontal  => ve_response_horizontal
       procedure :: commit_step => ve_response_commit
+      procedure :: enable_lateral_visc => ve_response_enable_lateral_visc
       procedure :: prepare_endpoint   => ve_response_prepare_endpoint
       procedure :: advance_endpoint   => ve_response_advance_endpoint
       procedure :: endpoint_converged => ve_response_endpoint_converged
@@ -633,11 +645,15 @@ contains
       integer  :: iter
 
       if (.not. scheme_is_implicit(self%scheme)) then
-         call fe_advance(self, sigma_lm)            ! explicit: byte-for-byte historical
+         call fe_advance(self, sht, sigma_lm)       ! explicit: byte-for-byte historical
          self%couple_iters_last = 1
          self%time = self%time + self%dt
          return
       end if
+
+      if (self%lat_visc) error stop &
+         've_response: laterally-varying viscosity (rung 6a) supports the FE scheme &
+         &only; the implicit trapezoidal 3D path is not yet implemented.'
 
       ! --- implicit (TRAP): iterate the endpoint to a consistent τ_{n+1} ------------
       call ensure_commit_scratch(self)
@@ -661,15 +677,24 @@ contains
       self%time = self%time + self%dt
    end subroutine ve_response_commit
 
-   subroutine fe_advance(self, sigma_lm)
+   subroutine fe_advance(self, sht, sigma_lm)
       !! Explicit forward-Euler memory advance: one Maxwell update per (l,m) from the
       !! report strain σ·(unit-load nodal) + drift(τ_n). The historical path, shared by
-      !! commit_step and advance_endpoint so both stay byte-identical for FE.
+      !! commit_step and advance_endpoint so both stay byte-identical for FE. With
+      !! laterally-varying viscosity the per-(l,m) Maxwell factor M is a lateral field,
+      !! so the advance goes pseudo-spectral (advance_memory_3d).
       class(ve_response), intent(inout) :: self
+      type(sht_grid),     intent(in)    :: sht
       complex(wp),        intent(in)    :: sigma_lm(:)
       real(wp), allocatable :: Ure(:), Uim(:), Vre(:), Vim(:)
       real(wp) :: sre, sim
       integer  :: k, l, lm, node
+
+      if (self%lat_visc) then
+         call advance_memory_3d(self, sht, sigma_lm)
+         return
+      end if
+
       !$omp parallel default(shared) private(k, l, lm, node, sre, sim, Ure, Uim, Vre, Vim)
       allocate(Ure(self%nr), Uim(self%nr), Vre(self%nr), Vim(self%nr))
       !$omp do schedule(static)
@@ -692,6 +717,139 @@ contains
       deallocate(Ure, Uim, Vre, Vim)
       !$omp end parallel
    end subroutine fe_advance
+
+   subroutine ve_response_enable_lateral_visc(self, sht, pert_elem)
+      !! Rung 6 — turn on laterally-varying viscosity. `pert_elem` is the log10
+      !! viscosity perturbation per element on the Gauss grid, (nphi,nlat,ne):
+      !! η_eff(θ,φ) = η_radial · 10^pert, so the Maxwell rate scales by 10^(−pert).
+      !! Elastic/fluid elements (MkPerDt = 0) stay memory-free regardless — the
+      !! lithosphere remains exactly elastic. A laterally-uniform field reduces the
+      !! pseudo-spectral advance to the 1-D advance (SHT round-trip is exact).
+      class(ve_response), intent(inout) :: self
+      type(sht_grid),     intent(in)    :: sht
+      real(wp),           intent(in)    :: pert_elem(:,:,:)   !! (nphi,nlat,ne) log10 η perturbation
+      integer :: e
+      if (size(pert_elem,1) /= sht%nphi .or. size(pert_elem,2) /= sht%nlat .or. &
+          size(pert_elem,3) /= self%ne) &
+         error stop 'enable_lateral_visc: pert_elem must be (nphi,nlat,ne)'
+      if (allocated(self%Mk3))      deallocate(self%Mk3)
+      if (allocated(self%MkPerDt3)) deallocate(self%MkPerDt3)
+      allocate(self%MkPerDt3(sht%nphi, sht%nlat, self%ne))
+      allocate(self%Mk3(sht%nphi, sht%nlat, self%ne))
+      do e = 1, self%ne
+         self%MkPerDt3(:,:,e) = self%MkPerDt(e) * 10.0_wp**(-pert_elem(:,:,e))
+      end do
+      self%Mk3 = self%MkPerDt3 * self%dt
+      self%lat_visc = .true.
+   end subroutine ve_response_enable_lateral_visc
+
+   subroutine advance_memory_3d(self, sht, sigma_lm)
+      !! Pseudo-spectral forward-Euler memory advance for laterally-varying
+      !! viscosity (rung 6). The Maxwell update τ⁺ = (1−M)τ − 2μM·ε is local in
+      !! space but M = M(θ,φ) varies laterally, so the product couples harmonics.
+      !! Per radial element e and tensor component λ, each radial shape-coefficient
+      !! (A,B,C) of the memory and of the current strain is synthesised to the Gauss
+      !! grid, advanced pointwise with the lateral M-field Mk3(:,:,e), and analysed
+      !! back to spectral. The per-degree elastic solve and the dissipative RHS are
+      !! untouched (linear in the memory) — only this advance sees the lateral field.
+      !! With Mk3(:,:,e) uniform it reproduces fe_advance to SHT round-trip precision.
+      class(ve_response), intent(inout) :: self
+      type(sht_grid),     intent(in)    :: sht
+      complex(wp),        intent(in)    :: sigma_lm(:)
+      ! spectral work: memory τ and strain ε shape-coeffs per component (nlm,NLAM)
+      complex(wp), allocatable :: tauA(:,:), tauB(:,:), tauC(:,:)
+      complex(wp), allocatable :: epsA(:,:), epsB(:,:), epsC(:,:)
+      complex(wp), allocatable :: slm(:)
+      real(wp),    allocatable :: gtau(:,:), geps(:,:)
+      real(wp) :: a_re(NLAM), b_re(NLAM), c_re(NLAM)
+      real(wp) :: a_im(NLAM), b_im(NLAM), c_im(NLAM)
+      real(wp) :: sre, sim, Ue, Ue1, Ve, Ve1, Uei, Ue1i, Vei, Ve1i
+      real(wp) :: twoMu
+      integer  :: e, k, l, lm, lam
+
+      allocate(tauA(sht%nlm,NLAM), tauB(sht%nlm,NLAM), tauC(sht%nlm,NLAM))
+      allocate(epsA(sht%nlm,NLAM), epsB(sht%nlm,NLAM), epsC(sht%nlm,NLAM))
+      allocate(slm(sht%nlm), gtau(sht%nphi,sht%nlat), geps(sht%nphi,sht%nlat))
+
+      do e = 1, self%ne
+         twoMu = 2.0_wp*self%mu(e)
+         tauA = (0.0_wp,0.0_wp); tauB = (0.0_wp,0.0_wp); tauC = (0.0_wp,0.0_wp)
+         epsA = (0.0_wp,0.0_wp); epsB = (0.0_wp,0.0_wp); epsC = (0.0_wp,0.0_wp)
+         ! Gather τ_n and the current strain ε_{n+1} into spectral fields (one per
+         ! component λ and shape A/B/C). The strain is built per slot from the nodal
+         ! displacement σ·xUn + drift, exactly as fe_advance, but stored spectrally.
+         do k = 1, self%nk
+            l  = self%kdeg(k)
+            lm = self%k2lm(k)
+            sre = real(sigma_lm(lm), wp);  sim = aimag(sigma_lm(lm))
+            Ue   = sre*self%xUn(e,  l) + self%dUn_re(e,  k)
+            Ue1  = sre*self%xUn(e+1,l) + self%dUn_re(e+1,k)
+            Ve   = sre*self%xVn(e,  l) + self%dVn_re(e,  k)
+            Ve1  = sre*self%xVn(e+1,l) + self%dVn_re(e+1,k)
+            Uei  = sim*self%xUn(e,  l) + self%dUn_im(e,  k)
+            Ue1i = sim*self%xUn(e+1,l) + self%dUn_im(e+1,k)
+            Vei  = sim*self%xVn(e,  l) + self%dVn_im(e,  k)
+            Ve1i = sim*self%xVn(e+1,l) + self%dVn_im(e+1,k)
+            call strain_coeffs(Ue,  Ue1,  Ve,  Ve1,  self%Jr(l), a_re, b_re, c_re)
+            call strain_coeffs(Uei, Ue1i, Vei, Ve1i, self%Jr(l), a_im, b_im, c_im)
+            do lam = 1, NLAM
+               epsA(lm,lam) = cmplx(a_re(lam), a_im(lam), wp)
+               epsB(lm,lam) = cmplx(b_re(lam), b_im(lam), wp)
+               epsC(lm,lam) = cmplx(c_re(lam), c_im(lam), wp)
+               tauA(lm,lam) = cmplx(self%Are(lam,e,k), self%Aim(lam,e,k), wp)
+               tauB(lm,lam) = cmplx(self%Bre(lam,e,k), self%Bim(lam,e,k), wp)
+               tauC(lm,lam) = cmplx(self%Cre(lam,e,k), self%Cim(lam,e,k), wp)
+            end do
+         end do
+         ! Advance each shape-coefficient field pointwise on the grid, analyse back.
+         do lam = 1, NLAM
+            call advance_shape(self, sht, e, twoMu, tauA(:,lam), epsA(:,lam), &
+                               slm, gtau, geps)
+            call scatter_back(self, slm, lam, self%Are, self%Aim, e)
+            call advance_shape(self, sht, e, twoMu, tauB(:,lam), epsB(:,lam), &
+                               slm, gtau, geps)
+            call scatter_back(self, slm, lam, self%Bre, self%Bim, e)
+            call advance_shape(self, sht, e, twoMu, tauC(:,lam), epsC(:,lam), &
+                               slm, gtau, geps)
+            call scatter_back(self, slm, lam, self%Cre, self%Cim, e)
+         end do
+      end do
+
+      deallocate(tauA, tauB, tauC, epsA, epsB, epsC, slm, gtau, geps)
+   end subroutine advance_memory_3d
+
+   subroutine advance_shape(self, sht, e, twoMu, tau_lm, eps_lm, slm, gtau, geps)
+      !! One shape-coefficient field of one component for element e: synthesise the
+      !! memory τ and strain ε to the grid, apply τ⁺ = (1−M)τ − 2μM·ε pointwise with
+      !! the lateral M-field Mk3(:,:,e), and analyse τ⁺ back into slm.
+      class(ve_response), intent(in)    :: self
+      type(sht_grid),     intent(in)    :: sht
+      integer,            intent(in)    :: e
+      real(wp),           intent(in)    :: twoMu
+      complex(wp),        intent(in)    :: tau_lm(:), eps_lm(:)
+      complex(wp),        intent(out)   :: slm(:)
+      real(wp),           intent(inout) :: gtau(:,:), geps(:,:)
+      call sht%synthesis(tau_lm, gtau)
+      call sht%synthesis(eps_lm, geps)
+      gtau = (1.0_wp - self%Mk3(:,:,e))*gtau - twoMu*self%Mk3(:,:,e)*geps
+      call sht%analysis(gtau, slm)
+   end subroutine advance_shape
+
+   subroutine scatter_back(self, slm, lam, Xre, Xim, e)
+      !! Write the analysed memory coefficients (slm) back into the degree-grouped
+      !! (NLAM,ne,nk) memory arrays for component lam at element e. Degree 0 carries
+      !! no memory (no slot) and is dropped — it has no deformation channel to act on.
+      class(ve_response), intent(in)    :: self
+      complex(wp),        intent(in)    :: slm(:)
+      integer,            intent(in)    :: lam, e
+      real(wp),           intent(inout) :: Xre(:,:,:), Xim(:,:,:)
+      integer :: k, lm
+      do k = 1, self%nk
+         lm = self%k2lm(k)
+         Xre(lam,e,k) = real(slm(lm), wp)
+         Xim(lam,e,k) = aimag(slm(lm))
+      end do
+   end subroutine scatter_back
 
    subroutine snapshot_taun(self)
       !! Snapshot the entering memory τ_n into the *0 arrays so every trapezoid pass
@@ -785,11 +943,15 @@ contains
       real(wp) :: cnorm, snorm
 
       if (.not. scheme_is_implicit(self%scheme)) then
-         call fe_advance(self, sigma_lm)
+         call fe_advance(self, sht, sigma_lm)
          self%couple_pass = 1
          self%couple_done = .true.
          return
       end if
+
+      if (self%lat_visc) error stop &
+         've_response: laterally-varying viscosity (rung 6a) supports the FE scheme &
+         &only; the implicit trapezoidal 3D path is not yet implemented.'
 
       call trapezoid_advance_all(self, sigma_lm)   ! ε_{n+1} from the previous estimate
       self%sigma_next = sigma_lm                   ! stage σ_{n+1}; finalize commits it to σ_n
@@ -829,6 +991,7 @@ contains
       real(wp),           intent(in)    :: dt
       self%dt = dt
       self%Mk = self%MkPerDt * dt
+      if (self%lat_visc) self%Mk3 = self%MkPerDt3 * dt
    end subroutine ve_response_set_dt
 
    subroutine ensure_state_scratch(self)
@@ -936,6 +1099,9 @@ contains
       end if
       if (allocated(self%r))      deallocate(self%r)
       if (allocated(self%mu))     deallocate(self%mu)
+      if (allocated(self%Mk3))      deallocate(self%Mk3)
+      if (allocated(self%MkPerDt3)) deallocate(self%MkPerDt3)
+      self%lat_visc = .false.
       if (allocated(self%Mk))     deallocate(self%Mk)
       if (allocated(self%Jr))     deallocate(self%Jr)
       if (allocated(self%nrmc))   deallocate(self%nrmc)
