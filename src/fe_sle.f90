@@ -93,7 +93,8 @@ module fe_sle
 
 contains
 
-   subroutine sle_solve(self, sht, resp, d_ice, ice, topo0, rsl, C, res)
+   subroutine sle_solve(self, sht, resp, d_ice, ice, topo0, rsl, C, res, &
+                        report_only, sigma_lm)
       !! Solve for the relative-sea-level change rsl [m] driven by a grounded-ice
       !! thickness change d_ice [m], on a reference topography topo0 [m] (solid
       !! surface relative to the reference sea surface; ocean where < 0).
@@ -124,12 +125,21 @@ contains
       real(wp),                 intent(inout) :: rsl(:,:)    !! full RSL change [m]
       real(wp),                 intent(out)   :: C(:,:)      !! (nphi,nlat) ocean fn
       type(sle_result),         intent(out)   :: res
+      !! report_only (default .false.): converge the load against the FROZEN entering
+      !! memory and return WITHOUT advancing the memory or time (no co-convergence) —
+      !! a pure "what is the load/response at the current state" query. Used to seed the
+      !! trapezoidal start-of-step load σ_0 at t=0 (where the memory is at rest, so the
+      !! load is the elastic-consistent one). sigma_lm (optional out): the converged
+      !! spectral surface load, in either mode.
+      logical,          optional, intent(in)  :: report_only
+      complex(wp),      optional, intent(out) :: sigma_lm(:)
 
       real(wp), allocatable :: load(:,:), u(:,:), N(:,:), Sraw(:,:), rsl_new(:,:)
       real(wp), allocatable :: C0(:,:), wcorr(:,:)
       complex(wp), allocatable :: load_lm(:), u_lm(:), N_lm(:)
       real(wp) :: rho_ratio, ice_int, dphi, C_int, Cs_int, zeta_int, smax, dmax
-      integer  :: im, io, ii, np, nl
+      integer  :: im, io, ii, np, nl, n_mem
+      logical  :: ronly
 
       np = sht%nphi;  nl = sht%nlat
       allocate(load(np,nl), u(np,nl), N(np,nl), Sraw(np,nl), rsl_new(np,nl))
@@ -153,6 +163,8 @@ contains
       ! leaves C ≡ C⁽⁰⁾ and the subgrid term vanishes).
       call ocean_function(topo0, ice - d_ice, C0)
 
+      ronly = .false.;  if (present(report_only)) ronly = report_only
+
       ! Freeze the response's relaxation drift for this time step; for elastic /
       ! null responses this is a no-op.
       call resp%begin_step(sht)
@@ -160,10 +172,12 @@ contains
       ! re-converges the water load against the latest end-of-step memory estimate
       ! and advances the memory one trapezoid pass each time, until the response's
       ! report drift settles. For FE / elastic / null it runs exactly once (they
-      ! report converged after a single advance).
-      call resp%prepare_endpoint(sht)
+      ! report converged after a single advance). In report-only mode there is no
+      ! memory advance, so a single load-convergence pass against τ_n suffices.
+      if (.not. ronly) call resp%prepare_endpoint(sht)
+      n_mem = self%max_mem_iter;  if (ronly) n_mem = 1
 
-      do im = 1, self%max_mem_iter
+      do im = 1, n_mem
       do io = 1, self%n_outer
          if (self%fixed_ocean) then
             ! Fixed ocean geometry (Martinec 2018 §2.1): hold the coastline at the
@@ -235,6 +249,7 @@ contains
       ! coastline migration see the advanced memory.
       load = rho_ice*d_ice*(1.0_wp - C) + rho_water*(C*rsl) + wcorr
       call sht%analysis(load, load_lm)
+      if (ronly) exit                    ! report only: do NOT advance the memory/time
       call resp%advance_endpoint(sht, load_lm)
       res%n_couple_done = im
       ! Converged when the report drift has settled (the σ<->τ fixed point); 1st-order
@@ -242,7 +257,8 @@ contains
       if (resp%endpoint_converged()) exit
       end do
 
-      call resp%finalize_step(sht)
+      if (.not. ronly) call resp%finalize_step(sht)
+      if (present(sigma_lm)) sigma_lm = load_lm   ! converged spectral surface load
 
       ! diagnostics. The conserved ocean-water volume is ∫s dΩ = ∫C·rsl − ζ̄⁽⁰⁾
       ! (the subgrid sloping-coast term; ζ̄⁽⁰⁾ = 0 in the binary case), which must

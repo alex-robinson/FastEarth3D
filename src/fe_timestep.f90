@@ -42,6 +42,7 @@ module fe_timestep
       integer  :: n_accept  = 0           !! accepted steps (cumulative)
       integer  :: n_reject  = 0           !! rejected attempts (cumulative)
       integer  :: n_floor   = 0           !! steps accepted at dt_min over tolerance
+      integer  :: n_solve   = 0           !! SLE solves issued (the dominant cost unit)
    contains
       procedure :: advance => stepper_advance
    end type adaptive_stepper
@@ -68,6 +69,7 @@ contains
 
       type(sle_result)      :: res
       real(wp), allocatable :: rsl_n(:,:), ice_now(:,:), dice_now(:,:)
+      complex(wp), allocatable :: sig0(:)
       real(wp) :: t, dt, err_inf, tau_inf, errsc, fac, ricfac, expo, span
       integer  :: p, np, nl
       logical  :: at_floor, accept
@@ -89,6 +91,19 @@ contains
 
       np = sht%nphi;  nl = sht%nlat
       allocate(rsl_n(np,nl), ice_now(np,nl), dice_now(np,nl))
+
+      ! Seed the trapezoidal start-of-step load σ_0 once, if not already tracked: at the
+      ! interval start the response carries its entering memory, so a report-only SLE
+      ! solve (no memory/time advance) gives the load consistent with it — at t=0 that
+      ! is the elastic-consistent load. Without this the first step falls back to the
+      ! σ_{n+1} proxy for σ_n (O(Δt) for the relaxing SLE load → 2nd order on that step).
+      if (.not. resp%sigma_primed) then
+         allocate(sig0(sht%nlm))
+         ice_now = ice0;  dice_now = ice0 - ice_ref
+         call sle%solve(sht, resp, dice_now, ice_now, topo0, rsl, C, res, &
+                        report_only=.true., sigma_lm=sig0)
+         call resp%prime_sigma(sig0)
+      end if
 
       p      = scheme_order(resp%scheme)          ! global order (2 for trapezoidal)
       ricfac = real(2**p - 1, wp)                 ! Richardson factor for the estimate
@@ -145,6 +160,7 @@ contains
          frac = (t_eval - t0)/span
          ice_now  = ice0 + frac*(ice1 - ice0)
          dice_now = ice_now - ice_ref
+         self%n_solve = self%n_solve + 1
          call sle%solve(sht, resp, dice_now, ice_now, topo0, rsl, C, res)
       end subroutine solve_at
 

@@ -212,6 +212,7 @@ module fe_response
       procedure :: endpoint_converged => ve_response_endpoint_converged
       procedure :: finalize_step      => ve_response_finalize_step
       ! Adaptive-Δt controller primitives (§3c controller; see fe_timestep)
+      procedure :: prime_sigma       => ve_response_prime_sigma
       procedure :: set_dt            => ve_response_set_dt
       procedure :: save_state        => ve_response_save_state
       procedure :: restore_state     => ve_response_restore_state
@@ -902,10 +903,29 @@ contains
       allocate(self%edUn_re(self%nr,self%nk), self%edUn_im(self%nr,self%nk))
       allocate(self%edVn_re(self%nr,self%nk), self%edVn_im(self%nr,self%nk))
       allocate(self%dUa_prev(self%nk))
-      allocate(self%sigma_n(self%nlm), self%sigma_next(self%nlm))
-      self%sigma_n = (0.0_wp, 0.0_wp)     ! σ at t=0; primed after the first step
-      self%sigma_primed = .false.
+      call ensure_sigma(self)
    end subroutine ensure_commit_scratch
+
+   subroutine ensure_sigma(self)
+      !! Lazily allocate the start-of-step load buffers (σ_n / σ_next). Separate from
+      !! ensure_commit_scratch so prime_sigma can seed σ_0 before the first commit.
+      class(ve_response), intent(inout) :: self
+      if (allocated(self%sigma_n)) return
+      allocate(self%sigma_n(self%nlm), self%sigma_next(self%nlm))
+      self%sigma_n = (0.0_wp, 0.0_wp)     ! σ at t=0; primed by prime_sigma or step 1
+      self%sigma_primed = .false.
+   end subroutine ensure_sigma
+
+   subroutine ve_response_prime_sigma(self, sigma_lm)
+      !! Seed the start-of-step load σ_n with a known load (the elastic-consistent SLE
+      !! load at t=0) and mark it tracked, so the trapezoidal ε_n on the FIRST step uses
+      !! the true σ_0 rather than the σ_{n+1} proxy — making that step 2nd→3rd order.
+      class(ve_response), intent(inout) :: self
+      complex(wp),        intent(in)    :: sigma_lm(:)
+      call ensure_sigma(self)
+      self%sigma_n = sigma_lm
+      self%sigma_primed = .true.
+   end subroutine ve_response_prime_sigma
 
    subroutine ve_response_destroy(self)
       class(ve_response), intent(inout) :: self
