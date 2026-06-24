@@ -32,7 +32,7 @@ module fe_viscoelastic
    public :: NLAM, strain_coeffs, ve_strain_constants, dissipative_rhs, &
              advance_memory
    ! Time-integration schemes for the Maxwell memory update (advance_memory):
-   public :: SCHEME_FE, SCHEME_ETD1
+   public :: SCHEME_FE, SCHEME_ETD1, SCHEME_TRAP, SCHEME_BE
 
    ! Spheroidal strain keeps four tensor-harmonic components; LAM maps the local
    ! index 1..4 to Martinec's λ ∈ {1,2,5,6} (λ=3,4 are toroidal, dropped).
@@ -40,10 +40,15 @@ module fe_viscoelastic
 
    ! How the per-element memory stress is advanced in time (see advance_memory).
    ! Forward-Euler is the default and is byte-for-byte the historical behaviour;
-   ! ETD1 is the unconditionally-stable exponential integrator that treats the
-   ! strain as linear over the step (the right core for adaptive time stepping).
-   integer, parameter :: SCHEME_FE   = 0   !! forward-Euler (conditionally stable)
+   ! ETD1 is the (rejected) exponential integrator kept as evidence; TRAP is the
+   ! trapezoidal (Crank–Nicolson) memory rule — 2nd-order and A-stable, the rule
+   ! the consistent strain↔memory coupling (ve_step's iteration) unlocks. A
+   ! 2nd-order rule needs a consistent ε_{n+1}, so TRAP is meant to be run WITH
+   ! max_couple_iter>1; single-pass it falls back to a lagged 1st-order coupling.
+   integer, parameter :: SCHEME_FE   = 0   !! forward-Euler (explicit; conditionally stable; 1st-order)
    integer, parameter :: SCHEME_ETD1 = 1   !! exponential, linear-strain (φ-functions)
+   integer, parameter :: SCHEME_TRAP = 2   !! trapezoidal (Crank–Nicolson), 2nd-order, A-stable
+   integer, parameter :: SCHEME_BE   = 3   !! backward-Euler (implicit; A-stable; 1st-order control)
 
    type :: ve_degree
       !! Explicit Maxwell time stepper for a single spherical-harmonic degree j.
@@ -60,8 +65,19 @@ module fe_viscoelastic
       real(wp), allocatable :: Am(:,:), Bm(:,:), Cm(:,:)   !! (NLAM, ne)
       real(wp), allocatable :: Un(:), Vn(:)  !! current nodal U, V (nr)
       integer  :: scheme = SCHEME_FE         !! memory integration scheme (set before/after init)
-      real(wp), allocatable :: Un_prev(:), Vn_prev(:)  !! previous-step nodal U,V (ETD1 needs ε_n)
+      real(wp), allocatable :: Un_prev(:), Vn_prev(:)  !! previous-step nodal U,V (ETD1/TRAP need ε_n)
       real(wp) :: err_last = 0.0_wp          !! last step's embedded local-error estimate (ETD1)
+      ! Within-step coupling iteration for the IMPLICIT memory rules (BE, TRAP). The
+      ! observable's order equals the memory-rule's order (the balance solve is exact
+      ! given τ), so 2nd order requires the trapezoidal rule — which is implicit in the
+      ! end-of-step strain and so must be solved by a Picard fixed point. Explicit rules
+      ! (FE, ETD1) ignore this. max_couple_iter=1 (default) keeps FE single-pass,
+      ! byte-for-byte; >1 is the iteration cap for the implicit schemes.
+      integer  :: max_couple_iter = 1        !! coupling-iteration cap for implicit schemes (FE ignores)
+      real(wp) :: couple_tol = 1.0e-6_wp     !! relative strain change to stop iterating (knee: 1e-6
+                                             !! reaches the trapezoidal truncation floor in ~5-8 iters)
+      integer  :: couple_iters_last = 0      !! iterations actually taken last step (diagnostic)
+      real(wp), allocatable :: Am0(:,:), Bm0(:,:), Cm0(:,:)  !! (NLAM,ne) start-of-step memory (iter only)
    contains
       procedure :: init  => ve_init
       procedure :: step  => ve_step
@@ -116,6 +132,12 @@ contains
       allocate(self%Un_prev(self%nr), self%Vn_prev(self%nr))
       self%Un_prev = 0.0_wp;  self%Vn_prev = 0.0_wp
       self%err_last = 0.0_wp
+      ! Start-of-step memory snapshot for the coupling iteration (each iterate must
+      ! advance from τ_n, not compound). Cheap; allocated unconditionally so %scheme
+      ! and %max_couple_iter may be set either side of init.
+      allocate(self%Am0(NLAM,self%ne), self%Bm0(NLAM,self%ne), self%Cm0(NLAM,self%ne))
+      self%Am0 = 0.0_wp;  self%Bm0 = 0.0_wp;  self%Cm0 = 0.0_wp
+      self%couple_iters_last = 0
    end subroutine ve_init
 
    subroutine ve_step(self, sigma, t_now, U_a, V_a, F_a)
@@ -123,27 +145,91 @@ contains
       !! return the surface response at the time BEFORE advancing (so the first
       !! call returns the elastic t=0 state). The memory stress is updated from
       !! the new strain, ready for the next step.
+      !!
+      !! The report (surface response at t_now) is ALWAYS the balance against the
+      !! entering memory τ_n — time-aligned, and exactly elastic on the first call.
+      !! Explicit schemes (FE, ETD1) then advance the memory once from the report
+      !! strain (byte-for-byte the historical path). Implicit schemes (BE, TRAP) carry
+      !! an end-of-step-strain term, so the advance is a Picard fixed point: re-solve
+      !! the endpoint balance against the current τ_{n+1} estimate until it converges.
+      !! This iteration is what makes the 2nd-order trapezoidal rule solvable — it is
+      !! not an independent accuracy lever (iterating a 1st-order rule stays 1st-order).
       class(ve_degree), intent(inout) :: self
       real(wp),         intent(in)    :: sigma
       real(wp),         intent(out)   :: t_now, U_a, V_a, F_a
-      real(wp), allocatable :: f(:), x(:)
-      integer :: node
+      real(wp), allocatable :: f(:), x(:), Ue(:), Ve(:), Up(:), Vp(:)
+      real(wp) :: dnorm, snorm
+      integer :: node, iter
 
       t_now = self%time
+
+      ! REPORT (all schemes): the surface response at t_now is the balance solved
+      ! against the ENTERING memory τ_n. This is time-aligned with t_now and makes
+      ! the first call (τ_0=0) the exact elastic state, regardless of scheme.
       allocate(f(self%ndof), x(self%ndof))
       f = self%op%load_rhs(sigma)            ! elastic load forcing (eq 84)
-      call add_dissipative(self, f)          ! + memory forcing (eqs 94,110)
+      call add_dissipative(self, f)          ! + memory forcing from τ_n (eqs 94,110)
       call self%op%solve_vec(f, x)
-
       do node = 1, self%nr
-         self%Un(node) = x(idx_u(node))
+         self%Un(node) = x(idx_u(node))      ! report strain ε_n
          self%Vn(node) = x(idx_v(node))
       end do
       U_a = x(idx_u(self%nr));  V_a = x(idx_v(self%nr));  F_a = x(idx_f(self%nr))
 
-      call update_memory(self)               ! τ^{V,i} <- (1-M)τ^{V,i-1} - 2μM ε^i
+      if (.not. scheme_is_implicit(self%scheme)) then
+         ! --- explicit advance (FE, ETD1): byte-for-byte the historical path. The
+         !     memory steps forward using the report strain ε_n as the endpoint. ---
+         call update_memory(self)            ! τ_{n+1} from ε_n; rolls Un_prev ← ε_n
+         self%couple_iters_last = 1
+         self%time = self%time + self%dt
+         return
+      end if
+
+      ! --- implicit advance (BE, TRAP): iterate the endpoint to a consistent τ_{n+1} ---
+      ! The memory rule is implicit in the END-of-step strain ε_{n+1}=K⁻¹(load+D·τ_{n+1}),
+      ! so we Picard-iterate: solve the endpoint balance against the current τ_{n+1}
+      ! estimate, re-advance from τ_n, repeat. The report (above) is untouched — only
+      ! the carried-forward memory is refined. ε_n (the report strain) is the trapezoid
+      ! rule's start-of-step value, passed as Un_prev.
+      self%Am0 = self%Am;  self%Bm0 = self%Bm;  self%Cm0 = self%Cm
+      allocate(Ue(self%nr), Ve(self%nr), Up(self%nr), Vp(self%nr))
+      self%Un_prev = self%Un;  self%Vn_prev = self%Vn   ! ε_n for the trapezoid term
+      Up = self%Un;  Vp = self%Vn                        ! seed endpoint = report strain
+
+      do iter = 1, self%max_couple_iter
+         ! Endpoint balance against the current τ_{n+1} estimate (held load).
+         f = self%op%load_rhs(sigma)
+         call add_dissipative(self, f)
+         call self%op%solve_vec(f, x)
+         do node = 1, self%nr
+            Ue(node) = x(idx_u(node))        ! endpoint strain ε_{n+1} estimate
+            Ve(node) = x(idx_v(node))
+         end do
+
+         ! Re-advance the memory from τ_n with this endpoint strain.
+         self%Am = self%Am0;  self%Bm = self%Bm0;  self%Cm = self%Cm0
+         call advance_memory(self%ne, self%mu, self%Mk, Ue, Ve, self%Jr, &
+                             self%Am, self%Bm, self%Cm, scheme=self%scheme, &
+                             Un_prev=self%Un_prev, Vn_prev=self%Vn_prev)
+
+         ! iter 1's endpoint solve uses τ_n and so reproduces the report strain
+         ! exactly; the fixed point only starts moving at iter 2, so never exit on
+         ! the first pass (otherwise the implicit advance degrades to a predictor).
+         dnorm = max(maxval(abs(Ue - Up)), maxval(abs(Ve - Vp)))
+         snorm = max(maxval(abs(Ue)),      maxval(abs(Ve)))
+         Up = Ue;  Vp = Ve
+         if (iter >= 2 .and. dnorm <= self%couple_tol*max(snorm, tiny(1.0_wp))) exit
+      end do
+      self%couple_iters_last = min(iter, self%max_couple_iter)
       self%time = self%time + self%dt
    end subroutine ve_step
+
+   pure logical function scheme_is_implicit(scheme) result(imp)
+      !! Implicit memory rules (the endpoint strain ε_{n+1} appears on the RHS) need
+      !! the within-step coupling iteration; explicit rules (FE, ETD1) do not.
+      integer, intent(in) :: scheme
+      imp = (scheme == SCHEME_BE .or. scheme == SCHEME_TRAP)
+   end function scheme_is_implicit
 
    ! --- internals -------------------------------------------------------------
 
@@ -243,7 +329,12 @@ contains
       !!
       !!   forward-Euler  τ_{n+1} = (1−M)τ_n − 2μM·ε_{n+1}           (endpoint; eq 102/107)
       !!   ETD1           τ_{n+1} = e^{−M}τ_n − 2μM[(φ₁−φ₂)ε_n + φ₂ε_{n+1}]  (linear ε)
+      !!   trapezoidal    τ_{n+1} = [(1−M/2)τ_n − μM(ε_n+ε_{n+1})] / (1+M/2)   (Crank–Nicolson)
       !!
+      !! TRAP is A-stable and 2nd-order IN TIME, but only realises 2nd order when the
+      !! endpoint strain ε_{n+1} is consistent with the end-of-step memory — i.e. when
+      !! the caller iterates the coupling (ve_step, max_couple_iter>1). Single-pass it
+      !! degrades to the lagged 1st-order coupling like FE. It needs ε_n (Un_prev/Vn_prev).
       !! with φ₁=(1−e^{−M})/M, φ₂=(M−1+e^{−M})/M². ETD1 is unconditionally stable
       !! (amplification e^{−M}∈(0,1]) and reduces to forward-Euler-with-averaged-
       !! strain as M→0 and to ETD0 when ε is constant. It needs the previous strain
@@ -260,6 +351,7 @@ contains
       real(wp), intent(out), optional :: err
       real(wp) :: a(NLAM), b(NLAM), c(NLAM), ap(NLAM), bp(NLAM), cp(NLAM)
       real(wp) :: om, two_muM, Me, phi1, phi2, w_new, w_prev, twoMu, locerr
+      real(wp) :: denom, c_old, w_eps
       integer  :: e, m, sch
 
       sch = SCHEME_FE;  if (present(scheme)) sch = scheme
@@ -288,6 +380,32 @@ contains
                locerr = max(locerr, abs(w_prev*(a(m) - ap(m))), &
                                     abs(w_prev*(b(m) - bp(m))), &
                                     abs(w_prev*(c(m) - cp(m))))
+            end do
+         else if (sch == SCHEME_TRAP) then
+            ! Crank–Nicolson on dτ/dt = −(1/τ_M)(τ + 2με), with τ implicit:
+            ! τ_{n+1} = [(1−M/2)τ_n − μM(ε_n+ε_{n+1})] / (1+M/2). Here `a` is the
+            ! endpoint strain ε_{n+1} (Un) and `ap` the start strain ε_n (Un_prev).
+            call strain_coeffs(Un_prev(e), Un_prev(e+1), Vn_prev(e), Vn_prev(e+1), &
+                               Jr, ap, bp, cp)
+            denom = 1.0_wp + 0.5_wp*Me
+            c_old = (1.0_wp - 0.5_wp*Me)/denom
+            w_eps = mu(e)*Me/denom
+            do m = 1, NLAM
+               Am(m,e) = c_old*Am(m,e) - w_eps*(a(m) + ap(m))
+               Bm(m,e) = c_old*Bm(m,e) - w_eps*(b(m) + bp(m))
+               Cm(m,e) = c_old*Cm(m,e) - w_eps*(c(m) + cp(m))
+            end do
+         else if (sch == SCHEME_BE) then
+            ! Backward Euler: τ_{n+1} = (τ_n − 2μM ε_{n+1})/(1+M). 1st-order but
+            ! A-stable; the control that isolates "iterate the coupling" (implicit,
+            ! consistent) from "raise the memory-rule order" (TRAP). `a` is ε_{n+1}.
+            denom = 1.0_wp + Me
+            c_old = 1.0_wp/denom
+            w_eps = 2.0_wp*mu(e)*Me/denom
+            do m = 1, NLAM
+               Am(m,e) = c_old*Am(m,e) - w_eps*a(m)
+               Bm(m,e) = c_old*Bm(m,e) - w_eps*b(m)
+               Cm(m,e) = c_old*Cm(m,e) - w_eps*c(m)
             end do
          else
             om      = 1.0_wp - Me
@@ -335,6 +453,9 @@ contains
       if (allocated(self%Vn))   deallocate(self%Vn)
       if (allocated(self%Un_prev)) deallocate(self%Un_prev)
       if (allocated(self%Vn_prev)) deallocate(self%Vn_prev)
+      if (allocated(self%Am0))  deallocate(self%Am0)
+      if (allocated(self%Bm0))  deallocate(self%Bm0)
+      if (allocated(self%Cm0))  deallocate(self%Cm0)
    end subroutine ve_destroy
 
 end module fe_viscoelastic
