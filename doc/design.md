@@ -48,18 +48,22 @@ rewrite.
 |---|---|---|
 | `fe_precision` | working precision (= C double) | done |
 | `fe_constants` | physical / reference constants (benchmark conventions) | done |
+| `fe_params` | `fe_param_class` + `fe_par_load` (one `&fe3d` nml group) | done + tested |
 | `fe_sht` | SHTns wrapper — the transform kernel | done + tested |
-| `fe_earth_structure` | radial layers + optional 3D viscosity field | types |
+| `fe_earth_structure` | radial layers (`build_earth`: named / custom) + optional 3D viscosity | done + tested |
 | `fe_radial_integrals` | Appendix C P1/P0 element integrals | done + tested |
 | `fe_band` | pivoted banded LU (dependency-free, re-entrant) | done + tested |
 | `fe_radial_fe` | per-degree saddle-point operator + banded-LU solve | done + tested |
-| `fe_viscoelastic` | Maxwell memory-stress explicit time stepping (1-D) + shared kernel | done + tested |
+| `fe_viscoelastic` | Maxwell memory-stress time stepping (1-D, scheme-pluggable) + shared kernel | done + tested |
 | `fe_response` | surface-load → (uplift, geoid) operator: elastic + viscoelastic field driver | done + tested |
 | `fe_gravity` | self-gravitation / Poisson coupling | stub |
 | `fe_sle` | sea-level equation (ocean function, migration) | done + tested (elastic + VE) |
-| `fe_rotation` | rotational feedback / TPW | stub |
-| `fe_coupling` | CLIMBER-X-compatible init/update/finalize API | stub |
-| `fastearth` | umbrella re-export | done |
+| `fe_timestep` | adaptive-Δt controller (step-doubling on the Maxwell memory) | done + tested |
+| `fe_rotation` | rotational feedback / TPW | stub (rung 5, next) |
+| `fe_coupling` | CLIMBER-X-compatible init/update/finalize API (adaptive-coupled) | done + tested |
+| `fe_io` | netCDF restart + step output (yelmo variable-table convention) | done + tested |
+| `fe_drive` | standalone forced-run loop (`program fastearth`) | done + tested |
+| `fastearth3d` | umbrella re-export (incl. `fe_param_class`, `fastearth_run`) | done |
 
 Convention in `fe_sht`: fully-normalized real harmonics, no Condon-Shortley
 phase, Gauss grid, phi-contiguous layout; spectral arrays hold `m >= 0`.
@@ -278,3 +282,28 @@ displacement `u`.
      safe via the re-entrant band LU. ~5.4× at 8 threads.
    Net: `begin_step` at lmax 128 ≈ 7.9 s (orig LIS, lmax 64 extrapolated ~30 s) →
    ~58 ms (8 threads) — well over 100× single-thread from the band LU alone.
+5. **Adaptive time stepping (§3c) — DONE.** The 2nd-order lever is the
+   **trapezoidal** memory rule (Crank–Nicolson, order 2.00 vs FE order 1; the
+   coupling iteration is its implicit solver) with the start-of-step load `σ_n`
+   tracked. `fe_timestep`'s `adaptive_stepper` crosses a coupling interval with the
+   ice load linearly interpolated, choosing Δt by step-doubling on the Maxwell
+   memory. Δt enters only as `Mk=(μ/η)Δt` (cheap rescale, no operator re-factor).
+   Pays off on dynamic-range (ice-age) loads; ~1.6× wall there. See
+   `doc/performance-assessment.md` §3c.
+6. **Parameter type + nml + standalone driver — DONE.** One `fe_param_class`
+   loaded from a single `&fe3d` namelist (`fe_params`, yelmo `defaults_file`
+   overlay; `fastearth.nml` is the complete defaults; time fields in years→s).
+   `build_earth(p)` (named built-in / custom layers). `solid_earth%init(p, …)` /
+   `update(h_ice, dt)` distribute the knobs and run the adaptive controller per
+   interval (fixed substeps removed). Restart persists the **full** integrator
+   state (`dt_try` + `σ_n`) → bit-for-bit continuation. Umbrella module renamed
+   `fastearth`→`fastearth3d`; standalone `program fastearth` (`fe_drive`) runs a
+   forced simulation from `&fe3d` + an ice forcing already on the Gauss grid.
+7. **Real ice forcing + lon-lat → Gauss remapping — DEFERRED (after the physics).**
+   The standalone driver assumes inputs already on the model Gauss grid. Real
+   forcing (e.g. CLIMBER-X `geo_ice_tarasov_deglac.nc`, 1×1° deglaciation ice+bed)
+   needs a conservative regridding layer (fesm-utils `mapping_scrip`) — reusable
+   for any lon-lat input, but built later. **Physics first.**
+
+**NEXT (rung 5): rotational feedback / true polar wander** (`fe_rotation`), vs
+Spada (2011) test 3/2 (polar motion). Then rung 6 (3D laterally-varying viscosity).
