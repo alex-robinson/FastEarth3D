@@ -31,10 +31,19 @@ module fe_viscoelastic
    ! Per-element Maxwell kernel, shared with the field driver (fe_response):
    public :: NLAM, strain_coeffs, ve_strain_constants, dissipative_rhs, &
              advance_memory
+   ! Time-integration schemes for the Maxwell memory update (advance_memory):
+   public :: SCHEME_FE, SCHEME_ETD1
 
    ! Spheroidal strain keeps four tensor-harmonic components; LAM maps the local
    ! index 1..4 to Martinec's λ ∈ {1,2,5,6} (λ=3,4 are toroidal, dropped).
    integer, parameter :: NLAM = 4
+
+   ! How the per-element memory stress is advanced in time (see advance_memory).
+   ! Forward-Euler is the default and is byte-for-byte the historical behaviour;
+   ! ETD1 is the unconditionally-stable exponential integrator that treats the
+   ! strain as linear over the step (the right core for adaptive time stepping).
+   integer, parameter :: SCHEME_FE   = 0   !! forward-Euler (conditionally stable)
+   integer, parameter :: SCHEME_ETD1 = 1   !! exponential, linear-strain (φ-functions)
 
    type :: ve_degree
       !! Explicit Maxwell time stepper for a single spherical-harmonic degree j.
@@ -50,6 +59,9 @@ module fe_viscoelastic
       ! memory-stress coefficients per element, per λ (eq 109: A/h+Bψ_k/r+Cψ_{k+1}/r)
       real(wp), allocatable :: Am(:,:), Bm(:,:), Cm(:,:)   !! (NLAM, ne)
       real(wp), allocatable :: Un(:), Vn(:)  !! current nodal U, V (nr)
+      integer  :: scheme = SCHEME_FE         !! memory integration scheme (set before/after init)
+      real(wp), allocatable :: Un_prev(:), Vn_prev(:)  !! previous-step nodal U,V (ETD1 needs ε_n)
+      real(wp) :: err_last = 0.0_wp          !! last step's embedded local-error estimate (ETD1)
    contains
       procedure :: init  => ve_init
       procedure :: step  => ve_step
@@ -99,6 +111,11 @@ contains
       self%Am = 0.0_wp;  self%Bm = 0.0_wp;  self%Cm = 0.0_wp
       allocate(self%Un(self%nr), self%Vn(self%nr))
       self%Un = 0.0_wp;  self%Vn = 0.0_wp
+      ! Previous-step strain for ETD1; ε_{-1} = 0 (relaxed reference). %scheme is
+      ! left untouched so a caller may set it either side of init.
+      allocate(self%Un_prev(self%nr), self%Vn_prev(self%nr))
+      self%Un_prev = 0.0_wp;  self%Vn_prev = 0.0_wp
+      self%err_last = 0.0_wp
    end subroutine ve_init
 
    subroutine ve_step(self, sigma, t_now, U_a, V_a, F_a)
@@ -139,11 +156,16 @@ contains
    end subroutine add_dissipative
 
    subroutine update_memory(self)
-      !! Explicit Maxwell update of this degree's memory stress from the new
-      !! nodal strain.
+      !! Advance this degree's memory stress from the new nodal strain, using the
+      !! configured scheme (forward-Euler or ETD1). ETD1 also consumes the previous
+      !! step's strain (ε_n) and returns an embedded local-error estimate.
       class(ve_degree), intent(inout) :: self
       call advance_memory(self%ne, self%mu, self%Mk, self%Un, self%Vn, &
-                          self%Jr, self%Am, self%Bm, self%Cm)
+                          self%Jr, self%Am, self%Bm, self%Cm, &
+                          scheme=self%scheme, Un_prev=self%Un_prev, &
+                          Vn_prev=self%Vn_prev, err=self%err_last)
+      ! Roll the strain forward: this step's strain becomes ε_n for the next step.
+      self%Un_prev = self%Un;  self%Vn_prev = self%Vn
    end subroutine update_memory
 
    ! --- shared per-element Maxwell kernel (reused by the field driver) --------
@@ -213,26 +235,91 @@ contains
       end do
    end subroutine dissipative_rhs
 
-   pure subroutine advance_memory(ne, mu, Mk, Un, Vn, Jr, Am, Bm, Cm)
-      !! Explicit Maxwell update of the memory stress from the new nodal strain
-      !! (eq 102/107): [A,B,C] ← (1−M)[A,B,C] − 2μM [a,b,c](uⁱ). At the first
-      !! step the memory starts at 0, so this sets τ^{V,0} = −2μM ε⁰ (eq 25).
+   pure subroutine advance_memory(ne, mu, Mk, Un, Vn, Jr, Am, Bm, Cm, &
+                                  scheme, Un_prev, Vn_prev, err)
+      !! Advance the per-element memory stress one step from the new nodal strain.
+      !! The Maxwell memory satisfies dτ^V/dt = −(1/τ_M)(τ^V + 2με), M = μΔt/η; the
+      !! schemes differ only in how the strain ε is treated over the step:
+      !!
+      !!   forward-Euler  τ_{n+1} = (1−M)τ_n − 2μM·ε_{n+1}           (endpoint; eq 102/107)
+      !!   ETD1           τ_{n+1} = e^{−M}τ_n − 2μM[(φ₁−φ₂)ε_n + φ₂ε_{n+1}]  (linear ε)
+      !!
+      !! with φ₁=(1−e^{−M})/M, φ₂=(M−1+e^{−M})/M². ETD1 is unconditionally stable
+      !! (amplification e^{−M}∈(0,1]) and reduces to forward-Euler-with-averaged-
+      !! strain as M→0 and to ETD0 when ε is constant. It needs the previous strain
+      !! (`Un_prev`,`Vn_prev`); the first step uses ε_n = 0 (relaxed reference).
+      !! `err` (ETD1 only) returns the embedded local-error estimate ‖ETD1−ETD0‖∞ =
+      !! max|2μM(φ₁−φ₂)(ε_{n+1}−ε_n)| — the natural accept/reject signal for an
+      !! adaptive controller. With no optional args present this is exactly the old
+      !! forward-Euler kernel, so existing callers are unchanged.
       integer,  intent(in)    :: ne
       real(wp), intent(in)    :: mu(:), Mk(:), Un(:), Vn(:), Jr
       real(wp), intent(inout) :: Am(:,:), Bm(:,:), Cm(:,:)   !! (NLAM, ne)
-      real(wp) :: a(NLAM), b(NLAM), c(NLAM), om, two_muM
-      integer  :: e, m
+      integer,  intent(in),  optional :: scheme
+      real(wp), intent(in),  optional :: Un_prev(:), Vn_prev(:)
+      real(wp), intent(out), optional :: err
+      real(wp) :: a(NLAM), b(NLAM), c(NLAM), ap(NLAM), bp(NLAM), cp(NLAM)
+      real(wp) :: om, two_muM, Me, phi1, phi2, w_new, w_prev, twoMu, locerr
+      integer  :: e, m, sch
+
+      sch = SCHEME_FE;  if (present(scheme)) sch = scheme
+      locerr = 0.0_wp
+
       do e = 1, ne
          call strain_coeffs(Un(e), Un(e+1), Vn(e), Vn(e+1), Jr, a, b, c)
-         om      = 1.0_wp - Mk(e)
-         two_muM = 2.0_wp*mu(e)*Mk(e)
-         do m = 1, NLAM
-            Am(m,e) = om*Am(m,e) - two_muM*a(m)
-            Bm(m,e) = om*Bm(m,e) - two_muM*b(m)
-            Cm(m,e) = om*Cm(m,e) - two_muM*c(m)
-         end do
+         Me = Mk(e)
+
+         if (sch == SCHEME_ETD1) then
+            call etd_phis(Me, phi1, phi2)
+            call strain_coeffs(Un_prev(e), Un_prev(e+1), Vn_prev(e), Vn_prev(e+1), &
+                               Jr, ap, bp, cp)
+            om     = exp(-Me)
+            twoMu  = 2.0_wp*mu(e)
+            w_new  = twoMu*Me*phi2                 ! weight on ε_{n+1}
+            w_prev = twoMu*Me*(phi1 - phi2)        ! weight on ε_n
+            do m = 1, NLAM
+               Am(m,e) = om*Am(m,e) - w_prev*ap(m) - w_new*a(m)
+               Bm(m,e) = om*Bm(m,e) - w_prev*bp(m) - w_new*b(m)
+               Cm(m,e) = om*Cm(m,e) - w_prev*cp(m) - w_new*c(m)
+            end do
+            ! Embedded estimate: ETD1 minus ETD0 differs only in the forcing, by
+            ! w_prev·(ε_{n+1} − ε_n) per component (ETD0 weight on ε_{n+1} is 2μMφ₁).
+            do m = 1, NLAM
+               locerr = max(locerr, abs(w_prev*(a(m) - ap(m))), &
+                                    abs(w_prev*(b(m) - bp(m))), &
+                                    abs(w_prev*(c(m) - cp(m))))
+            end do
+         else
+            om      = 1.0_wp - Me
+            two_muM = 2.0_wp*mu(e)*Me
+            do m = 1, NLAM
+               Am(m,e) = om*Am(m,e) - two_muM*a(m)
+               Bm(m,e) = om*Bm(m,e) - two_muM*b(m)
+               Cm(m,e) = om*Cm(m,e) - two_muM*c(m)
+            end do
+         end if
       end do
+
+      if (present(err)) err = locerr
    end subroutine advance_memory
+
+   pure subroutine etd_phis(M, phi1, phi2)
+      !! φ-functions for the linear-strain exponential update:
+      !! φ₁ = (1−e^{−M})/M,  φ₂ = (M−1+e^{−M})/M². Both are 0/0-prone as M→0
+      !! (and (M−1+e^{−M}) loses all significance to cancellation), so use the
+      !! Taylor series below a small threshold. Limits: φ₁→1, φ₂→1/2 as M→0.
+      real(wp), intent(in)  :: M
+      real(wp), intent(out) :: phi1, phi2
+      real(wp) :: em
+      if (M < 1.0e-3_wp) then
+         phi1 = 1.0_wp - M/2.0_wp + M*M/6.0_wp  - M*M*M/24.0_wp
+         phi2 = 0.5_wp  - M/6.0_wp + M*M/24.0_wp - M*M*M/120.0_wp
+      else
+         em   = exp(-M)
+         phi1 = (1.0_wp - em)/M
+         phi2 = (M - 1.0_wp + em)/(M*M)
+      end if
+   end subroutine etd_phis
 
    subroutine ve_destroy(self)
       class(ve_degree), intent(inout) :: self
@@ -246,6 +333,8 @@ contains
       if (allocated(self%Cm))   deallocate(self%Cm)
       if (allocated(self%Un))   deallocate(self%Un)
       if (allocated(self%Vn))   deallocate(self%Vn)
+      if (allocated(self%Un_prev)) deallocate(self%Un_prev)
+      if (allocated(self%Vn_prev)) deallocate(self%Vn_prev)
    end subroutine ve_destroy
 
 end module fe_viscoelastic

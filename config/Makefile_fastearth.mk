@@ -104,6 +104,11 @@ test_relax: fastearth-static | $(bindir)
 		-o $(bindir)/test_relax.x $(objdir)/libfastearth.a $(LFLAGS)
 	@echo "    $(bindir)/test_relax.x is ready."
 
+test_etd1: fastearth-static | $(bindir)
+	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(testdir)/test_etd1.f90 \
+		-o $(bindir)/test_etd1.x $(objdir)/libfastearth.a $(LFLAGS)
+	@echo "    $(bindir)/test_etd1.x is ready."
+
 test_response: fastearth-static | $(bindir)
 	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(testdir)/test_response.f90 \
 		-o $(bindir)/test_response.x $(objdir)/libfastearth.a $(LFLAGS)
