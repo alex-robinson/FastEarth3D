@@ -73,7 +73,8 @@ Ranked by return on effort for transient runs. ✅ = implemented now; ⏭ = defe
 | 1 | **Optimization compiler flags** (`-O3 -mcpu=native -funroll-loops -ffast-math`) | **1.3× measured** (free) | low | ✅ |
 | 2 | **Warm-start the SLE fixed point** from the previous step's `rsl` | **~1.5% on E2**; up to ~2× only on strongly-migrating coastlines (unverified) | low | ✅ |
 | 3 | ~~**ETD0** exponential memory update → larger `dt`~~ | **rejected — fails benchmarks** | — | ✗ |
-| 3b | **ETD1** (linear-strain φ-weights) → larger `dt` | 2–5× (step count) | med | ⏭ |
+| 3b | ~~**ETD1** (linear-strain φ-weights) → larger `dt`~~ | **rejected — coupling, not the integrator, is the bottleneck** | — | ✗ |
+| 3c | **Iterate strain↔memory coupling** + **FE step-doubling** error estimate | enables adaptive `dt` | med | ⏭ |
 | 4 | **OpenMP SHTns as the default** (offline *and* coupled) | several× at lmax ≥ 256 | low | ⏭ |
 | 5 | **Fuse the two syntheses** to one synthesis of `N_lm − u_lm` | ~33% of inner-loop SHTs | low | ⏭ |
 | 6 | **Batched multi-RHS band solve** over all `m`/re-im at fixed `l`; kill the dense degree-1 LU via nullspace projection | high at production lmax | med | ⏭ |
@@ -81,9 +82,10 @@ Ranked by return on effort for transient runs. ✅ = implemented now; ⏭ = defe
 | — | Memory footprint ~O(lmax²): ~0.5 GB @128, ~2 GB @256, ~8 GB @512 | feasibility gate | — | note |
 | — | Restart I/O: write the full `tau_*` memory state only at checkpoints, not per step | avoid a multi-GB/step footgun | low | note |
 
-Measured so far: flags + warm-start give ~1.3× on E2. The large multipliers live in
-the *deferred* items (ETD1 step-count, OpenMP-SHTns at high lmax) and in
-real-coastline iteration counts the benchmark does not exercise.
+Measured so far: flags + warm-start give ~1.3× on E2. ETD1 (the would-be step-count
+lever) was tested and rejected (§3b). The remaining large multipliers live in the
+deferred items (OpenMP-SHTns at high lmax; coupling-iteration + step-doubling for
+adaptive `dt`) and in real-coastline iteration counts the benchmark does not exercise.
 
 ## Implemented now
 
@@ -165,13 +167,42 @@ normal-mode truth, and forward-Euler is empirically closer at our `dt`. (This ha
 been recorded only in project memory, never committed — hence the earlier "no trace
 in the repo" note; the experiment has now been re-run and confirmed.)
 
-**3b. ETD1 — the actual next step (if the larger-`dt` lever is wanted).** ETD1 uses
-linear-strain φ-function weights, which account for exactly the within-step strain
-variation that breaks ETD0. It must be implemented **behind a flag** and validated
-with a `dt`-convergence sweep against `test_relax` and a Martinec-2018 case before
-being trusted. (Step-doubling error control around the single-solve step is the
-alternative. The long-time under-relaxation that motivated this is a separate
-`dt`/NMAX-resolution + slow-mode question, not an integrator-scheme artifact.)
+**3b. ETD1 — IMPLEMENTED, MEASURED, REJECTED (this session).** ETD1 uses linear-
+strain φ-function weights (`τ_{n+1} = e^{−M}τ_n − 2μM[(φ₁−φ₂)ε_n + φ₂ε_{n+1}]`,
+`φ₁=(1−e^{−M})/M`, `φ₂=(M−1+e^{−M})/M²`), which account for the within-step strain
+variation that breaks ETD0. It was implemented behind a scheme flag in the 1-D
+stepper (forward-Euler stays default; `make check` byte-identical) and swept against
+a converged reference (`test_etd1`, the standalone characterization; FE and ETD1
+agree to 2e-4 at `dt`=0.1 yr, confirming a shared `dt→0` limit). **It does not help:**
+
+| `dt` [yr] | M | FE err | ETD1 err | FE/ETD1 |
+|--:|--:|--:|--:|--:|
+| 25 | 0.11 | 5.8e-3 | 4.6e-2 | 0.12 |
+| 100 | 0.44 | 2.3e-2 | 1.6e-1 | 0.14 |
+| 1000 | 4.4 | 4.1e-1 | 7.1e-1 | 0.58 |
+| 2000 | 8.8 | 1.3e0 | 8.7e-1 | 1.50 |
+
+In the usable (resolved, `M<1`) regime ETD1 is ~8× **less** accurate than FE; both
+are 1st-order in `dt`. **The root cause is the explicit strain↔memory coupling:** the
+strain fed to the memory update comes from the *previous* step's memory (lagged), so
+it is only 1st-order accurate — the coupling, not the memory integrator, is the order
+bottleneck. ETD1's higher-order memory treatment is wasted, and its exponential
+under-relaxes per step (forcing weight `2μMφ₁ < 2μM`) — the same "wrong direction"
+that sank ETD0. Separately, **forward-Euler is practically unconditionally stable for
+these models** (finite to `M≈35`; the elastic/self-gravity feedback damps the naive
+`M<2` scalar limit), so FE's stability is not a real constraint and ETD's only edge —
+boundedness past `M≈8` — lands in the under-resolved regime. ETD's unconditional
+stability would matter only with a genuinely weak (low-η) layer, which no benchmark
+model has.
+
+**Where the larger-`dt` lever actually is (for the adaptive-stepping goal):** not the
+memory integrator. (i) **Iterate the strain↔memory coupling to consistency** per step
+— lifts the 1st-order lag that caps the whole scheme. (ii) **Forward-Euler step-
+doubling** for the local-error estimate the controller needs — FE is already stable,
+so no exponential integrator is required. The scheme-pluggable kernel and `test_etd1`
+are kept as the reproducible evidence (so neither ETD0 nor ETD1 is re-attempted) and
+as infrastructure for (ii). The long-time under-relaxation that originally motivated
+this is a separate `dt`/NMAX-resolution + slow-mode question, not an integrator issue.
 
 **4. OpenMP SHTns as the default.** SHTns is currently linked serial
 (`config/common.mk`) — a deliberate choice to avoid OpenMP nesting inside
@@ -231,4 +262,9 @@ All validated on Mac.fritz.box (gfortran 15.2, `OMP_NUM_THREADS=8`):
   bit-identical figures to cold start. ~1.5% CPU win on E2 (see §2); larger benefit
   unverified pending a real migrating coastline. The coupling driver already opts in.
 - **ETD0:** re-run and **rejected** (fails Martinec A geoid, 4.48% > 3%); see §3.
-  Forward-Euler retained. ETD1 is the deferred follow-up.
+- **ETD1:** implemented behind a scheme flag (FE default, `make check` byte-identical)
+  and **rejected** — ~8× less accurate than FE in the resolved regime; the explicit
+  strain↔memory coupling is the 1st-order bottleneck, and FE is practically
+  unconditionally stable for these models (§3b). Kept as `test_etd1` + the scheme-
+  pluggable kernel (reproducible evidence; infrastructure for FE step-doubling).
+  Forward-Euler retained as the integrator.
