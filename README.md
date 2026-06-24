@@ -45,3 +45,39 @@ make check
 ```
 
 `make` switches: `debug=0|1|2`, `openmp=0|1`.
+
+## Configure & run
+
+All runtime parameters live in a single namelist group `&fe3d`, loaded into the
+`fe_param_class` record by `fe_par_load`. [`fastearth.nml`](fastearth.nml) is the
+complete, documented defaults set; a run can pass a sparse file overlaid on it
+(yelmo `defaults_file` convention), overriding only what it needs. Time fields
+(`dt_*`, `time_*`) are given in **years** and converted to SI seconds on load.
+
+The earth structure is selected by `earth` — a named built-in (e.g.
+`"M3-L70-V01"`) or `"custom"` to assemble from the surface-first layer arrays.
+The memory integrator (`scheme = "trap"`) is advanced with the adaptive
+time-stepper (`fe_timestep`), whose tolerances are also in `&fe3d`.
+
+Build and run the standalone forced-run driver:
+
+```bash
+make fastearth                       # -> bin/fastearth.x
+./bin/fastearth.x [config.nml]       # default config: fastearth.nml
+```
+
+It reads a reference equilibrium state (`file_ref`) and an ice-thickness forcing
+(`file_forcing`, `h_ice(lon,lat,time)` on the model Gauss grid), marches the
+model across the forcing, and writes the diagnostic surface fields to `file_out`.
+
+Embedding the model in a host (the CLIMBER-X coupling path) uses the same API
+behind a single `use fastearth3d`:
+
+```fortran
+use fastearth3d
+type(fe_param_class) :: par
+type(solid_earth)    :: se
+call fe_par_load(par, "fastearth.nml")
+call se%init(par, sht, z_bed_eq, h_ice_ref)
+call se%update(h_ice, dt)            ! advance time -> time+dt; reads se%rsl, se%z_bed
+```
