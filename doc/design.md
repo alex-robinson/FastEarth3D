@@ -92,8 +92,10 @@ phase, Gauss grid, phi-contiguous layout; spectral arrays hold `m >= 0`.
    `test_rotation_sle`): degree-2 Liouville polar motion `|m(t)|` matches Table 14
    (Cw=0) to <1% for cap + disc at t=0–20 kyr; the SLE-coupled feedback (5c) matches
    Adhikari et al. (2016) eq. 8 to 1e-14 and conserves ocean mass. See §11.
-6. **3D** vs ASPECT / TABOO cross-checks (no closed published 3D benchmark yet;
-   Klemann et al. 2022 effort ongoing).
+6. **3D** (laterally-varying viscosity) vs **Weerdesteijn et al. (2023)**, *G-cubed*
+   24:e2022GC010813, §5.2 — the ASPECT/Abaqus/TABOO low-viscosity-zone benchmark
+   (disc load over a confined soft column) — **DONE** (`test_benchmark_lvz`): central
+   uplift matches to 1–3% (axisymmetric). See §12.
 
 ## 6. Implementation pitfalls to design in (not patch later)
 
@@ -132,6 +134,8 @@ fesm-utils' `build.py` as a first-class component (serial + OpenMP variants).
 - Kendall, Mitrovica & Milne (2005), *GJI* 161:679 — SLE with moving shorelines.
 - Spada et al. (2011), *GJI* 185:106 — GIA benchmark.
 - Martinec et al. (2018), *GJI* 215:389 — SLE benchmark.
+- Weerdesteijn et al. (2023), *G-cubed* 24:e2022GC010813 — ASPECT GIA; the
+  lateral-viscosity (low-viscosity-zone) benchmark vs Abaqus/TABOO (rung 6).
 - Mitrovica et al. (2005), *GJI* 161:491 — revised rotation theory.
 - Blewitt (2003), *JGR* 108:2103 — degree-1 / reference frames.
 
@@ -308,8 +312,11 @@ displacement `u`.
    needs a conservative regridding layer (fesm-utils `mapping_scrip`) — reusable
    for any lon-lat input, but built later. **Physics first.**
 
-**Rung 6 (3D laterally-varying viscosity) — IN PROGRESS (6a DONE; §12).** Rung 5
-(rotation) is DONE — 5a/5b/5c (§11).
+**Rung 6 (3D laterally-varying viscosity) — 6a/6b DONE (§12).** Tensor-correct
+pseudo-spectral memory advance (`fe_tensor_sh`), validated against the Weerdesteijn
+et al. (2023) ASPECT/Abaqus/TABOO low-viscosity-zone benchmark to 1–3% (axisymmetric;
+general `mmax`, TRAP-3D, real-field loading are follow-ups). Rung 5 (rotation) is
+DONE — 5a/5b/5c (§11).
 
 ## 11. Rotational feedback / TPW (rung 5) — working notes
 
@@ -389,55 +396,57 @@ memory (no lateral product), so they stay the exact 1-D code path. Only **η** v
 laterally — **μ and ρ stay radial** — which is why the operator/LU factorisation and
 the whole speed argument survive. This is the "3D-ready from day one" payoff (§2).
 
-> **CAVEAT (found in 6b, 2026-06-25): 6a is UNIFORM-ONLY — not yet real 3D.** The
-> per-component scalar synth/analysis below is wrong for a *laterally-varying* M and
-> works only for a laterally-uniform field (the degenerate = 1-D case). The four
-> memory/strain components λ∈{1,2,5,6} are **tensor** spherical-harmonic components
-> (degree-dependent norms `[1, Jr/2, 2Jr², 2Jr(Jr−2)]`, Jr=l(l+1) — λ=2 is a
-> vector/gradient harmonic, λ=5,6 rank-2), NOT scalar Y_lm. Scalar-synthesising each
-> λ independently neither reconstructs the true physical tensor before multiplying by
-> M(θ,φ) nor captures the cross-λ / cross-(l,m) coupling a scalar×tensor product
-> generates. A uniform M makes the factor pull out and the round-trip cancel, which is
-> exactly why `test_response_3d` passed — it only ever exercised the degenerate case.
-> The 6b LVZ benchmark (`test_benchmark_lvz`) exposed it: the homogeneous disc matches
-> Weerdesteijn 2023 to 0.5% (−0.754 vs −0.75 m), but the confined low-viscosity zone
-> blows up to −8 m (ref −1.23 m) — Δt-independent and de-aliasing-independent, i.e. a
-> formulation error, not a numerical one. **Fix (planned): reconstruct the strain-rate
-> tensor on the Gauss grid via vector/tensor SH transforms, multiply by the local
-> M(θ,φ), project back via the adjoint transforms** (the genuine VILMA/Martinec 3D
-> step). Recipe to be pulled from Martinec (2000) before reimplementing
-> `advance_memory_3d`. `make check` stays green (the LVZ test is not in it).
+**The pitfall (and the false start).** The memory/strain are second-order **tensor**
+fields; the four kept components λ∈{1,2,5,6} are *tensor* spherical-harmonic
+coefficients (degree-dependent norms `[1, Jr/2, 2Jr², 2(Jr−1)Jr-ish]`, Jr=l(l+1) —
+λ=1 scalar, λ=2 vector/gradient, λ=5,6 rank-2), **not** scalar Y_lm. The first 6a cut
+scalar-synthesised each λ independently and multiplied by M(θ,φ); that is wrong for a
+laterally-varying M (it neither reconstructs the physical tensor nor captures the
+cross-λ/(l,m) coupling a scalar×tensor product makes). A uniform M hides it (the
+factor pulls out, the round trip cancels), so the uniform test passed while the real
+LVZ benchmark blew up to −8 m (Δt- and de-aliasing-independent — a formulation error).
+Lesson: validate the lateral coupling with a *non-uniform* M, not just uniform.
 
-**6a — pseudo-spectral memory advance — SUPERSEDED scaffold (uniform-only; see CAVEAT above).** A path
-`advance_memory_3d` (in `fe_response`, which owns the SHT grid + slot↔lm map;
-`fe_viscoelastic` stays grid-unaware) replaces the per-slot scalar advance when
-`lat_visc` is set. Per radial element `e` and tensor component `λ`, each radial
-shape-coefficient (A,B,C) of the memory `τ` and of the current strain `ε` (built
-from the nodal displacement `σ·xUn + drift` per slot, exactly as the FE path) is
-**synthesised** to the Gauss grid, advanced pointwise `τ⁺ = (1−M)τ − 2μM·ε` with the
-lateral field `Mk3(:,:,e)`, and **analysed** back to spectral. Cost ≈ 36·ne SHTs per
-step (NLAM=4 × {A,B,C} × {2 synth + 1 analysis}); serial for now (OpenMP over the
-element loop is the perf follow-up). Degree 0 carries no memory slot and is dropped
-(no deformation channel to act on). The lateral field is set via
-`ve%enable_lateral_visc(sht, pert_elem)` — a per-element `(nphi,nlat,ne)` log10
-viscosity perturbation, `η_eff = η·10^pert` ⇒ `MkPerDt3 = (μ/η)·10^(−pert)`; elastic
-/fluid elements keep `MkPerDt=0` so the **lithosphere stays exactly elastic**. `set_dt`
-rescales `Mk3 = MkPerDt3·Δt` like the 1-D `Mk`. Only the explicit FE scheme is wired
-in 3D; the implicit trapezoidal 3D path is a guarded `error stop` (later sub-step).
-Validated: a laterally-UNIFORM field reduces the pseudo-spectral advance to the 1-D
-advance (SHT round-trip is exact on band-limited fields) — zero perturbation matches
-the 1-D `ve_response` memory + uplift trajectory to ~5e-13 rel; a uniform `p` matches
-a 1-D run with Maxwell η scaled by `10^p` to ~1e-12 rel.
+**6a — tensor-correct pseudo-spectral memory advance — DONE** (`fe_tensor_sh`,
+`advance_memory_3d`; commits after 2026-06-25). The update `τ⁺=(1−M)τ−2μM·ε` is
+pointwise in PHYSICAL space (Martinec 2000 eq 102), so per radial element and per
+radial shape-coeff (A,B,C) the memory and strain TENSORS are reconstructed on the
+Gauss grid via their **dyadic components** (eqs 90/91, B10/B11), advanced pointwise
+with the lateral M-profile, and projected back. `fe_tensor_sh` (axisymmetric, m=0:
+F≡H≡0, four channels rr/rθ/trace/(θθ−φφ) using Y, E=∂_θY, −j(j+1)Y, G=(∂_θθ−cotθ∂_θ)Y)
+maps λ-coefficients ↔ dyadic grid fields; bases bootstrapped from SHTns (scalar +
+`sph_synthesis`; G from ∇₁²Y=−j(j+1)Y), per-channel orthogonal Gauss-quadrature
+analysis. `fe_viscoelastic` stays grid-unaware; `fe_response` owns the transform.
+Set via `ve%enable_lateral_visc(sht, pert_elem)` — per-element `(nphi,nlat,ne)` log10
+η perturbation, `η_eff=η·10^pert` ⇒ `MkPerDt3=(μ/η)·10^(−pert)`; elastic/fluid elements
+keep `MkPerDt=0` so the **lithosphere stays exactly elastic** and is skipped. FE scheme
+only; implicit TRAP-3D and general `mmax` (F,H≠0 + spin-2) are guarded follow-ups.
+Validated: `test_tensor_sh` — dyadic round trip = identity (4e-14) and the physical
+double-dot `∫τ:ε` (dyadic weights `[1,½,½,½]`) equals the spectral form with the B13
+norms (7e-16); `test_response_3d` (axisymmetric) — a uniform M reduces to the 1-D
+advance (memory ~2e-13, uplift ~4e-14), masking the inert λ=6 j=1 null component.
+
+**6b — LVZ benchmark vs Weerdesteijn et al. (2023) — DONE** (`test_benchmark_lvz`,
+standalone; not in `make check` — lmax 512 ≈ 67 s). Their §5.2 short-timescale case
+(Earth M3-L70-V01 = `build_M3L70V01`; axisymmetric ice disc R=100 km, H 0→100 m over
+100 yr then held to 200 yr; cylindrical LVZ under the load, radius 100 km, depth
+70–170 km, η=1e19 vs 1e21). Driven through `ve_response` directly (pure ice-load
+deformation, no SLE). Load given by the **exact spherical-cap SH coefficients** (a
+sampled step's quadrature error makes the mass — hence the uplift — nlat-dependent).
+At lmax 512 (`nlat=3·lmax` de-aliases the spin-2 G channel; the disc-edge Gibbs
+oscillation settles by ~512): load-center uplift at 200 yr = **−0.731 m homogeneous
+(ref −0.75, 2.6%)** and **−1.218 m with LVZ (ref −1.23, 1.0%)**, amplification
+**1.67 (ref 1.64)**; the LVZ trajectory saturates (the scalar scaffold ran away).
+ASPECT/Abaqus themselves differ 1–3% and ASPECT(no self-grav) vs TABOO(self-grav)
+0.28% at the load center, so self-gravity/sphericity are sub-few-% here.
 
 **Open / next.**
-- **6b** — lateral viscosity field builder (synthetic low-viscosity zone) + the
-  FastIsostasy test-3b cross-check: a cylindrical disc load (R=100 km, H=100 m,
-  ramped 100 yr) over an LVZ (η=1e19 in a 100-km column vs 1e21, 70–170 km depth),
-  comparing central-uplift vs a FastIsostasy.jl test3b run (and ASPECT/Abaqus as a
-  secondary anchor; geometry caveat: FI/ASPECT are flat-Cartesian, curvature
-  negligible at 100 km). **De-aliasing matters here** (sharp lateral η step) —
-  use `nlat ~ 3·lmax/2`.
+- **OpenMP over the element loop** in `advance_memory_3d` (embarrassingly parallel;
+  the matmul-based transforms are re-entrant) — would let the LVZ benchmark into
+  `make check`.
+- **General `mmax`** — F,H≠0; needs the spin-2 (G,H) transforms (SHTns has no direct
+  routine) via precomputed Gauss-grid basis matrices or repeated vector transforms.
 - **6c** — load a real 3D viscosity field from netCDF into `earth%visc_3d`
   (node-based); bridge node→element by log10-mean of the bracketing nodes.
-- **TRAP-3D** — extend the pseudo-spectral advance to the implicit trapezoidal
-  rule (needed before the adaptive controller runs with lateral viscosity).
+- **TRAP-3D** — extend the pointwise advance to the implicit trapezoidal rule
+  (needed before the adaptive controller runs with lateral viscosity).

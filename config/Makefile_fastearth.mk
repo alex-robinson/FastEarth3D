@@ -210,6 +210,11 @@ test_response_3d: fastearth-static | $(bindir)
 		-o $(bindir)/test_response_3d.x $(objdir)/libfastearth.a $(LFLAGS)
 	@echo "    $(bindir)/test_response_3d.x is ready."
 
+test_benchmark_lvz: fastearth-static | $(bindir)
+	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(testdir)/test_benchmark_lvz.f90 \
+		-o $(bindir)/test_benchmark_lvz.x $(objdir)/libfastearth.a $(LFLAGS)
+	@echo "    $(bindir)/test_benchmark_lvz.x is ready."
+
 test_sle_ve: fastearth-static | $(bindir)
 	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(testdir)/test_sle_ve.f90 \
 		-o $(bindir)/test_sle_ve.x $(objdir)/libfastearth.a $(LFLAGS)
