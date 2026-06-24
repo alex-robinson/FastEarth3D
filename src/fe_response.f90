@@ -28,7 +28,8 @@ module fe_response
    use fe_radial_fe,       only: radial_mesh, radial_operator, &
                                  idx_u, idx_v, idx_f, ndof_of
    use fe_viscoelastic,    only: NLAM, ve_strain_constants, dissipative_rhs, &
-                                 advance_memory
+                                 advance_memory, scheme_is_implicit, &
+                                 SCHEME_FE, SCHEME_TRAP
    use fe_sht,             only: sht_grid
    implicit none
    private
@@ -137,10 +138,26 @@ module fe_response
       real(wp), allocatable :: Are(:,:,:), Aim(:,:,:)
       real(wp), allocatable :: Bre(:,:,:), Bim(:,:,:)
       real(wp), allocatable :: Cre(:,:,:), Cim(:,:,:)
-      ! frozen per-step drift (from the memory), set by begin_step
+      ! frozen per-step drift (from the memory τ_n), set by begin_step
       complex(wp), allocatable :: dUa(:), dFa(:), dVa(:) !! (nk) surface drift (U,F,V)
-      real(wp), allocatable :: dUn_re(:,:), dUn_im(:,:) !! (nr,nk) nodal drift U
-      real(wp), allocatable :: dVn_re(:,:), dVn_im(:,:) !! (nr,nk) nodal drift V
+      real(wp), allocatable :: dUn_re(:,:), dUn_im(:,:) !! (nr,nk) nodal drift U from τ_n (ε_n)
+      real(wp), allocatable :: dVn_re(:,:), dVn_im(:,:) !! (nr,nk) nodal drift V from τ_n
+      ! Memory time-integration scheme (see fe_viscoelastic). FE (default) advances
+      ! the memory once in commit_step from the report strain — the historical path,
+      ! bit-identical. TRAP (2nd-order) is implicit in the end-of-step strain, so
+      ! commit_step Picard-iterates the endpoint (frozen load: σ held at the converged
+      ! value) — re-solving the drift against the trial τ_{n+1} each pass. §3c part 3a.
+      integer  :: scheme = SCHEME_FE
+      integer  :: max_couple_iter = 1        !! coupling-iteration cap for implicit schemes
+      real(wp) :: couple_tol = 1.0e-6_wp     !! relative surface-drift change to stop iterating
+      integer  :: couple_iters_last = 0      !! iterations taken last commit (diagnostic)
+      ! Scratch for the implicit commit (allocated lazily on first TRAP commit):
+      real(wp), allocatable :: Are0(:,:,:), Aim0(:,:,:)  !! (NLAM,ne,nk) τ_n snapshot
+      real(wp), allocatable :: Bre0(:,:,:), Bim0(:,:,:)
+      real(wp), allocatable :: Cre0(:,:,:), Cim0(:,:,:)
+      real(wp), allocatable :: edUn_re(:,:), edUn_im(:,:) !! (nr,nk) endpoint nodal drift U (ε_{n+1})
+      real(wp), allocatable :: edVn_re(:,:), edVn_im(:,:) !! (nr,nk) endpoint nodal drift V
+      complex(wp), allocatable :: dUa_prev(:)             !! (nk) prev-iterate surface drift (convergence)
    contains
       procedure :: init        => ve_response_init
       procedure :: begin_step  => ve_response_begin
@@ -391,10 +408,24 @@ contains
    end subroutine ve_response_init
 
    subroutine ve_response_begin(self, sht)
-      !! Freeze the per-(l,m) drift: solve the (real & imag) memory forcing
-      !! −∫τ^V:δε with the load held at zero, storing surface + nodal drift.
+      !! Freeze the per-(l,m) drift from the entering memory τ_n: solve the memory
+      !! forcing −∫τ^V:δε with the load held at zero, storing surface + nodal drift.
+      !! The nodal drift (the ε_n term) lands in self%dUn_*/dVn_*; the implicit
+      !! commit re-uses the same solver against the trial τ_{n+1} (see solve_drift).
       class(ve_response), intent(inout) :: self
       type(sht_grid),     intent(in)    :: sht
+      call solve_drift(self, sht, self%dUn_re, self%dUn_im, self%dVn_re, self%dVn_im)
+   end subroutine ve_response_begin
+
+   subroutine solve_drift(self, sht, Un_re, Un_im, Vn_re, Vn_im)
+      !! Solve the per-(l,m) drift (load=0 memory forcing) from self's CURRENT memory
+      !! arrays (self%Are…): surface drift → self%dUa/dFa/dVa, nodal drift → the four
+      !! target arrays. begin_step passes self%dUn_* (drift from τ_n); the implicit
+      !! commit passes self%edUn_* (drift from the trial τ_{n+1}). Targets are distinct
+      !! components from everything read via self, so there is no argument aliasing.
+      class(ve_response), intent(inout) :: self
+      type(sht_grid),     intent(in)    :: sht
+      real(wp),           intent(out)   :: Un_re(:,:), Un_im(:,:), Vn_re(:,:), Vn_im(:,:)
       real(wp), allocatable :: fre(:), fim(:), xre(:), xim(:)
       integer :: k, l, node, e, mm
       real(wp) :: thr, mk
@@ -435,8 +466,8 @@ contains
             if (self%mnorm(k) <= thr) then       ! negligible memory ⇒ negligible drift
                self%dUa(k) = (0.0_wp,0.0_wp);  self%dFa(k) = (0.0_wp,0.0_wp)
                self%dVa(k) = (0.0_wp,0.0_wp)
-               self%dUn_re(:,k) = 0.0_wp;  self%dUn_im(:,k) = 0.0_wp
-               self%dVn_re(:,k) = 0.0_wp;  self%dVn_im(:,k) = 0.0_wp
+               Un_re(:,k) = 0.0_wp;  Un_im(:,k) = 0.0_wp
+               Vn_re(:,k) = 0.0_wp;  Vn_im(:,k) = 0.0_wp
                cycle
             end if
             fre = 0.0_wp;  fim = 0.0_wp
@@ -453,17 +484,17 @@ contains
             self%dVa(k) = cmplx(xre(idx_v(self%nr)), xim(idx_v(self%nr)), wp)
             if (l == 1) self%dFa(k) = (0.0_wp, 0.0_wp)   ! N₁≡0 (CM frame; see init)
             do node = 1, self%nr
-               self%dUn_re(node,k) = xre(idx_u(node))
-               self%dUn_im(node,k) = xim(idx_u(node))
-               self%dVn_re(node,k) = xre(idx_v(node))
-               self%dVn_im(node,k) = xim(idx_v(node))
+               Un_re(node,k) = xre(idx_u(node))
+               Un_im(node,k) = xim(idx_u(node))
+               Vn_re(node,k) = xre(idx_v(node))
+               Vn_im(node,k) = xim(idx_v(node))
             end do
          end do
       end do
       !$omp end do
       deallocate(fre, fim, xre, xim)
       !$omp end parallel
-   end subroutine ve_response_begin
+   end subroutine solve_drift
 
    subroutine ve_response_apply(self, sht, sigma_lm, u_lm, n_lm)
       !! Affine response at the frozen time: u = gu(l)·σ + drift_U,
@@ -508,41 +539,120 @@ contains
    end subroutine ve_response_horizontal
 
    subroutine ve_response_commit(self, sht, sigma_lm)
-      !! Advance the memory with the converged load: total nodal strain =
-      !! σ·(unit-load nodal) + drift, then the Maxwell update per (l,m). Advances
-      !! time by Δt.
+      !! Advance the memory with the converged load. Explicit (FE): total nodal strain
+      !! = σ·(unit-load nodal) + drift(τ_n), one Maxwell update per (l,m). Implicit
+      !! (TRAP): the endpoint is solved by Picard iteration — re-solve the drift against
+      !! the trial τ_{n+1}, form the endpoint strain (frozen load σ), trapezoid-advance
+      !! from τ_n, repeat to couple_tol. Advances time by Δt.
       class(ve_response), intent(inout) :: self
       type(sht_grid),     intent(in)    :: sht
       complex(wp),        intent(in)    :: sigma_lm(:)
       real(wp), allocatable :: Ure(:), Uim(:), Vre(:), Vim(:)
-      real(wp) :: sre, sim
-      integer  :: k, l, lm, node
+      real(wp), allocatable :: Ure_n(:), Uim_n(:), Vre_n(:), Vim_n(:)
+      real(wp) :: sre, sim, cnorm, snorm
+      integer  :: k, l, lm, node, iter
 
-      ! The Maxwell update is independent per slot k (no solve, pure arithmetic on
-      ! that slot's memory), so parallelize over k directly; scratch is per-thread.
-      !$omp parallel default(shared) private(k, l, lm, node, sre, sim, Ure, Uim, Vre, Vim)
-      allocate(Ure(self%nr), Uim(self%nr), Vre(self%nr), Vim(self%nr))
-      !$omp do schedule(static)
-      do k = 1, self%nk                          ! degree-grouped order
-         l  = self%kdeg(k)
-         lm = self%k2lm(k)
-         sre = real(sigma_lm(lm), wp);  sim = aimag(sigma_lm(lm))
-         do node = 1, self%nr
-            Ure(node) = sre*self%xUn(node,l) + self%dUn_re(node,k)
-            Uim(node) = sim*self%xUn(node,l) + self%dUn_im(node,k)
-            Vre(node) = sre*self%xVn(node,l) + self%dVn_re(node,k)
-            Vim(node) = sim*self%xVn(node,l) + self%dVn_im(node,k)
+      if (.not. scheme_is_implicit(self%scheme)) then
+         ! --- explicit FE: byte-for-byte the historical path -----------------------
+         !$omp parallel default(shared) private(k, l, lm, node, sre, sim, Ure, Uim, Vre, Vim)
+         allocate(Ure(self%nr), Uim(self%nr), Vre(self%nr), Vim(self%nr))
+         !$omp do schedule(static)
+         do k = 1, self%nk                          ! degree-grouped order
+            l  = self%kdeg(k)
+            lm = self%k2lm(k)
+            sre = real(sigma_lm(lm), wp);  sim = aimag(sigma_lm(lm))
+            do node = 1, self%nr
+               Ure(node) = sre*self%xUn(node,l) + self%dUn_re(node,k)
+               Uim(node) = sim*self%xUn(node,l) + self%dUn_im(node,k)
+               Vre(node) = sre*self%xVn(node,l) + self%dVn_re(node,k)
+               Vim(node) = sim*self%xVn(node,l) + self%dVn_im(node,k)
+            end do
+            call advance_memory(self%ne, self%mu, self%Mk, Ure, Vre, self%Jr(l), &
+                 self%Are(:,:,k), self%Bre(:,:,k), self%Cre(:,:,k))
+            call advance_memory(self%ne, self%mu, self%Mk, Uim, Vim, self%Jr(l), &
+                 self%Aim(:,:,k), self%Bim(:,:,k), self%Cim(:,:,k))
          end do
-         call advance_memory(self%ne, self%mu, self%Mk, Ure, Vre, self%Jr(l), &
-              self%Are(:,:,k), self%Bre(:,:,k), self%Cre(:,:,k))
-         call advance_memory(self%ne, self%mu, self%Mk, Uim, Vim, self%Jr(l), &
-              self%Aim(:,:,k), self%Bim(:,:,k), self%Cim(:,:,k))
+         !$omp end do
+         deallocate(Ure, Uim, Vre, Vim)
+         !$omp end parallel
+         self%couple_iters_last = 1
+         self%time = self%time + self%dt
+         return
+      end if
+
+      ! --- implicit (TRAP): iterate the endpoint to a consistent τ_{n+1} ------------
+      call ensure_commit_scratch(self)
+      ! Snapshot τ_n (each iterate trapezoid-advances from it, not compounding). The
+      ! ε_n nodal drift is in self%dUn_* (from begin_step) and stays fixed; the
+      ! endpoint ε_{n+1} drift is re-solved into self%edUn_* each iteration.
+      self%Are0 = self%Are;  self%Aim0 = self%Aim
+      self%Bre0 = self%Bre;  self%Bim0 = self%Bim
+      self%Cre0 = self%Cre;  self%Cim0 = self%Cim
+      self%dUa_prev = self%dUa
+
+      do iter = 1, self%max_couple_iter
+         ! Endpoint drift from the current τ_{n+1} estimate (self%Are…); also refreshes
+         ! self%dUa (the surface drift, used as the convergence signal).
+         call solve_drift(self, sht, self%edUn_re, self%edUn_im, self%edVn_re, self%edVn_im)
+
+         !$omp parallel default(shared) &
+         !$omp   private(k, l, lm, node, sre, sim, Ure, Uim, Vre, Vim, Ure_n, Uim_n, Vre_n, Vim_n)
+         allocate(Ure(self%nr), Uim(self%nr), Vre(self%nr), Vim(self%nr), &
+                  Ure_n(self%nr), Uim_n(self%nr), Vre_n(self%nr), Vim_n(self%nr))
+         !$omp do schedule(static)
+         do k = 1, self%nk
+            l  = self%kdeg(k)
+            lm = self%k2lm(k)
+            sre = real(sigma_lm(lm), wp);  sim = aimag(sigma_lm(lm))
+            do node = 1, self%nr
+               Ure_n(node) = sre*self%xUn(node,l) + self%dUn_re(node,k)   ! ε_n
+               Vre_n(node) = sre*self%xVn(node,l) + self%dVn_re(node,k)
+               Uim_n(node) = sim*self%xUn(node,l) + self%dUn_im(node,k)
+               Vim_n(node) = sim*self%xVn(node,l) + self%dVn_im(node,k)
+               Ure(node)   = sre*self%xUn(node,l) + self%edUn_re(node,k)  ! ε_{n+1}
+               Vre(node)   = sre*self%xVn(node,l) + self%edVn_re(node,k)
+               Uim(node)   = sim*self%xUn(node,l) + self%edUn_im(node,k)
+               Vim(node)   = sim*self%xVn(node,l) + self%edVn_im(node,k)
+            end do
+            ! reset to τ_n, then trapezoid-advance with (ε_n, ε_{n+1})
+            self%Are(:,:,k) = self%Are0(:,:,k);  self%Bre(:,:,k) = self%Bre0(:,:,k)
+            self%Cre(:,:,k) = self%Cre0(:,:,k)
+            call advance_memory(self%ne, self%mu, self%Mk, Ure, Vre, self%Jr(l), &
+                 self%Are(:,:,k), self%Bre(:,:,k), self%Cre(:,:,k), &
+                 scheme=SCHEME_TRAP, Un_prev=Ure_n, Vn_prev=Vre_n)
+            self%Aim(:,:,k) = self%Aim0(:,:,k);  self%Bim(:,:,k) = self%Bim0(:,:,k)
+            self%Cim(:,:,k) = self%Cim0(:,:,k)
+            call advance_memory(self%ne, self%mu, self%Mk, Uim, Vim, self%Jr(l), &
+                 self%Aim(:,:,k), self%Bim(:,:,k), self%Cim(:,:,k), &
+                 scheme=SCHEME_TRAP, Un_prev=Uim_n, Vn_prev=Vim_n)
+         end do
+         !$omp end do
+         deallocate(Ure, Uim, Vre, Vim, Ure_n, Uim_n, Vre_n, Vim_n)
+         !$omp end parallel
+
+         ! iter 1 re-solves drift from τ_n and so reproduces begin_step's drift; the
+         ! fixed point only moves at iter 2 (never exit on the first pass).
+         cnorm = maxval(abs(self%dUa - self%dUa_prev))
+         snorm = maxval(abs(self%dUa))
+         self%dUa_prev = self%dUa
+         if (iter >= 2 .and. cnorm <= self%couple_tol*max(snorm, tiny(1.0_wp))) exit
       end do
-      !$omp end do
-      deallocate(Ure, Uim, Vre, Vim)
-      !$omp end parallel
+      self%couple_iters_last = min(iter, self%max_couple_iter)
       self%time = self%time + self%dt
    end subroutine ve_response_commit
+
+   subroutine ensure_commit_scratch(self)
+      !! Lazily allocate the implicit-commit scratch (the τ_n memory snapshot doubles
+      !! the memory footprint, so it is only paid when a TRAP commit is first used).
+      class(ve_response), intent(inout) :: self
+      if (allocated(self%Are0)) return
+      allocate(self%Are0(NLAM,self%ne,self%nk), self%Aim0(NLAM,self%ne,self%nk))
+      allocate(self%Bre0(NLAM,self%ne,self%nk), self%Bim0(NLAM,self%ne,self%nk))
+      allocate(self%Cre0(NLAM,self%ne,self%nk), self%Cim0(NLAM,self%ne,self%nk))
+      allocate(self%edUn_re(self%nr,self%nk), self%edUn_im(self%nr,self%nk))
+      allocate(self%edVn_re(self%nr,self%nk), self%edVn_im(self%nr,self%nk))
+      allocate(self%dUa_prev(self%nk))
+   end subroutine ensure_commit_scratch
 
    subroutine ve_response_destroy(self)
       class(ve_response), intent(inout) :: self
@@ -581,6 +691,17 @@ contains
       if (allocated(self%kdeg))   deallocate(self%kdeg)
       if (allocated(self%kbeg))   deallocate(self%kbeg)
       if (allocated(self%mnorm))  deallocate(self%mnorm)
+      if (allocated(self%Are0))   deallocate(self%Are0)
+      if (allocated(self%Aim0))   deallocate(self%Aim0)
+      if (allocated(self%Bre0))   deallocate(self%Bre0)
+      if (allocated(self%Bim0))   deallocate(self%Bim0)
+      if (allocated(self%Cre0))   deallocate(self%Cre0)
+      if (allocated(self%Cim0))   deallocate(self%Cim0)
+      if (allocated(self%edUn_re)) deallocate(self%edUn_re)
+      if (allocated(self%edUn_im)) deallocate(self%edUn_im)
+      if (allocated(self%edVn_re)) deallocate(self%edVn_re)
+      if (allocated(self%edVn_im)) deallocate(self%edVn_im)
+      if (allocated(self%dUa_prev)) deallocate(self%dUa_prev)
       self%lmax = 0;  self%nlm = 0;  self%nk = 0
    end subroutine ve_response_destroy
 

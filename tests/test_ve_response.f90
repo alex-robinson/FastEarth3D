@@ -16,7 +16,7 @@ program test_ve_response
    use fe_constants,       only: kyr
    use fe_earth_structure, only: earth_model, build_M3L70V01
    use fe_radial_fe,       only: radial_mesh, radial_fe_finalize
-   use fe_viscoelastic,    only: ve_degree
+   use fe_viscoelastic,    only: ve_degree, SCHEME_FE, SCHEME_TRAP
    use fe_response,        only: elastic_response, ve_response
    use fe_sht,             only: sht_grid
    implicit none
@@ -36,12 +36,20 @@ program test_ve_response
    call elastic_limit(ok)
 
    write(*,'(a)') ''
-   write(*,'(a)') ' (2) held single-degree load reproduces the 1-D ve_degree stepper'
+   write(*,'(a)') ' (2) held single-degree load reproduces the 1-D ve_degree stepper (FE)'
    write(*,'(a)') '     j = 1 (geocenter, CM frame):'
-   call stepper_agreement(1, ok)
+   call stepper_agreement(1, SCHEME_FE, 1, ok)
    write(*,'(a)') ''
    write(*,'(a)') '     j = 2:'
-   call stepper_agreement(2, ok)
+   call stepper_agreement(2, SCHEME_FE, 1, ok)
+
+   write(*,'(a)') ''
+   write(*,'(a)') ' (3) TRAP field path reproduces the 1-D ve_degree TRAP (implicit coupling)'
+   write(*,'(a)') '     j = 1 (geocenter, CM frame):'
+   call stepper_agreement(1, SCHEME_TRAP, 50, ok)
+   write(*,'(a)') ''
+   write(*,'(a)') '     j = 2:'
+   call stepper_agreement(2, SCHEME_TRAP, 50, ok)
 
    write(*,'(a)') ''
    if (ok) then
@@ -86,25 +94,28 @@ contains
       call ve%destroy();  call el%destroy()
    end subroutine elastic_limit
 
-   subroutine stepper_agreement(j, ok)
-      integer, intent(in)    :: j
+   subroutine stepper_agreement(j, scheme, max_iter, ok)
+      integer, intent(in)    :: j, scheme, max_iter
       logical, intent(inout) :: ok
       type(ve_response)  :: ve
       type(ve_degree)    :: vd
       type(radial_mesh)  :: mesh
       complex(wp), allocatable :: slm(:), ulm(:), nlm(:)
       integer, parameter :: NSTEP = 25
+      real(wp), parameter :: TOL = 1.0e-10_wp     ! coupling tol (both drivers; tight for the A/B)
       integer  :: lm, i
       real(wp) :: sigma, t1, ua1, va1, fa1, ua2, fa2, g
       real(wp) :: emax_u, emax_f, ref_u, nmax1
 
       sigma = 1.0_wp
-      ! reference: validated 1-D stepper at degree j
+      ! reference: validated 1-D stepper at degree j, same scheme/coupling settings
       call mesh%build(e)
       call vd%init(e, mesh, j=j, dt=dt)
+      vd%scheme = scheme;  vd%max_couple_iter = max_iter;  vd%couple_tol = TOL
 
-      ! field driver, single held (l=j,m=0) coefficient
+      ! field driver, single held (l=j,m=0) coefficient, same scheme/coupling settings
       call ve%init(e, sht, dt)
+      ve%scheme = scheme;  ve%max_couple_iter = max_iter;  ve%couple_tol = TOL
       g  = ve%g
       lm = sht%lmidx(j, 0)
       allocate(slm(sht%nlm), ulm(sht%nlm), nlm(sht%nlm))
