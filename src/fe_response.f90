@@ -769,10 +769,14 @@ contains
       real(wp), allocatable :: Mlat(:)                     ! M(θ) for this element (nlat)
       integer  :: e, k, j
 
+      ! Parallel over radial elements: each writes a disjoint memory slab Are(:,e,:),
+      ! the dyadic transforms read the shared (read-only) tsh and write thread-local
+      ! scratch — embarrassingly parallel, re-entrant (matmul-based, no SHTns state).
+      !$omp parallel default(shared) private(e, k, j, ca, cb, cc, ea, eb, ec, Mlat)
       allocate(ca(TLAM,self%lmax), cb(TLAM,self%lmax), cc(TLAM,self%lmax))
       allocate(ea(TLAM,self%lmax), eb(TLAM,self%lmax), ec(TLAM,self%lmax))
       allocate(Mlat(sht%nlat))
-
+      !$omp do schedule(dynamic)
       do e = 1, self%ne
          ! Elastic/fluid elements carry no Maxwell memory (MkPerDt=0 ⇒ Mk3=0), so the
          ! advance τ⁺=(1−0)τ−0 is the identity — skip them exactly (no transforms).
@@ -789,8 +793,9 @@ contains
             self%Cre(:,e,k) = cc(:,j)
          end do
       end do
-
+      !$omp end do
       deallocate(ca, cb, cc, ea, eb, ec, Mlat)
+      !$omp end parallel
    end subroutine advance_memory_3d
 
    subroutine gather_tensor_coeffs(self, sigma_lm, e, ca, cb, cc, ea, eb, ec)
