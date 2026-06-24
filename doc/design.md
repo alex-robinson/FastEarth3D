@@ -389,7 +389,26 @@ memory (no lateral product), so they stay the exact 1-D code path. Only **η** v
 laterally — **μ and ρ stay radial** — which is why the operator/LU factorisation and
 the whole speed argument survive. This is the "3D-ready from day one" payoff (§2).
 
-**6a — pseudo-spectral memory advance — DONE (`test_response_3d`).** A new path
+> **CAVEAT (found in 6b, 2026-06-25): 6a is UNIFORM-ONLY — not yet real 3D.** The
+> per-component scalar synth/analysis below is wrong for a *laterally-varying* M and
+> works only for a laterally-uniform field (the degenerate = 1-D case). The four
+> memory/strain components λ∈{1,2,5,6} are **tensor** spherical-harmonic components
+> (degree-dependent norms `[1, Jr/2, 2Jr², 2Jr(Jr−2)]`, Jr=l(l+1) — λ=2 is a
+> vector/gradient harmonic, λ=5,6 rank-2), NOT scalar Y_lm. Scalar-synthesising each
+> λ independently neither reconstructs the true physical tensor before multiplying by
+> M(θ,φ) nor captures the cross-λ / cross-(l,m) coupling a scalar×tensor product
+> generates. A uniform M makes the factor pull out and the round-trip cancel, which is
+> exactly why `test_response_3d` passed — it only ever exercised the degenerate case.
+> The 6b LVZ benchmark (`test_benchmark_lvz`) exposed it: the homogeneous disc matches
+> Weerdesteijn 2023 to 0.5% (−0.754 vs −0.75 m), but the confined low-viscosity zone
+> blows up to −8 m (ref −1.23 m) — Δt-independent and de-aliasing-independent, i.e. a
+> formulation error, not a numerical one. **Fix (planned): reconstruct the strain-rate
+> tensor on the Gauss grid via vector/tensor SH transforms, multiply by the local
+> M(θ,φ), project back via the adjoint transforms** (the genuine VILMA/Martinec 3D
+> step). Recipe to be pulled from Martinec (2000) before reimplementing
+> `advance_memory_3d`. `make check` stays green (the LVZ test is not in it).
+
+**6a — pseudo-spectral memory advance — SUPERSEDED scaffold (uniform-only; see CAVEAT above).** A path
 `advance_memory_3d` (in `fe_response`, which owns the SHT grid + slot↔lm map;
 `fe_viscoelastic` stays grid-unaware) replaces the per-slot scalar advance when
 `lat_visc` is set. Per radial element `e` and tensor component `λ`, each radial
