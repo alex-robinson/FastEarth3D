@@ -112,3 +112,36 @@ cases A, C2, D3, E2, F1 (figs 10–13), at truncation j256.
 
   Validated by `tests/test_benchmark_sle.f90` (standalone): all four reproduce the
   SBK curves to within the inter-code scatter (esl matches to ≲5 m; D3 to ~0.2 m).
+
+## `rotation_spada2011/` — polar motion (Test 3/2) + constants
+
+Reference for rung 5 (rotational feedback / true polar wander), transcribed
+directly from the **Spada et al. (2011)** paper PDF (`doc/refs/Spada2011.pdf`).
+
+- **`polar_motion_test3-2.txt`** — Table 14 (p. 129): modulus of polar motion
+  `|m|` [deg] and rate `|ṁ|` [deg/Ma] at t = 0,1,2,5,10,20 kyr, for the three
+  axisymmetric loads (cap/disc/point, Table 4), model M3-L70-V01, Heaviside
+  history, load centroid θc = 25°, λc = 75°. Two contributors — **Vb**
+  (Mathematica matrix-propagator, Sabadini & Vermeersen) and **Gs** (TABOO,
+  Spada) — both *normal-mode* codes; **VILMA (Vk) did not provide m for this
+  test** (only LOD via 1+k^L), so this validates a time-domain solver the same
+  cross-method way the giapy table validates rung 2. Two cases: Chandler wobble
+  *included* (`incl`, Cw≠0) and *excluded* (`excl`, Cw=0). A quasi-static
+  time-domain method (Liouville term i·ṁ/σ_r dropped, eq. 7) targets the **`excl`
+  column** — it cannot reproduce the Cw≠0 ~1 kyr Chandler transient.
+- **`constants_table2.txt`** — Table 2 (p. 109): moments of inertia C, A,
+  angular velocity Ω, radius a, etc. — the rotation constants the earlier rungs
+  did not need (C−A and Ω enter the excitation eqs 20/31; C the LOD eq 33).
+
+**Source-notation gotcha (decoded):** Table 14 prints a compact power-of-ten form
+— a trailing **subscript** digit d = ×10⁻ᵈ, a **superscript** digit d = ×10⁺ᵈ
+(e.g. `0.132₁` = 0.0132, `0.681⁵` = 6.81e4, `Gσ 0.541₄` = 0.541e-4). Verified via
+the Cw-included |ṁ|(t=0)=×10⁵ Chandler spike, |m|↔|ṁ| finite-difference
+consistency, and Gσ Arg = 105°W (eq. 31). The vendored `.txt` is **fully expanded
+to decimal** so downstream code never re-parses the notation.
+
+- **License / regeneration:** the values are published benchmark reference data.
+  **TABOO** (https://github.com/danielemelini/TABOO, GPLv3, Spada's "Gs" code)
+  can regenerate Test 3/2 externally as an independent cross-check; not required.
+  This table may be contributed upstream to `isostasy_data/model_outputs/Spada-2011/`
+  later (it has the spatial Spada-2011 cases but not the rotational ones).
