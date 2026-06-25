@@ -19,7 +19,7 @@ program test_benchmark_martinec
    !! separate, larger effort (full-sphere SLE + arbitrary lon/lat profiles).
    use fe_precision,       only: wp
    use fe_constants,       only: pi, rho_ice, kyr
-   use fe_earth_structure, only: earth_model, build_M3L70V01
+   use fe_earth_structure, only: earth_gravity_at, earth_model, build_M3L70V01
    use fe_radial_fe,       only: radial_mesh, radial_fe_finalize
    use fe_viscoelastic,    only: ve_degree
    implicit none
@@ -40,7 +40,7 @@ program test_benchmark_martinec
    ok = .true.
    call read_ref()
    em = build_M3L70V01();  call mm%build(em)
-   g  = em%gravity_at(em%r_earth)
+   g  = earth_gravity_at(em, em%r_earth)
    alpha = ALPHA_DEG*pi/180.0_wp;  ca = cos(alpha)
    call cap_coeffs()                       ! spherical-cap load coefficients sig_n
 

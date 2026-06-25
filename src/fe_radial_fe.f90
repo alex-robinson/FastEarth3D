@@ -22,7 +22,7 @@ module fe_radial_fe
    !!                       step (see doc/formulation.md).
    use fe_precision, only: wp
    use fe_constants, only: pi, grav_G
-   use fe_earth_structure, only: earth_model
+   use fe_earth_structure, only: earth_gravity_at, earth_n_layers, earth_model
    use fe_radial_integrals, only: elem_i1, elem_i2, elem_i3, elem_i4, &
                                   elem_i5, elem_i6, elem_i7, &
                                   elem_k1, elem_k2, elem_k3
@@ -130,7 +130,7 @@ contains
 
       ! Count elements per layer first.
       ntot = 0
-      do i = 1, earth%n_layers()
+      do i = 1, earth_n_layers(earth)
          r0 = earth%layers(i)%r_bot
          r1 = earth%layers(i)%r_top
          depth_mid = earth%r_earth - 0.5_wp*(r0 + r1)
@@ -145,7 +145,7 @@ contains
       ! Lay down nodes layer by layer (innermost first), sharing interface nodes.
       r(1) = 0.0_wp           ! centre of the Earth
       off  = 1                ! index of the last node placed
-      do i = earth%n_layers(), 1, -1   ! innermost layer (core) first, ascending r
+      do i = earth_n_layers(earth), 1, -1   ! innermost layer (core) first, ascending r
          r0 = earth%layers(i)%r_bot
          r1 = earth%layers(i)%r_top
          depth_mid = earth%r_earth - 0.5_wp*(r0 + r1)
@@ -411,7 +411,7 @@ contains
       self%ndof     = nd
       self%bordered = (j == 1)
       self%r_earth  = earth%r_earth
-      self%g_surf   = earth%gravity_at(earth%r_earth)
+      self%g_surf   = earth_gravity_at(earth, earth%r_earth)
 
       ! --- degree-1 KKT border vector (the constraint direction w) -------------
       ns = nd
@@ -617,7 +617,7 @@ contains
       real(wp),          intent(out) :: h, l, k
       real(wp) :: a, g, phiL
       a    = earth%r_earth
-      g    = earth%gravity_at(a)
+      g    = earth_gravity_at(earth, a)
       phiL = 4.0_wp*pi*grav_G*a*sigma/real(2*j+1, wp)
       h =  g*U_a/phiL
       l =  g*V_a/phiL
@@ -645,7 +645,7 @@ contains
       real(wp),          intent(in)  :: phi_t, U_a, V_a, F_a
       real(wp),          intent(out) :: h, l, k
       real(wp) :: g
-      g = earth%gravity_at(earth%r_earth)
+      g = earth_gravity_at(earth, earth%r_earth)
       h =  g*U_a/phi_t
       l =  g*V_a/phi_t
       k = -F_a/phi_t - 1.0_wp

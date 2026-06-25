@@ -41,7 +41,7 @@ module fe_rotation
    !! channels use the 1-D radial relaxation (laterally-varying η is rung 6).
    use fe_precision,       only: wp
    use fe_constants,       only: pi, grav_G
-   use fe_earth_structure, only: earth_model, RHEOL_FLUID
+   use fe_earth_structure, only: earth_n_layers, earth_gravity_at, earth_model, RHEOL_FLUID
    use fe_radial_fe,       only: radial_mesh, radial_operator, tidal_love, &
                                  idx_u, idx_v, idx_f, ndof_of
    use fe_viscoelastic,    only: NLAM, ve_strain_constants, dissipative_rhs, &
@@ -133,13 +133,13 @@ contains
       call self%destroy()
       call mesh%build(earth)
       self%a = earth%r_earth
-      self%g = earth%gravity_at(earth%r_earth)
+      self%g = earth_gravity_at(earth, earth%r_earth)
       call self%load_ch%init(earth, mesh, dt, tidal=.false.)
       call self%tidal_ch%init(earth, mesh, dt, tidal=.true.)
       ! elastic tidal Love numbers from the tidal channel's unit response (φ_t = 1):
       ! k^T = −F(a)/φ_t − 1, h^T = g U(a)/φ_t (tidal_love convention).
       self%kTe = -self%tidal_ch%Fe - 1.0_wp
-      self%hTe =  earth%gravity_at(earth%r_earth) * self%tidal_ch%Ue
+      self%hTe =  earth_gravity_at(earth, earth%r_earth) * self%tidal_ch%Ue
       ! two secular Love numbers (Spada eq. 11 vs Adhikari/Mitrovica): the model
       ! relaxed limit k^T_f reproduces the Spada Test 3/2 benchmark; the observed-
       ! flattening closed form k_s = 3G(C−A)/(a⁵Ω²) avoids the lithosphere-thickness
@@ -310,7 +310,7 @@ contains
       real(wp) :: h, l, ua, va, fa
       integer  :: lay
       ef = earth
-      do lay = 1, ef%n_layers()
+      do lay = 1, earth_n_layers(ef)
          if (ef%layers(lay)%rheology == RHEOL_MAXWELL) then
             ef%layers(lay)%mu = 0.0_wp;  ef%layers(lay)%rheology = RHEOL_FLUID
          end if

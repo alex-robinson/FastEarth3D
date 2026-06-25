@@ -14,7 +14,7 @@ program test_tidal
    !! (the secular k^T_f = k_s of the Liouville rotational-feedback term, Spada
    !! et al. 2011 eq 11, comes from the fluid limit of this same path).
    use fe_precision,       only: wp
-   use fe_earth_structure, only: earth_model, earth_layer, build_M3L70V01, &
+   use fe_earth_structure, only: earth_gravity_at, earth_model, earth_layer, build_M3L70V01, &
                                  RHEOL_ELASTIC
    use fe_radial_fe,       only: radial_mesh, radial_operator, tidal_love, &
                                  radial_fe_finalize, idx_u, idx_v, idx_f
@@ -120,7 +120,7 @@ contains
    real(wp) function grav_homog() result(g)
       type(earth_model) :: e
       e = homog_earth(1.0_wp)
-      g = e%gravity_at(a_h)
+      g = earth_gravity_at(e, a_h)
    end function grav_homog
 
    subroutine love_for(j, ua, va, fa, h, l, k)

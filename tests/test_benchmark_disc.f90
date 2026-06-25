@@ -21,7 +21,7 @@ program test_benchmark_disc
    !!       inter-code scatter; tracked as an open item.)
    use fe_precision,       only: wp
    use fe_constants,       only: pi, rho_ice, kyr
-   use fe_earth_structure, only: earth_model, build_M3L70V01
+   use fe_earth_structure, only: earth_gravity_at, earth_model, build_M3L70V01
    use fe_radial_fe,       only: radial_mesh, radial_fe_finalize
    use fe_viscoelastic,    only: ve_degree
    use fe_response,        only: elastic_response
@@ -47,7 +47,7 @@ program test_benchmark_disc
    nref = nref(NTH:1:-1, :)        ! n_* files stored in reversed theta order
 
    em = build_M3L70V01()
-   g  = em%gravity_at(em%r_earth)
+   g  = earth_gravity_at(em, em%r_earth)
    sig0  = rho_ice*H_ICE
    alpha = ALPHA_DEG*pi/180.0_wp;  ca = cos(alpha)
    call disc_coeffs(ca, sig0, sig)            ! sig(n) = sig0/2 [P_{n-1}-P_{n+1}](ca)

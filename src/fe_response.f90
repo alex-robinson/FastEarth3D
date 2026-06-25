@@ -24,7 +24,7 @@ module fe_response
    !! rigid (U→0, 1+k→1) and fluid (U→−(2j+1)/3·φ^L/g, 1+k→0) limits.
    use fe_precision,       only: wp
    use fe_constants,       only: pi, grav_G
-   use fe_earth_structure, only: earth_model, RHEOL_MAXWELL
+   use fe_earth_structure, only: earth_gravity_at, earth_model, RHEOL_MAXWELL
    use fe_radial_fe,       only: radial_mesh, radial_operator, &
                                  idx_u, idx_v, idx_f, ndof_of
    use fe_viscoelastic,    only: NLAM, ve_strain_constants, dissipative_rhs, &
@@ -331,7 +331,7 @@ contains
       call self%destroy()
       self%lmax = lmax
       self%a    = earth%r_earth
-      self%g    = earth%gravity_at(earth%r_earth)
+      self%g    = earth_gravity_at(earth, earth%r_earth)
       allocate(self%ugain(0:lmax), self%ngain(0:lmax), self%vgain(0:lmax))
 
       ! degree 0: no deformation, pure monopole geoid offset
@@ -427,7 +427,7 @@ contains
       self%lmax = sht%lmax;  self%nlm = sht%nlm
       self%nr = mesh%nr;  self%ne = mesh%ne;  self%ndof = ndof_of(mesh%nr)
       self%dt = dt;  self%time = 0.0_wp
-      self%a  = earth%r_earth;  self%g = earth%gravity_at(earth%r_earth)
+      self%a  = earth%r_earth;  self%g = earth_gravity_at(earth, earth%r_earth)
 
       ! degree-independent element fields: node radii, shear, Maxwell factor
       allocate(self%r(self%nr));  self%r = mesh%r

@@ -16,7 +16,7 @@ program test_response_3d
    !! through begin/apply/commit so the full spectral round-trip is exercised.
    use fe_precision,       only: wp
    use fe_constants,       only: kyr
-   use fe_earth_structure, only: earth_model, build_M3L70V01, RHEOL_MAXWELL
+   use fe_earth_structure, only: earth_n_layers, earth_model, build_M3L70V01, RHEOL_MAXWELL
    use fe_radial_fe,       only: radial_fe_finalize
    use fe_response,        only: ve_response
    use fe_sht,             only: sht_grid, sht_grid_init, sht_grid_destroy, sht_grid_lmidx
@@ -160,7 +160,7 @@ contains
       integer :: k
       ! 1-D reference Earth: Maxwell-layer viscosities scaled by 10^p (η_eff = η·10^p)
       es = build_M3L70V01()
-      do k = 1, es%n_layers()
+      do k = 1, earth_n_layers(es)
          if (es%layers(k)%rheology == RHEOL_MAXWELL) &
             es%layers(k)%eta = es%layers(k)%eta * 10.0_wp**p
       end do
@@ -186,7 +186,7 @@ contains
       real(wp), allocatable :: pert(:,:,:)
       integer :: k
       es = build_M3L70V01()
-      do k = 1, es%n_layers()
+      do k = 1, earth_n_layers(es)
          if (es%layers(k)%rheology == RHEOL_MAXWELL) &
             es%layers(k)%eta = es%layers(k)%eta * 10.0_wp**p
       end do

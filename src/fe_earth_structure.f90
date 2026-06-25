@@ -28,6 +28,7 @@ module fe_earth_structure
 
    public :: earth_layer, earth_model, build_M3L70V01, build_earth
    public :: fe_read_visc_3d, load_visc_3d
+   public :: earth_n_layers, earth_rho_at, earth_mu_at, earth_eta_at, earth_mass_below, earth_total_mass, earth_gravity_at, earth_moi, earth_is_3d
 
    type :: earth_layer
       !! A homogeneous spherical shell, r_bot <= r <= r_top.
@@ -51,16 +52,6 @@ module fe_earth_structure
       ! the element's radial reference η — storing the absolute field here avoids a
       ! per-node reference ambiguity at layer interfaces.
       real(wp), allocatable :: visc_3d(:,:)
-   contains
-      procedure :: n_layers     => earth_n_layers
-      procedure :: rho_at       => earth_rho_at
-      procedure :: mu_at        => earth_mu_at
-      procedure :: eta_at       => earth_eta_at
-      procedure :: mass_below   => earth_mass_below
-      procedure :: total_mass   => earth_total_mass
-      procedure :: gravity_at   => earth_gravity_at
-      procedure :: moi          => earth_moi
-      procedure :: is_3d        => earth_is_3d
    end type earth_model
 
 contains
@@ -117,18 +108,18 @@ contains
    ! --- Queries ---------------------------------------------------------------
 
    integer function earth_n_layers(self) result(n)
-      class(earth_model), intent(in) :: self
+      type(earth_model), intent(in) :: self
       n = 0
       if (allocated(self%layers)) n = size(self%layers)
    end function earth_n_layers
 
    integer function layer_at(self, r) result(k)
       !! Index of the layer containing radius r (-1 if outside the model).
-      class(earth_model), intent(in) :: self
+      type(earth_model), intent(in) :: self
       real(wp),           intent(in) :: r
       integer :: i
       k = -1
-      do i = 1, self%n_layers()
+      do i = 1, earth_n_layers(self)
          if (r >= self%layers(i)%r_bot .and. r <= self%layers(i)%r_top) then
             k = i
             return
@@ -137,7 +128,7 @@ contains
    end function layer_at
 
    real(wp) function earth_rho_at(self, r) result(val)
-      class(earth_model), intent(in) :: self
+      type(earth_model), intent(in) :: self
       real(wp),           intent(in) :: r
       integer :: k
       k = layer_at(self, r)
@@ -146,7 +137,7 @@ contains
    end function earth_rho_at
 
    real(wp) function earth_mu_at(self, r) result(val)
-      class(earth_model), intent(in) :: self
+      type(earth_model), intent(in) :: self
       real(wp),           intent(in) :: r
       integer :: k
       k = layer_at(self, r)
@@ -155,7 +146,7 @@ contains
    end function earth_mu_at
 
    real(wp) function earth_eta_at(self, r) result(val)
-      class(earth_model), intent(in) :: self
+      type(earth_model), intent(in) :: self
       real(wp),           intent(in) :: r
       integer :: k
       k = layer_at(self, r)
@@ -166,12 +157,12 @@ contains
    real(wp) function earth_mass_below(self, r) result(m)
       !! Mass enclosed within radius r [kg], integrating the piecewise-constant
       !! density profile (partial shells handled).
-      class(earth_model), intent(in) :: self
+      type(earth_model), intent(in) :: self
       real(wp),           intent(in) :: r
       real(wp) :: lo, hi
       integer  :: i
       m = 0.0_wp
-      do i = 1, self%n_layers()
+      do i = 1, earth_n_layers(self)
          lo = self%layers(i)%r_bot
          hi = min(self%layers(i)%r_top, r)
          if (hi > lo) m = m + (4.0_wp/3.0_wp)*pi*self%layers(i)%rho*(hi**3 - lo**3)
@@ -179,32 +170,32 @@ contains
    end function earth_mass_below
 
    real(wp) function earth_total_mass(self) result(m)
-      class(earth_model), intent(in) :: self
-      m = self%mass_below(self%r_earth)
+      type(earth_model), intent(in) :: self
+      m = earth_mass_below(self, self%r_earth)
    end function earth_total_mass
 
    real(wp) function earth_gravity_at(self, r) result(g)
       !! Unperturbed gravity at radius r [m s^-2]: G * M(<r) / r^2.
-      class(earth_model), intent(in) :: self
+      type(earth_model), intent(in) :: self
       real(wp),           intent(in) :: r
       g = 0.0_wp
-      if (r > 0.0_wp) g = grav_G*self%mass_below(r)/(r*r)
+      if (r > 0.0_wp) g = grav_G*earth_mass_below(self, r)/(r*r)
    end function earth_gravity_at
 
    real(wp) function earth_moi(self) result(inertia)
       !! Moment of inertia about a diameter [kg m^2] for the spherically
       !! symmetric profile: I = (8 pi / 15) * sum rho * (r_top^5 - r_bot^5).
-      class(earth_model), intent(in) :: self
+      type(earth_model), intent(in) :: self
       integer :: i
       inertia = 0.0_wp
-      do i = 1, self%n_layers()
+      do i = 1, earth_n_layers(self)
          inertia = inertia + (8.0_wp*pi/15.0_wp)*self%layers(i)%rho* &
                    (self%layers(i)%r_top**5 - self%layers(i)%r_bot**5)
       end do
    end function earth_moi
 
    logical function earth_is_3d(self) result(yes)
-      class(earth_model), intent(in) :: self
+      type(earth_model), intent(in) :: self
       yes = allocated(self%visc_3d)
    end function earth_is_3d
 

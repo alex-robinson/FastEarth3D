@@ -9,7 +9,7 @@ program test_params
    use fe_precision,       only: wp
    use fe_constants,       only: sec_per_year
    use fe_params,          only: fe_param_class, fe_par_load
-   use fe_earth_structure, only: earth_model, build_earth, RHEOL_MAXWELL, RHEOL_FLUID
+   use fe_earth_structure, only: earth_n_layers, earth_model, build_earth, RHEOL_MAXWELL, RHEOL_FLUID
    implicit none
 
    character(len=*), parameter :: NML  = "obj/test_params.nml"
@@ -60,7 +60,7 @@ program test_params
 
    ! --- (3) custom per-layer earth assembly ------------------------------------
    em = build_earth(p)
-   call check_int("custom n_layers", em%n_layers(), 2)
+   call check_int("custom n_layers", earth_n_layers(em), 2)
    call check_str("custom name",     em%name,       "custom")
    call check_int("layer1 rheology", em%layers(1)%rheology, RHEOL_MAXWELL)
    call check_int("layer2 rheology", em%layers(2)%rheology, RHEOL_FLUID)
@@ -69,7 +69,7 @@ program test_params
    ! --- (4) named built-in path (in-code defaults) -----------------------------
    emdef = build_earth(pdef)                     ! pdef left at defaults => "M3-L70-V01"
    call check_str("default earth",    trim(pdef%earth), "M3-L70-V01")
-   call check_int("M3-L70-V01 layers", emdef%n_layers(), 5)
+   call check_int("M3-L70-V01 layers", earth_n_layers(emdef), 5)
 
    ! --- (5) un-overridden values fall through to the defaults file -------------
    call check_int("fallthrough max_couple_iter", p%max_couple_iter, 20)

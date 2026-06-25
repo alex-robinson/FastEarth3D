@@ -5,7 +5,7 @@ program test_assembly
    !! The physics validation (Love numbers vs Spada 2011) is the next step.
    use fe_precision,        only: wp
    use fe_constants,        only: pi, grav_G
-   use fe_earth_structure,  only: earth_model, build_M3L70V01
+   use fe_earth_structure,  only: earth_gravity_at, earth_model, build_M3L70V01
    use fe_radial_fe,        only: radial_mesh, build_dense_operator, shell_Rk, &
                                   idx_u, idx_v, idx_f, idx_p, ndof_of
    use fe_radial_integrals, only: elem_k1, elem_k2
@@ -36,7 +36,7 @@ program test_assembly
       rmid    = 0.5_wp*(mesh%r(i) + mesh%r(i+1))
       rho_e   = earth%layers(mesh%elem_layer(i))%rho
       g_model = (fourpiG/3.0_wp)*(rho_e*rmid + Rk(i)/rmid**2)
-      g_bench = earth%gravity_at(rmid)
+      g_bench = earth_gravity_at(earth, rmid)
       if (g_bench > 0.0_wp) errmax = max(errmax, abs(g_model - g_bench)/g_bench)
    end do
    write(*,'(a,es10.3)') ' (1) R_k gravity reconstruction, max rel err = ', errmax
