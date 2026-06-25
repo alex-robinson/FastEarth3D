@@ -7,9 +7,9 @@ module fe_earth_structure
    !! model M3-L70-V01. The radial finite-element mesh that the solver discretizes
    !! onto is built from this by fe_radial_fe.
    !!
-   !! 3D-ready (project goal): `visc_3d`, when allocated, carries log10-viscosity
-   !! perturbations on the Gauss-Legendre spatial grid per radial node — how VILMA
-   !! injects lateral heterogeneity (Albrecht et al. 2024). 1D runs leave it
+   !! 3D-ready (project goal): `visc_3d`, when allocated, carries absolute
+   !! log10-viscosity on the Gauss-Legendre spatial grid per radial node — how
+   !! VILMA injects lateral heterogeneity (Albrecht et al. 2024). 1D runs leave it
    !! unallocated; the same solver path reduces to the spherically symmetric case.
    use fe_precision, only: wp
    use fe_constants, only: pi, grav_G
@@ -39,7 +39,12 @@ module fe_earth_structure
       real(wp) :: r_earth = 0.0_wp        !! surface radius [m]
       real(wp) :: r_core  = 0.0_wp        !! core-mantle boundary radius [m]
       type(earth_layer), allocatable :: layers(:)   !! surface-first (index 1 = top)
-      ! Optional lateral viscosity: log10 perturbation, (nspat, n_radial_node).
+      ! Optional lateral viscosity: ABSOLUTE log10(η [Pa·s]) on the Gauss grid ×
+      ! FE radial nodes, (nphi*nlat, nr). Populated by fe_read_visc_3d from a real
+      ! lon-lat-r field (rung 6c). The node→element bridge (ve_response) takes the
+      ! log10-mean of the two bracketing nodes and forms the perturbation against
+      ! the element's radial reference η — storing the absolute field here avoids a
+      ! per-node reference ambiguity at layer interfaces.
       real(wp), allocatable :: visc_3d(:,:)
    contains
       procedure :: n_layers     => earth_n_layers

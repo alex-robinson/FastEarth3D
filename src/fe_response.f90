@@ -24,7 +24,7 @@ module fe_response
    !! rigid (U→0, 1+k→1) and fluid (U→−(2j+1)/3·φ^L/g, 1+k→0) limits.
    use fe_precision,       only: wp
    use fe_constants,       only: pi, grav_G
-   use fe_earth_structure, only: earth_model
+   use fe_earth_structure, only: earth_model, RHEOL_MAXWELL
    use fe_radial_fe,       only: radial_mesh, radial_operator, &
                                  idx_u, idx_v, idx_f, ndof_of
    use fe_viscoelastic,    only: NLAM, ve_strain_constants, dissipative_rhs, &
@@ -133,6 +133,12 @@ module fe_response
       ! degree-independent element fields
       real(wp), allocatable :: r(:)                     !! node radii (nr)
       real(wp), allocatable :: mu(:), Mk(:)             !! (ne) shear, M=μΔt/η
+      ! True only for genuinely viscous (Maxwell) elements. Elastic layers carry
+      ! η=huge ⇒ MkPerDt=μ/huge≈3e-298 (tiny but NONZERO), so a `MkPerDt==0` test
+      ! catches only the inviscid core. The lateral-viscosity advance and the
+      ! node→element bridge key off this flag so the elastic lithosphere is left
+      ! exactly elastic (not overwritten by a loaded 3D field).
+      logical,  allocatable :: is_maxwell(:)            !! (ne)
       ! Rung 6 — laterally-varying viscosity (3D). When lat_visc is set the Maxwell
       ! memory advance goes pseudo-spectral: the lateral product M(θ,φ)·τ couples
       ! harmonics, so per (element, component, radial shape-coeff) the memory and
@@ -221,6 +227,7 @@ module fe_response
       procedure :: horizontal  => ve_response_horizontal
       procedure :: commit_step => ve_response_commit
       procedure :: enable_lateral_visc => ve_response_enable_lateral_visc
+      procedure :: enable_lateral_visc_from_nodes => ve_response_enable_lateral_visc_from_nodes
       procedure :: prepare_endpoint   => ve_response_prepare_endpoint
       procedure :: advance_endpoint   => ve_response_advance_endpoint
       procedure :: endpoint_converged => ve_response_endpoint_converged
@@ -412,10 +419,12 @@ contains
       ! degree-independent element fields: node radii, shear, Maxwell factor
       allocate(self%r(self%nr));  self%r = mesh%r
       allocate(self%mu(self%ne), self%Mk(self%ne), self%MkPerDt(self%ne))
+      allocate(self%is_maxwell(self%ne))
       do e = 1, self%ne
          lay = mesh%elem_layer(e)
          self%mu(e) = earth%layers(lay)%mu
          eta_e      = earth%layers(lay)%eta
+         self%is_maxwell(e) = (earth%layers(lay)%rheology == RHEOL_MAXWELL)
          if (eta_e > 0.0_wp) then
             self%Mk(e)      = self%mu(e)*dt/eta_e     ! historical form (byte-identical)
             self%MkPerDt(e) = self%mu(e)/eta_e        ! Δt-invariant; set_dt rescales Mk
@@ -746,6 +755,38 @@ contains
       self%lat_visc = .true.
    end subroutine ve_response_enable_lateral_visc
 
+   subroutine ve_response_enable_lateral_visc_from_nodes(self, sht, visc_node)
+      !! Rung 6c — enable laterally-varying viscosity from a NODE-based ABSOLUTE
+      !! log10(η) field on the Gauss grid, visc_node(nphi*nlat, nr) (as produced by
+      !! fe_read_visc_3d). Bridges node→element by the log10-mean of the two
+      !! bracketing nodes (geometric mean of η), forms the per-element log10
+      !! perturbation against the element's radial reference viscosity
+      !! η_radial(e) = μ(e)/MkPerDt(e), and calls enable_lateral_visc. Elastic/
+      !! fluid elements (MkPerDt=0) keep pert=0 — irrelevant, they stay memory-free.
+      class(ve_response), intent(inout) :: self
+      type(sht_grid),     intent(in)    :: sht
+      real(wp),           intent(in)    :: visc_node(:,:)   !! (nphi*nlat, nr) log10(η)
+      real(wp), allocatable :: pert(:,:,:)
+      real(wp) :: elem_abs, logeta_ref
+      integer  :: e, i, j, sp
+      if (size(visc_node,1) /= sht%nphi*sht%nlat .or. size(visc_node,2) /= self%nr) &
+         error stop 'enable_lateral_visc_from_nodes: visc_node must be (nphi*nlat, nr)'
+      allocate(pert(sht%nphi, sht%nlat, self%ne));  pert = 0.0_wp
+      do e = 1, self%ne
+         if (.not. self%is_maxwell(e)) cycle              ! elastic/fluid: stay as-is
+         logeta_ref = log10(self%mu(e)/self%MkPerDt(e))    ! log10 η_radial(e) (μ/MkPerDt)
+         do j = 1, sht%nlat
+            do i = 1, sht%nphi
+               sp = i + (j-1)*sht%nphi
+               elem_abs = 0.5_wp*(visc_node(sp,e) + visc_node(sp,e+1))   ! log10-mean of nodes
+               pert(i,j,e) = elem_abs - logeta_ref
+            end do
+         end do
+      end do
+      call self%enable_lateral_visc(sht, pert)
+      deallocate(pert)
+   end subroutine ve_response_enable_lateral_visc_from_nodes
+
    subroutine advance_memory_3d(self, sht, sigma_lm)
       !! Tensor-correct pseudo-spectral FE memory advance for laterally-varying
       !! viscosity (rung 6, general order). The Maxwell update τ⁺=(1−M)τ−2μM·ε is
@@ -770,9 +811,10 @@ contains
       allocate(dtau(sht%nphi,sht%nlat,6), deps(sht%nphi,sht%nlat,6))
 
       do e = 1, self%ne
-         ! Elastic/fluid elements carry no Maxwell memory (MkPerDt=0 ⇒ Mk3=0), so the
-         ! advance τ⁺=(1−0)τ−0 is the identity — skip them exactly (no transforms).
-         if (self%MkPerDt(e) == 0.0_wp) cycle
+         ! Elastic/fluid elements carry no Maxwell memory, so the advance
+         ! τ⁺=(1−0)τ−0 is the identity — skip them exactly (no transforms). NB the
+         ! elastic lithosphere has MkPerDt≈3e-298 (η=huge), not 0, so key off the flag.
+         if (.not. self%is_maxwell(e)) cycle
          call gather_tensor_coeffs(self, sigma_lm, e, cma, cmb, cmc, cea, ceb, cec)
          call advance_shape_tensor(self, sht, e, cma, cea, dtau, deps)
          call advance_shape_tensor(self, sht, e, cmb, ceb, dtau, deps)
@@ -1091,6 +1133,7 @@ contains
       end if
       if (allocated(self%r))      deallocate(self%r)
       if (allocated(self%mu))     deallocate(self%mu)
+      if (allocated(self%is_maxwell)) deallocate(self%is_maxwell)
       if (allocated(self%Mk3))      deallocate(self%Mk3)
       if (allocated(self%MkPerDt3)) deallocate(self%MkPerDt3)
       if (self%lat_visc) call self%tsh%destroy()
