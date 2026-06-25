@@ -36,7 +36,7 @@
     rheology = 0, 1, 1, 1, 2
 
     ! --- viscoelastic memory scheme (fe_response) ---------------------
-    scheme          = "trap"   ! fe | etd1 | trap | be  (trap = 2nd-order adaptive)
+    scheme          = "fe"     ! fe | etd1 | trap | be  (fe = 1st-order explicit, default; trap = 2nd-order adaptive)
     max_couple_iter = 20       ! SLE<->memory co-convergence cap (implicit schemes)
 
     ! --- sea-level equation (fe_sle) ----------------------------------

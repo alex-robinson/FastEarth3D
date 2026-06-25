@@ -43,7 +43,7 @@ module fe_params
       integer  :: rheology(MAX_LAYER) = 1      !! custom: 0=elastic 1=Maxwell 2=fluid
 
       ! --- viscoelastic memory scheme (fe_response / fe_viscoelastic) ------------
-      character(len=8) :: scheme = "trap"      !! fe | etd1 | trap | be
+      character(len=8) :: scheme = "fe"        !! fe | etd1 | trap | be
       integer  :: max_couple_iter = 20         !! SLE<->memory co-convergence cap (implicit schemes)
 
       ! --- sea-level equation (fe_sle) ------------------------------------------

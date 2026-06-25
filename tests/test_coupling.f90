@@ -40,11 +40,11 @@ program test_coupling
    bed_eq_ice = z_bed_eq(1,jice)
 
    dt_couple    = 2.0_wp*kyr                        ! interval per se%update call
-   p%dt_couple  = dt_couple                         ! default cadence (M3-L70-V01, trapezoidal)
+   p%dt_couple  = dt_couple                         ! default cadence (M3-L70-V01, default fe scheme)
    call se%init(p, sht, z_bed_eq, h_ice_ref)
 
    write(*,'(a,i0,a)') ' coupling: lmax=', LMAX, &
-                       '  (dt_couple=2 kyr, adaptive trapezoidal)'
+                       '  (dt_couple=2 kyr, default fe scheme)'
 
    ! --- (0) reference consistency: no ice change -> no motion -----------------
    call se%update(h_ice_ref, dt_couple)

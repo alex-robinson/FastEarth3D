@@ -9,7 +9,7 @@ bindir  = bin
 
 # === Command-line switches ===================================================
 debug  ?= 0     # 0 = optimized, 1 = debug/checks, 2 = profile
-openmp ?= 0     # 0 = serial dependency variants, 1 = OpenMP variants
+openmp ?= 1     # 0 = serial dependency variants, 1 = OpenMP variants (default on)
 
 defaulttarget: usage
 
