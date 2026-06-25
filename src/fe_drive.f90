@@ -109,6 +109,11 @@ contains
          call se%update(ice_lgm, 0.0_wp)                        ! seed entering ice, no integration
       end if
 
+      ! 1-D/3-D layer split diagnostic: how many elements are genuinely laterally 3-D
+      ! (pay the pseudo-spectral tensor-SH advance) vs collapse to the cheap 1-D path.
+      if (p%l_visc_3d) write(*,'(a,i0,a,i0,a)') ' visc3d split: ', se%resp%ne3d, &
+           ' of ', se%resp%ne, ' radial elements laterally 3-D (rest advance as 1-D)'
+
       ! --- march the transient --------------------------------------------------
       t0 = tyr(k0)*sec_per_year
       se%time = t0;  se%resp%time = t0

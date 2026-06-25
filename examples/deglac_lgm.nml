@@ -23,7 +23,9 @@
     h_ice_ref_file = "data/reference/rtopo_gauss_l64.nc"
     name_z_bed_ref = "bedrock_topography"
     name_h_ice_ref = "ice_thickness"
-    dt_equil       = 0.0       ! >0 to enable the ice-free paleotopo spin-up instead
+    dt_equil       = 10000.0   ! ice-free paleotopo spin-up [yr/pass]; >0 equilibrates
+                               ! the LGM state first (else i_eq=1 starts at the present-day
+                               ! reference with zero memory -> a zero/un-equilibrated slice 0)
 
     dt_couple    = 100.0       ! [years] slice spacing
 
