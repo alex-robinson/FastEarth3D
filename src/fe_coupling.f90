@@ -31,7 +31,7 @@ module fe_coupling
    use fe_viscoelastic,    only: scheme_from_name
    use fe_response,        only: ve_response
    use fe_sle,             only: sle_solver, sle_result, ocean_function
-   use fe_timestep,        only: adaptive_stepper
+   use fe_timestep,        only: stepper_advance, adaptive_stepper
    use fe_rotation,        only: rotation_state
    implicit none
    private
@@ -190,7 +190,7 @@ contains
          call self%rotation%begin_step(self%sht, dt)
          call self%rotation%s_rot(self%sht, self%s_rot)
          allocate(sigma_lm(self%sht%nlm))
-         call self%stepper%advance(self%sht, self%resp, self%sle, self%z_bed_eq, &
+         call stepper_advance(self%stepper, self%sht, self%resp, self%sle, self%z_bed_eq, &
                                    self%h_ice, h_ice, self%h_ice_ref, t0, t1, &
                                    self%rsl, self%C, s_rot=self%s_rot, sigma_out=sigma_lm)
          ! Advance the polar motion to the end of the interval under the end-of-interval
@@ -207,7 +207,7 @@ contains
             call self%rotation%update(self%sht, load, dt_sub)
          end do
       else
-         call self%stepper%advance(self%sht, self%resp, self%sle, self%z_bed_eq, &
+         call stepper_advance(self%stepper, self%sht, self%resp, self%sle, self%z_bed_eq, &
                                    self%h_ice, h_ice, self%h_ice_ref, t0, t1, &
                                    self%rsl, self%C)
       end if

@@ -33,6 +33,7 @@ module fe_timestep
    private
 
    public :: adaptive_stepper
+   public :: stepper_advance
 
    type :: adaptive_stepper
       !! Embedded step-doubling controller. Tolerances are on the memory ∞-norm (the
@@ -65,8 +66,6 @@ module fe_timestep
       integer  :: n_floor   = 0           !! steps accepted at dt_min over tolerance
       integer  :: n_solve   = 0           !! SLE solves issued (the dominant cost unit)
       real(wp) :: worst_mass_resid = 0.0_wp  !! worst SLE mass residual over the LAST advance()
-   contains
-      procedure :: advance => stepper_advance
    end type adaptive_stepper
 
 contains
@@ -78,7 +77,7 @@ contains
       !! d_ice(t) = ice(t) − ice_ref (total change from the reference state). Δt is
       !! chosen adaptively; on return resp holds the end-of-interval memory at t1 and
       !! rsl/C hold the converged sea-level fields there.
-      class(adaptive_stepper),  intent(inout) :: self
+      type(adaptive_stepper),  intent(inout) :: self
       type(sht_grid),           intent(in)    :: sht
       class(ve_response),       intent(inout) :: resp
       type(sle_solver),         intent(inout) :: sle
