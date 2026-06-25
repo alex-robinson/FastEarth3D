@@ -103,9 +103,9 @@ contains
       real(wp), allocatable :: rsl_n(:,:), ice_now(:,:), dice_now(:,:)
       complex(wp), allocatable :: sig0(:), sig_last(:)
       real(wp) :: t, dt, err_inf, tau_inf, errsc, fac, ricfac, expo, span
-      real(wp) :: rate, dt_stab, tau0
+      real(wp) :: rate, dt_stab, tau0, tau_run, scale
       integer  :: p, np, nl, n_sub
-      logical  :: at_floor, accept
+      logical  :: at_floor, accept, finite
 
       span = t1 - t0
       if (span <= 0.0_wp) return
@@ -118,9 +118,13 @@ contains
          ! The 1st-order memory carries no embedded error signal, so step-doubling is
          ! meaningless. Instead the interval is divided into equal sub-steps sized by
          ! the Maxwell stability ceiling Δt ≤ cfl/max(μ/η) (M = μΔt/η ≤ cfl), and a
-         ! cheap reactive guard rolls back and halves a sub-step whose memory blows up
-         ! (a safety net for a stiffer-than-estimated structure that normally never
-         ! fires). VILMA advances its explicit memory the same way (small fixed Δt).
+         ! cheap reactive guard rolls back and halves a sub-step whose memory goes
+         ! non-finite OR grows past guard_growth× an ESTABLISHED memory scale (a safety
+         ! net for a stiffer-than-estimated structure that normally never fires). The
+         ! scale is the running max of the accepted memory norm, NOT a fixed floor —
+         ! otherwise the legitimate ramp-up of memory from the relaxed (τ≈0) start, where
+         ! the instantaneous norm is tiny, reads as runaway growth and trips false alarms.
+         ! VILMA advances its explicit memory the same way (small fixed Δt).
          np = sht%nphi;  nl = sht%nlat
          allocate(rsl_n(np,nl), ice_now(np,nl), dice_now(np,nl))
          rate = resp%max_rate()
@@ -134,6 +138,7 @@ contains
          n_sub = max(1, ceiling(span/dt_stab - 1.0e-9_wp))
          dt    = span/real(n_sub, wp)                 ! nominal (equal) sub-step
          t = t0
+         tau_run = resp%memory_norm()                ! established memory scale at entry
          do
             if (t >= t1 - 1.0e-9_wp*span) exit
             dt   = min(dt, t1 - t)
@@ -143,9 +148,15 @@ contains
             call resp%set_dt(dt)
             call solve_at(t + dt)                     ! advances memory by dt
             err_inf = resp%memory_norm()
-            accept = (err_inf <= huge(1.0_wp)) .and. &
-                     (err_inf <= self%guard_growth*(tau0 + self%atol))
+            finite  = (err_inf <= huge(1.0_wp))      ! .false. for NaN / +Inf
+            scale   = max(tau0, tau_run)             ! established memory magnitude
+            if (scale <= 0.0_wp) then
+               accept = finite                       ! no scale yet (relaxed): finite-only
+            else
+               accept = finite .and. (err_inf <= self%guard_growth*scale)
+            end if
             if (accept) then
+               tau_run = max(tau_run, err_inf)       ! grow the running scale
                t = t + dt;  self%n_accept = self%n_accept + 1
                dt = min(span/real(n_sub, wp), 2.0_wp*dt)   ! recover toward nominal
             else
