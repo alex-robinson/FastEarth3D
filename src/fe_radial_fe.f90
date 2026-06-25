@@ -26,7 +26,7 @@ module fe_radial_fe
    use fe_radial_integrals, only: elem_i1, elem_i2, elem_i3, elem_i4, &
                                   elem_i5, elem_i6, elem_i7, &
                                   elem_k1, elem_k2, elem_k3
-   use fe_band,             only: band_lu
+   use fe_band,             only: band_lu, band_build, band_solve, band_destroy
    implicit none
    private
 
@@ -476,7 +476,7 @@ contains
          ! factors that one degree as a dense LU.
          block
             logical :: okband
-            call self%band%build(ns, p, rows, cols, vals, okband)
+            call band_build(self%band, ns, p, rows, cols, vals, okband)
             if (.not. okband) error stop 'radial_operator_assemble: band LU factorization failed'
          end block
       end block
@@ -541,7 +541,7 @@ contains
       end if
       bs(1:ns) = 0.0_wp                          ! border RHS (j=1 multiplier) is 0
       bs(1:nd) = self%dr * b                     ! equilibrate physical rows: b̂ = Dr b
-      call self%band%solve(bs(1:ns), y(1:ns))    ! direct banded LU (j=1: bordered)
+      call band_solve(self%band, bs(1:ns), y(1:ns))    ! direct banded LU (j=1: bordered)
       if (present(iters)) iters = 1              ! direct solve
       if (present(resid)) resid = 0.0_wp
       if (present(info))  info  = 0
@@ -567,7 +567,7 @@ contains
 
    subroutine radial_operator_destroy(self)
       class(radial_operator), intent(inout) :: self
-      call self%band%destroy()
+      call band_destroy(self%band)
       if (allocated(self%dr))   deallocate(self%dr)
       if (allocated(self%dc))   deallocate(self%dc)
       if (allocated(self%w))    deallocate(self%w)

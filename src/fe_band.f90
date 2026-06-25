@@ -14,16 +14,13 @@ module fe_band
    implicit none
    private
    public :: band_lu
+   public :: band_build, band_solve, band_destroy
 
    type :: band_lu
       integer :: n = 0, kl = 0, ku = 0, kv = 0, ldab = 0
       real(wp), allocatable :: ab(:,:)     !! (ldab, n) factored band storage
       integer,  allocatable :: ipiv(:)     !! (n) row pivots
       logical :: ready = .false.
-   contains
-      procedure :: build   => band_build
-      procedure :: solve   => band_solve
-      procedure :: destroy => band_destroy
    end type band_lu
 
 contains
@@ -31,14 +28,14 @@ contains
    subroutine band_build(self, n, nz, rows, cols, vals, ok)
       !! Build band storage from a COO matrix (entries may repeat — summed) and
       !! LU-factor it in place with partial pivoting.
-      class(band_lu), intent(inout) :: self
+      type(band_lu), intent(inout) :: self
       integer,  intent(in)  :: n, nz
       integer,  intent(in)  :: rows(:), cols(:)
       real(wp), intent(in)  :: vals(:)
       logical,  intent(out) :: ok
       integer :: t, i, j, kl, ku
 
-      call self%destroy()
+      call band_destroy(self)
       ! bandwidths from the sparsity pattern
       kl = 0;  ku = 0
       do t = 1, nz
@@ -113,7 +110,7 @@ contains
 
    subroutine band_solve(self, b, x)
       !! Solve A x = b for the factored system (LAPACK dgbtrs, no transpose).
-      class(band_lu), intent(in)  :: self
+      type(band_lu), intent(in)  :: self
       real(wp),       intent(in)  :: b(:)
       real(wp),       intent(out) :: x(:)
       integer  :: j, lm, l, i, kv
@@ -140,7 +137,7 @@ contains
    end subroutine band_solve
 
    subroutine band_destroy(self)
-      class(band_lu), intent(inout) :: self
+      type(band_lu), intent(inout) :: self
       if (allocated(self%ab))   deallocate(self%ab)
       if (allocated(self%ipiv)) deallocate(self%ipiv)
       self%n = 0;  self%kl = 0;  self%ku = 0;  self%kv = 0;  self%ldab = 0

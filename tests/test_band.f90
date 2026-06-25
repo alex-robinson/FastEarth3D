@@ -3,7 +3,7 @@ program test_band
    !! reference, including a saddle-point-style matrix with ZERO diagonal entries
    !! (which forces pivoting — the case the radial operator's pressure block hits).
    use fe_precision, only: wp
-   use fe_band,      only: band_lu
+   use fe_band,      only: band_lu, band_build, band_solve, band_destroy
    implicit none
    logical :: ok
    ok = .true.
@@ -47,14 +47,14 @@ contains
       do j = 1, n; do i = max(1,j-ku), min(n,j+kl)
          t = t+1; rows(t)=i; cols(t)=j; vals(t)=A(i,j)
       end do; end do
-      call blu%build(n, nz, rows, cols, vals, okf)
-      call blu%solve(b, x)
+      call band_build(blu, n, nz, rows, cols, vals, okf)
+      call band_solve(blu, b, x)
       call dense_solve(n, A, b, xref)
       r = maxval(abs(x - xref)) / max(maxval(abs(xref)), 1.0_wp)
       write(*,'(a,i0,a,i0,a,i0,a,es10.2)') ' (1) random band n=',n,' kl=',kl,' ku=',ku, &
            '  rel err = ', r
       if (.not. okf .or. r > 1.0e-12_wp) then;  write(*,'(a)') '     FAIL';  ok=.false.;  end if
-      call blu%destroy();  deallocate(rows,cols,vals)
+      call band_destroy(blu);  deallocate(rows,cols,vals)
    end subroutine case_random_band
 
    subroutine case_zero_diagonal(ok)
@@ -73,13 +73,13 @@ contains
       b = [1.0_wp, 2.0_wp, 3.0_wp, 4.0_wp]
       nz = 0
       do j=1,n; do i=1,n; if (A(i,j)/=0.0_wp) then; nz=nz+1; rows(nz)=i; cols(nz)=j; vals(nz)=A(i,j); end if; end do; end do
-      call blu%build(n, nz, rows(1:nz), cols(1:nz), vals(1:nz), okf)
-      call blu%solve(b, x)
+      call band_build(blu, n, nz, rows(1:nz), cols(1:nz), vals(1:nz), okf)
+      call band_solve(blu, b, x)
       call dense_solve(n, A, b, xref)
       r = maxval(abs(x - xref)) / max(maxval(abs(xref)), 1.0_wp)
       write(*,'(a,es10.2)') ' (2) zero-diagonal (pivot required)  rel err = ', r
       if (.not. okf .or. r > 1.0e-12_wp) then;  write(*,'(a)') '     FAIL';  ok=.false.;  end if
-      call blu%destroy()
+      call band_destroy(blu)
    end subroutine case_zero_diagonal
 
    subroutine case_saddle(ok)
@@ -99,13 +99,13 @@ contains
       do i=1,n; b(i)=real(i,wp); end do
       nz=0
       do j=1,n; do i=1,n; if (A(i,j)/=0.0_wp) then; nz=nz+1; rows(nz)=i; cols(nz)=j; vals(nz)=A(i,j); end if; end do; end do
-      call blu%build(n, nz, rows(1:nz), cols(1:nz), vals(1:nz), okf)
-      call blu%solve(b, x)
+      call band_build(blu, n, nz, rows(1:nz), cols(1:nz), vals(1:nz), okf)
+      call band_solve(blu, b, x)
       call dense_solve(n, A, b, xref)
       r = maxval(abs(x - xref)) / max(maxval(abs(xref)), 1.0_wp)
       write(*,'(a,es10.2)') ' (3) saddle point (zero 2,2 block)   rel err = ', r
       if (.not. okf .or. r > 1.0e-12_wp) then;  write(*,'(a)') '     FAIL';  ok=.false.;  end if
-      call blu%destroy()
+      call band_destroy(blu)
    end subroutine case_saddle
 
    subroutine dense_solve(n, Ain, bin, x)
