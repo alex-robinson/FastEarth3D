@@ -8,6 +8,11 @@
 #
 #     ln -s ../fesm-utils fesm-utils
 #
+# fe_remap (conservative lon-lat -> Gauss remapping for the standalone driver) uses
+# the `coords` module, which lives on the fesm-utils `coords-dev` branch. Point the
+# symlink at a checkout on that branch and build its utils library:
+#     (in the fesm-utils checkout)  configme config && cd utils && make fesmutils-static
+#
 # SHTns (spherical-harmonic transforms) is built into fesm-utils with:
 #     cd fesm-utils && ./build.py -m <machine> -c <compiler> --component shtns
 # It links FFTW, which fesm-utils also builds. Serial variants are used by

@@ -19,6 +19,7 @@ obj_fastearth = \
 	$(objdir)/fe_timestep.o \
 	$(objdir)/fe_rotation.o \
 	$(objdir)/fe_coupling.o \
+	$(objdir)/fe_remap.o \
 	$(objdir)/fe_io.o \
 	$(objdir)/fe_drive.o \
 	$(objdir)/fastearth3d.o
@@ -49,6 +50,7 @@ $(objdir)/fe_coupling.o:         $(objdir)/fe_response.o $(objdir)/fe_sle.o \
                                  $(objdir)/fe_rotation.o $(objdir)/fe_earth_structure.o \
                                  $(objdir)/fe_sht.o $(objdir)/fe_params.o \
                                  $(objdir)/fe_timestep.o $(objdir)/fe_viscoelastic.o
+$(objdir)/fe_remap.o:            $(objdir)/fe_precision.o $(objdir)/fe_sht.o
 $(objdir)/fe_io.o:               $(objdir)/fe_coupling.o $(objdir)/fe_response.o \
                                  $(objdir)/fe_viscoelastic.o $(objdir)/fe_sht.o \
                                  $(objdir)/fe_constants.o
@@ -281,7 +283,12 @@ test_sle_subgrid: fastearth-static | $(bindir)
 		-o $(bindir)/test_sle_subgrid.x $(objdir)/libfastearth.a $(LFLAGS)
 	@echo "    $(bindir)/test_sle_subgrid.x is ready."
 
-TESTS = test_params test_drive test_band test_sht test_earth test_mesh test_integrals test_assembly test_love test_relax test_tidal test_rotation test_rotation_sle test_response test_sle test_flotation test_flotation_load test_ve_response test_tensor_sh test_response_3d test_sle_ve test_benchmark_love test_coupling test_restart test_benchmark_disc test_benchmark_martinec test_field test_sle_subgrid test_visc_load test_rotinv
+test_remap: fastearth-static | $(bindir)
+	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(testdir)/test_remap.f90 \
+		-o $(bindir)/test_remap.x $(objdir)/libfastearth.a $(LFLAGS)
+	@echo "    $(bindir)/test_remap.x is ready."
+
+TESTS = test_params test_drive test_band test_sht test_earth test_mesh test_integrals test_assembly test_love test_relax test_tidal test_rotation test_rotation_sle test_response test_sle test_flotation test_flotation_load test_ve_response test_tensor_sh test_response_3d test_sle_ve test_benchmark_love test_coupling test_restart test_benchmark_disc test_benchmark_martinec test_field test_sle_subgrid test_visc_load test_rotinv test_remap
 
 check: $(TESTS)
 	@echo ""
