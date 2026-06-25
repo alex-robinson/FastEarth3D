@@ -26,14 +26,17 @@ program test_response_3d
    type(sht_grid)     :: sht
    type(earth_model)  :: e
    real(wp) :: dt
+   integer  :: nk1                  ! # degree-1 slots (contiguous at the start)
    logical  :: ok
 
    ok = .true.
    dt = 0.02_wp*kyr                 ! 20 yr explicit step (VEGA)
-   ! Axisymmetric (mmax=0): the corrected lateral-viscosity advance reconstructs the
-   ! strain/stress tensor on the grid via the dyadic transforms, which are presently
-   ! axisymmetric. nlat=3*lmax de-aliases the spin-2 (G) dyadic channel.
-   call sht%init(LMAX, nlat=3*LMAX, nphi=2, mmax=0)
+   ! Non-axisymmetric (mmax=lmax): the corrected lateral-viscosity advance reconstructs
+   ! the strain/stress tensor on the grid via the general-order dyadic transforms. A
+   ! uniform M still reduces to the 1-D advance per (l,m), so this exercises the full
+   ! m>0 path. nlat/nphi = 3*lmax de-alias the spin-2 (G,H) dyadic channels.
+   call sht%init(LMAX, nlat=3*LMAX, nphi=3*LMAX, mmax=LMAX)
+   nk1 = min(1, sht%mmax) + 1        ! degree-1 orders m=0..min(1,mmax)
    e = build_M3L70V01()
 
    write(*,'(a)') ' (1) zero perturbation: lateral path == 1-D ve_response'
@@ -57,15 +60,21 @@ program test_response_3d
 contains
 
    subroutine build_load(slm)
-      !! Deterministic axisymmetric (m=0) multi-degree real-field load: every degree
-      !! up to LMAX populated, so the tensor dyadic round-trip is exercised across
-      !! degrees while the problem stays axisymmetric (the lateral-visc advance is m=0).
+      !! Deterministic NON-axisymmetric real-field load: every (l,m) up to LMAX
+      !! populated (m=0 real; m>0 complex), so the general-order dyadic path and the
+      !! m>0 advance are exercised.
       complex(wp), intent(out) :: slm(:)
-      integer  :: l, lm
+      integer  :: l, m, lm
       slm = (0.0_wp, 0.0_wp)
       do l = 1, LMAX
-         lm = sht%lmidx(l, 0)
-         slm(lm) = cmplx(1000.0_wp/real(l*l, wp), 0.0_wp, wp)
+         do m = 0, l
+            lm = sht%lmidx(l, m)
+            if (m == 0) then
+               slm(lm) = cmplx(1000.0_wp/real(l*l, wp), 0.0_wp, wp)
+            else
+               slm(lm) = cmplx(700.0_wp/real(l*l, wp), 400.0_wp/real(l*(m+1), wp), wp)
+            end if
+         end do
       end do
    end subroutine build_load
 
@@ -78,7 +87,7 @@ contains
       real(wp), intent(in) :: a(:,:,:), b(:,:,:)
       real(wp), allocatable :: da(:,:,:)
       da = a - b
-      da(4,:,1) = 0.0_wp
+      da(4,:,1:nk1) = 0.0_wp          ! λ=6 has no degree-1 harmonic (all its orders)
       d = maxval(abs(da))
    end function mem_diff
 

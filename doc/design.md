@@ -313,10 +313,10 @@ displacement `u`.
    for any lon-lat input, but built later. **Physics first.**
 
 **Rung 6 (3D laterally-varying viscosity) — 6a/6b DONE (§12).** Tensor-correct
-pseudo-spectral memory advance (`fe_tensor_sh`), validated against the Weerdesteijn
-et al. (2023) ASPECT/Abaqus/TABOO low-viscosity-zone benchmark to 1–3% (axisymmetric;
-general `mmax`, TRAP-3D, real-field loading are follow-ups). Rung 5 (rotation) is
-DONE — 5a/5b/5c (§11).
+pseudo-spectral memory advance (`fe_tensor_sh`, general order `mmax≥0`), validated
+against the Weerdesteijn et al. (2023) ASPECT/Abaqus/TABOO low-viscosity-zone
+benchmark to 1–3%. Real-field (lon-lat) loading, TRAP-3D, and element-loop OpenMP are
+follow-ups. Rung 5 (rotation) is DONE — 5a/5b/5c (§11).
 
 ## 11. Rotational feedback / TPW (rung 5) — working notes
 
@@ -411,20 +411,31 @@ Lesson: validate the lateral coupling with a *non-uniform* M, not just uniform.
 `advance_memory_3d`; commits after 2026-06-25). The update `τ⁺=(1−M)τ−2μM·ε` is
 pointwise in PHYSICAL space (Martinec 2000 eq 102), so per radial element and per
 radial shape-coeff (A,B,C) the memory and strain TENSORS are reconstructed on the
-Gauss grid via their **dyadic components** (eqs 90/91, B10/B11), advanced pointwise
-with the lateral M-profile, and projected back. `fe_tensor_sh` (axisymmetric, m=0:
-F≡H≡0, four channels rr/rθ/trace/(θθ−φφ) using Y, E=∂_θY, −j(j+1)Y, G=(∂_θθ−cotθ∂_θ)Y)
-maps λ-coefficients ↔ dyadic grid fields; bases bootstrapped from SHTns (scalar +
-`sph_synthesis`; G from ∇₁²Y=−j(j+1)Y), per-channel orthogonal Gauss-quadrature
-analysis. `fe_viscoelastic` stays grid-unaware; `fe_response` owns the transform.
-Set via `ve%enable_lateral_visc(sht, pert_elem)` — per-element `(nphi,nlat,ne)` log10
-η perturbation, `η_eff=η·10^pert` ⇒ `MkPerDt3=(μ/η)·10^(−pert)`; elastic/fluid elements
-keep `MkPerDt=0` so the **lithosphere stays exactly elastic** and is skipped. FE scheme
-only; implicit TRAP-3D and general `mmax` (F,H≠0 + spin-2) are guarded follow-ups.
-Validated: `test_tensor_sh` — dyadic round trip = identity (4e-14) and the physical
-double-dot `∫τ:ε` (dyadic weights `[1,½,½,½]`) equals the spectral form with the B13
-norms (7e-16); `test_response_3d` (axisymmetric) — a uniform M reduces to the 1-D
-advance (memory ~2e-13, uplift ~4e-14), masking the inert λ=6 j=1 null component.
+Gauss grid via their six **dyadic components** (eqs 90/91, B10/B11), advanced pointwise
+with the lateral field M(θ,φ), and projected back. `fe_viscoelastic` stays grid-unaware;
+`fe_response` owns the transform. Set via `ve%enable_lateral_visc(sht, pert_elem)` —
+per-element `(nphi,nlat,ne)` log10 η perturbation, `η_eff=η·10^pert` ⇒
+`MkPerDt3=(μ/η)·10^(−pert)`; elastic/fluid elements keep `MkPerDt=0` so the
+**lithosphere stays exactly elastic** and is skipped. FE scheme only; implicit TRAP-3D
+is a guarded follow-up.
+
+`fe_tensor_sh` maps the spheroidal tensor-harmonic coefficients (λ=1,2,5,6) ↔ the six
+dyadic grid fields (rr, rθ, rφ, θθ, θφ, φφ) at GENERAL order. **Synthesis is exact via
+grid identities** (no recurrence, no re-analysis): rr/rθ,rφ/trace use SHTns scalar +
+spheroidal-vector synth; the spin-2 channel (G,H — the only piece SHTns has no routine
+for) uses ∂_φ = "multiply coeffs by im" and ∂_θθ via ∇₁²Y=−l(l+1)Y, giving
+`Sg=∇₁²f−2cotθ·g_θ−2(1/sinθ)∂_φ g_φ`, `Sh=(1/sinθ)∂_φ g_θ−cotθ·g_φ`. **Analysis**:
+channels 1/2/5 invert through SHTns's own scalar/vector analyses (the −l(l+1) factor
+for the trace); the spin-2 channel uses the adjoint of its synthesis (NB: the vector
+synth's ∫dΩ adjoint is l(l+1)·`spat_to_SHsphtor`, its *inverse* differing by the
+spheroidal norm l(l+1); and the θφ projection carries `e_θφ:e_θφ=½`), normalised by a
+per-degree factor calibrated once at init. Validated: `test_tensor_sh` (mmax>0) — round
+trip = identity (3e-14) and the physical `∫τ:τ` (dyadic weights `[1,1,1,½,½,½]`) equals
+`Σ_λ norm_λ|τ^λ|²` with the B13 norms (7e-16). `test_response_3d` (now NON-axisymmetric,
+mmax=lmax) — a uniform M reduces to the 1-D advance per (l,m) (memory ~5e-13, uplift
+~4e-14), masking the inert λ=6 degree-1 null (no Z⁶ there). Serial over elements: the
+dyadic transforms call SHTns, which is not safe for concurrent calls on one config —
+the element-loop OpenMP was reverted; per-thread configs would restore it (perf follow-up).
 
 **6b — LVZ benchmark vs Weerdesteijn et al. (2023) — DONE** (`test_benchmark_lvz`,
 standalone; not in `make check` — lmax 512 ≈ 67 s). Their §5.2 short-timescale case
@@ -441,12 +452,13 @@ ASPECT/Abaqus themselves differ 1–3% and ASPECT(no self-grav) vs TABOO(self-gr
 0.28% at the load center, so self-gravity/sphericity are sub-few-% here.
 
 **Open / next.**
-- **OpenMP over the element loop** in `advance_memory_3d` (embarrassingly parallel;
-  the matmul-based transforms are re-entrant) — would let the LVZ benchmark into
-  `make check`.
-- **General `mmax`** — F,H≠0; needs the spin-2 (G,H) transforms (SHTns has no direct
-  routine) via precomputed Gauss-grid basis matrices or repeated vector transforms.
-- **6c** — load a real 3D viscosity field from netCDF into `earth%visc_3d`
-  (node-based); bridge node→element by log10-mean of the bracketing nodes.
+- **6c** — load a real 3D (lon-lat) viscosity field from netCDF into `earth%visc_3d`
+  (node-based); bridge node→element by log10-mean of the bracketing nodes. This is
+  what the general-`mmax` advance unblocks.
+- **Element-loop OpenMP with per-thread SHTns configs** — restores the parallelism
+  reverted when the advance went SHTns-based (and would let the LVZ benchmark, ~81 s
+  serial at lmax 512, into `make check`).
 - **TRAP-3D** — extend the pointwise advance to the implicit trapezoidal rule
   (needed before the adaptive controller runs with lateral viscosity).
+- **Non-axisymmetric physical check** — an off-pole LVZ should give the same peak
+  uplift as on-pole by rotational invariance (a strong end-to-end m>0 test).

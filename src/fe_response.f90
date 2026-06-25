@@ -734,9 +734,6 @@ contains
       if (size(pert_elem,1) /= sht%nphi .or. size(pert_elem,2) /= sht%nlat .or. &
           size(pert_elem,3) /= self%ne) &
          error stop 'enable_lateral_visc: pert_elem must be (nphi,nlat,ne)'
-      if (sht%mmax /= 0) error stop &
-         'enable_lateral_visc: laterally-varying viscosity is axisymmetric-only &
-         &(mmax=0) for now; general mmax (spin-2 tensor transforms) is a follow-up.'
       call self%tsh%init(sht)
       if (allocated(self%Mk3))      deallocate(self%Mk3)
       if (allocated(self%MkPerDt3)) deallocate(self%MkPerDt3)
@@ -751,95 +748,99 @@ contains
 
    subroutine advance_memory_3d(self, sht, sigma_lm)
       !! Tensor-correct pseudo-spectral FE memory advance for laterally-varying
-      !! viscosity (rung 6, axisymmetric). The Maxwell update τ⁺=(1−M)τ−2μM·ε is
+      !! viscosity (rung 6, general order). The Maxwell update τ⁺=(1−M)τ−2μM·ε is
       !! pointwise in PHYSICAL space, so per radial element and per radial shape-
       !! coefficient (A,B,C) the memory and strain TENSORS are reconstructed on the
-      !! Gauss grid via their dyadic components (fe_tensor_sh; Martinec 2000 B10/B11),
-      !! advanced pointwise with the lateral M-profile, and projected back. Scalar-
-      !! synthesising the tensor-harmonic coefficients (the earlier 6a scaffold) was
-      !! wrong for a non-uniform M — the four λ are tensor, not scalar, harmonics.
-      !! Requires an axisymmetric grid (mmax=0; m=0 memory is real); general mmax
-      !! (F,H≠0, spin-2 transforms) is the follow-up. With a uniform M-profile the
-      !! dyadic round trip is the identity, so this reduces to the 1-D advance.
+      !! Gauss grid via their six dyadic components (fe_tensor_sh; Martinec 2000
+      !! B10/B11), advanced pointwise with the lateral field M(θ,φ), and projected
+      !! back. With a uniform M the dyadic round trip is the identity ⇒ reduces to the
+      !! 1-D advance. Serial over elements: the dyadic transforms call SHTns, which is
+      !! not safe for concurrent calls on one config (per-thread configs would restore
+      !! the element-loop parallelism — a perf follow-up).
       class(ve_response), intent(inout) :: self
       type(sht_grid),     intent(in)    :: sht
       complex(wp),        intent(in)    :: sigma_lm(:)
-      real(wp), allocatable :: ca(:,:), cb(:,:), cc(:,:)   ! memory shape-coeffs (TLAM,lmax)
-      real(wp), allocatable :: ea(:,:), eb(:,:), ec(:,:)   ! strain shape-coeffs (TLAM,lmax)
-      real(wp), allocatable :: Mlat(:)                     ! M(θ) for this element (nlat)
-      integer  :: e, k, j
+      complex(wp), allocatable :: cma(:,:), cmb(:,:), cmc(:,:)   ! memory coeffs (TLAM,nlm)
+      complex(wp), allocatable :: cea(:,:), ceb(:,:), cec(:,:)   ! strain coeffs (TLAM,nlm)
+      real(wp),    allocatable :: dtau(:,:,:), deps(:,:,:)        ! (nphi,nlat,6)
+      integer  :: e, k, lm
 
-      ! Parallel over radial elements: each writes a disjoint memory slab Are(:,e,:),
-      ! the dyadic transforms read the shared (read-only) tsh and write thread-local
-      ! scratch — embarrassingly parallel, re-entrant (matmul-based, no SHTns state).
-      !$omp parallel default(shared) private(e, k, j, ca, cb, cc, ea, eb, ec, Mlat)
-      allocate(ca(TLAM,self%lmax), cb(TLAM,self%lmax), cc(TLAM,self%lmax))
-      allocate(ea(TLAM,self%lmax), eb(TLAM,self%lmax), ec(TLAM,self%lmax))
-      allocate(Mlat(sht%nlat))
-      !$omp do schedule(dynamic)
+      allocate(cma(TLAM,sht%nlm), cmb(TLAM,sht%nlm), cmc(TLAM,sht%nlm))
+      allocate(cea(TLAM,sht%nlm), ceb(TLAM,sht%nlm), cec(TLAM,sht%nlm))
+      allocate(dtau(sht%nphi,sht%nlat,6), deps(sht%nphi,sht%nlat,6))
+
       do e = 1, self%ne
          ! Elastic/fluid elements carry no Maxwell memory (MkPerDt=0 ⇒ Mk3=0), so the
          ! advance τ⁺=(1−0)τ−0 is the identity — skip them exactly (no transforms).
          if (self%MkPerDt(e) == 0.0_wp) cycle
-         Mlat = self%Mk3(1,:,e)                            ! axisymmetric M-profile
-         call gather_tensor_coeffs(self, sigma_lm, e, ca, cb, cc, ea, eb, ec)
-         call advance_shape_tensor(self%tsh, Mlat, 2.0_wp*self%mu(e), ca, ea)
-         call advance_shape_tensor(self%tsh, Mlat, 2.0_wp*self%mu(e), cb, eb)
-         call advance_shape_tensor(self%tsh, Mlat, 2.0_wp*self%mu(e), cc, ec)
+         call gather_tensor_coeffs(self, sigma_lm, e, cma, cmb, cmc, cea, ceb, cec)
+         call advance_shape_tensor(self, sht, e, cma, cea, dtau, deps)
+         call advance_shape_tensor(self, sht, e, cmb, ceb, dtau, deps)
+         call advance_shape_tensor(self, sht, e, cmc, cec, dtau, deps)
          do k = 1, self%nk                                 ! write updated memory back
-            j = self%kdeg(k)
-            self%Are(:,e,k) = ca(:,j)
-            self%Bre(:,e,k) = cb(:,j)
-            self%Cre(:,e,k) = cc(:,j)
+            lm = self%k2lm(k)
+            self%Are(:,e,k) = real(cma(:,lm), wp);  self%Aim(:,e,k) = aimag(cma(:,lm))
+            self%Bre(:,e,k) = real(cmb(:,lm), wp);  self%Bim(:,e,k) = aimag(cmb(:,lm))
+            self%Cre(:,e,k) = real(cmc(:,lm), wp);  self%Cim(:,e,k) = aimag(cmc(:,lm))
          end do
       end do
-      !$omp end do
-      deallocate(ca, cb, cc, ea, eb, ec, Mlat)
-      !$omp end parallel
+
+      deallocate(cma, cmb, cmc, cea, ceb, cec, dtau, deps)
    end subroutine advance_memory_3d
 
-   subroutine gather_tensor_coeffs(self, sigma_lm, e, ca, cb, cc, ea, eb, ec)
-      !! Per element e, gather the memory shape-coeffs (Are/Bre/Cre) and the current
+   subroutine gather_tensor_coeffs(self, sigma_lm, e, cma, cmb, cmc, cea, ceb, cec)
+      !! Per element e, gather the memory shape-coeffs (Are/Aim …) and the current
       !! strain shape-coeffs (strain_coeffs of σ·xUn + drift, exactly as fe_advance)
-      !! into degree-indexed (TLAM, lmax) blocks for the dyadic transform. Real (m=0)
-      !! only — axisymmetric, so the imaginary memory channel is identically zero.
+      !! into complex (TLAM, nlm) blocks for the dyadic transform — all (l,m).
       class(ve_response), intent(in)  :: self
       complex(wp),        intent(in)  :: sigma_lm(:)
       integer,            intent(in)  :: e
-      real(wp),           intent(out) :: ca(:,:), cb(:,:), cc(:,:), ea(:,:), eb(:,:), ec(:,:)
-      real(wp) :: a(NLAM), b(NLAM), c(NLAM)
-      real(wp) :: sre, Ue, Ue1, Ve, Ve1
-      integer  :: k, l, lm, j
-      ca = 0.0_wp; cb = 0.0_wp; cc = 0.0_wp
-      ea = 0.0_wp; eb = 0.0_wp; ec = 0.0_wp
+      complex(wp),        intent(out) :: cma(:,:), cmb(:,:), cmc(:,:), cea(:,:), ceb(:,:), cec(:,:)
+      real(wp) :: ar(NLAM), br(NLAM), cr(NLAM), ai(NLAM), bi(NLAM), ci(NLAM)
+      real(wp) :: sre, sim, Ur, Ur1, Vr, Vr1, Ui, Ui1, Vi, Vi1
+      integer  :: k, l, lm, lam
+      cma = (0.0_wp,0.0_wp); cmb = (0.0_wp,0.0_wp); cmc = (0.0_wp,0.0_wp)
+      cea = (0.0_wp,0.0_wp); ceb = (0.0_wp,0.0_wp); cec = (0.0_wp,0.0_wp)
       do k = 1, self%nk
-         l  = self%kdeg(k);  lm = self%k2lm(k);  j = l
-         sre = real(sigma_lm(lm), wp)
-         Ue  = sre*self%xUn(e,  l) + self%dUn_re(e,  k)
-         Ue1 = sre*self%xUn(e+1,l) + self%dUn_re(e+1,k)
-         Ve  = sre*self%xVn(e,  l) + self%dVn_re(e,  k)
-         Ve1 = sre*self%xVn(e+1,l) + self%dVn_re(e+1,k)
-         call strain_coeffs(Ue, Ue1, Ve, Ve1, self%Jr(l), a, b, c)
-         ea(:,j) = a;  eb(:,j) = b;  ec(:,j) = c
-         ca(:,j) = self%Are(:,e,k);  cb(:,j) = self%Bre(:,e,k);  cc(:,j) = self%Cre(:,e,k)
+         l  = self%kdeg(k);  lm = self%k2lm(k)
+         sre = real(sigma_lm(lm), wp);  sim = aimag(sigma_lm(lm))
+         Ur  = sre*self%xUn(e,  l) + self%dUn_re(e,  k);  Ui  = sim*self%xUn(e,  l) + self%dUn_im(e,  k)
+         Ur1 = sre*self%xUn(e+1,l) + self%dUn_re(e+1,k);  Ui1 = sim*self%xUn(e+1,l) + self%dUn_im(e+1,k)
+         Vr  = sre*self%xVn(e,  l) + self%dVn_re(e,  k);  Vi  = sim*self%xVn(e,  l) + self%dVn_im(e,  k)
+         Vr1 = sre*self%xVn(e+1,l) + self%dVn_re(e+1,k);  Vi1 = sim*self%xVn(e+1,l) + self%dVn_im(e+1,k)
+         call strain_coeffs(Ur, Ur1, Vr, Vr1, self%Jr(l), ar, br, cr)
+         call strain_coeffs(Ui, Ui1, Vi, Vi1, self%Jr(l), ai, bi, ci)
+         do lam = 1, NLAM
+            cea(lam,lm) = cmplx(ar(lam), ai(lam), wp)
+            ceb(lam,lm) = cmplx(br(lam), bi(lam), wp)
+            cec(lam,lm) = cmplx(cr(lam), ci(lam), wp)
+            cma(lam,lm) = cmplx(self%Are(lam,e,k), self%Aim(lam,e,k), wp)
+            cmb(lam,lm) = cmplx(self%Bre(lam,e,k), self%Bim(lam,e,k), wp)
+            cmc(lam,lm) = cmplx(self%Cre(lam,e,k), self%Cim(lam,e,k), wp)
+         end do
       end do
    end subroutine gather_tensor_coeffs
 
-   subroutine advance_shape_tensor(tsh, Mlat, twoMu, c, eps)
+   subroutine advance_shape_tensor(self, sht, e, c, eps, dtau, deps)
       !! One radial shape-coefficient: reconstruct the memory τ and strain ε tensors
-      !! on the grid (dyadic components), apply τ⁺=(1−M)τ−2μM·ε pointwise per dyadic
-      !! component with the lateral M-profile, and project τ⁺ back. c is updated in place.
-      type(tensor_sh), intent(in)    :: tsh
-      real(wp),        intent(in)    :: Mlat(:), twoMu, eps(:,:)
-      real(wp),        intent(inout) :: c(:,:)
-      real(wp) :: dtau(tsh%nlat,4), deps(tsh%nlat,4)
-      integer  :: col
-      call tsh%synth(c,   dtau)
-      call tsh%synth(eps, deps)
-      do col = 1, 4
-         dtau(:,col) = (1.0_wp - Mlat)*dtau(:,col) - twoMu*Mlat*deps(:,col)
+      !! on the grid (six dyadic components), apply τ⁺=(1−M)τ−2μM·ε pointwise per
+      !! component with the lateral field M(θ,φ)=Mk3(:,:,e), and project τ⁺ back. c is
+      !! updated in place; dtau/deps are caller-provided scratch (nphi,nlat,6).
+      class(ve_response), intent(in)    :: self
+      type(sht_grid),     intent(in)    :: sht
+      integer,            intent(in)    :: e
+      complex(wp),        intent(inout) :: c(:,:)
+      complex(wp),        intent(in)    :: eps(:,:)
+      real(wp),           intent(inout) :: dtau(:,:,:), deps(:,:,:)
+      real(wp) :: twoMu
+      integer  :: p
+      twoMu = 2.0_wp*self%mu(e)
+      call self%tsh%synth(sht, c,   dtau)
+      call self%tsh%synth(sht, eps, deps)
+      do p = 1, 6
+         dtau(:,:,p) = (1.0_wp - self%Mk3(:,:,e))*dtau(:,:,p) - twoMu*self%Mk3(:,:,e)*deps(:,:,p)
       end do
-      call tsh%analysis(dtau, c)
+      call self%tsh%analysis(sht, dtau, c)
    end subroutine advance_shape_tensor
 
    subroutine snapshot_taun(self)

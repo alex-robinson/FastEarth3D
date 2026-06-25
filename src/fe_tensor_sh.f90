@@ -1,169 +1,251 @@
 module fe_tensor_sh
-   !! Axisymmetric tensor spherical-harmonic dyadic transforms (Martinec 2000,
-   !! Appendix B), the machinery rung 6 (laterally-varying viscosity) needs.
+   !! Tensor spherical-harmonic dyadic transforms (Martinec 2000, Appendix B), the
+   !! machinery rung 6 (laterally-varying viscosity) needs — GENERAL order (mmax≥0).
    !!
-   !! The Maxwell memory stress τ and the strain ε are second-order symmetric
-   !! tensors on the sphere, expanded in the spheroidal tensor spherical harmonics
-   !! Z^λ, λ∈{1,2,5,6} (the toroidal λ=3,4 drop). For lateral viscosity the update
-   !! τ⁺ = (1−M)τ − 2μM·ε is pointwise in PHYSICAL space, so the tensor must be
-   !! reconstructed on the grid via its dyadic components (eqs 90/91, B10/B11) and
-   !! projected back — scalar-synthesising the Z^λ coefficients is wrong (they are
-   !! tensor, not scalar, harmonics).
+   !! The Maxwell memory τ and strain ε are second-order symmetric tensors on the
+   !! sphere, expanded in the spheroidal tensor spherical harmonics Z^λ, λ∈{1,2,5,6}
+   !! (toroidal λ=3,4 drop). For lateral viscosity the update τ⁺=(1−M)τ−2μM·ε is
+   !! pointwise in PHYSICAL space, so the tensor is reconstructed on the grid via its
+   !! six dyadic components (eqs 90/91, B10/B11) and projected back. The six physical
+   !! components rr, rθ, rφ, θθ, θφ, φφ relate to the coefficients by
+   !!   rr        = Σ T¹ Y                          (Z¹)
+   !!   rθ, rφ    = Σ T² (E, F)                      (Z²,  E=∂_θY, F=(1/sinθ)∂_φY)
+   !!   θθ        = Σ [−l(l+1)T⁵ Y + T⁶ G]          (Z⁵ trace + Z⁶)
+   !!   φφ        = Σ [−l(l+1)T⁵ Y − T⁶ G]
+   !!   θφ        = Σ 4 T⁶ H                          (Z⁶,  G,H = B11 second derivatives)
    !!
-   !! For an AXISYMMETRIC field (m=0) the φ-derivative harmonics vanish (F≡H≡0), so
-   !! only four dyadic components are nonzero and each is a θ-only profile:
-   !!   rr  =  Σ_j T¹_j Y_j        (Z¹: e_rr,  scalar Y)
-   !!   rθ  =  Σ_j T²_j E_j        (Z²: e_rθ,  E=∂_θY)
-   !!   tr  =  θθ+φφ = Σ_j (−2j(j+1)) T⁵_j Y_j   (Z⁵ trace)
-   !!   df  =  θθ−φφ = Σ_j 2 T⁶_j G_j            (Z⁶, G=(∂_θθ−cotθ∂_θ)Y for m=0)
-   !! with θθ = (tr+df)/2, φφ = (tr−df)/2 and rφ = θφ = 0. Each channel uses an
-   !! orthogonal degree basis, so synthesis is a matrix·coeffs and analysis the
-   !! Gauss-quadrature adjoint (coeff = ⟨field, basis⟩_w / ‖basis‖²_w) — exact,
-   !! and a round trip is the identity (test_tensor_sh).
+   !! Synthesis is EXACT via grid identities — no recurrence, no re-analysis. The
+   !! spin-2 G,H (the only pieces SHTns has no routine for) come from scalar + vector
+   !! synths plus algebraic grid factors, using ∂_φ = "multiply coeffs by im" (exact
+   !! on the known input) and ∂_θθ via ∇₁²Y = −l(l+1)Y:
+   !!   Sg ≡ Σ T⁶ G = ∇₁²f − 2cotθ·g_θ − 2(1/sinθ)·∂_φ g_φ
+   !!   Sh ≡ Σ T⁶ H = (1/sinθ)·∂_φ g_θ − cotθ·g_φ
+   !! with f=synth(T⁶), (g_θ,g_φ)=sph_synth(T⁶), ∂_φ(·)=sph_synth(im·T⁶).
    !!
-   !! The bases are bootstrapped from SHTns itself (Y via scalar synth, E via the
-   !! spheroidal vector synth, G = −j(j+1)Y − 2cotθ·E from ∇₁²Y = −j(j+1)Y), so the
-   !! normalisation is automatically consistent with the rest of FastEarth3D.
+   !! Analysis: channels 1,2,5 invert through SHTns's own scalar/vector analyses (a
+   !! synth/analysis pair) with the −l(l+1) factor for the trace; the spin-2 channel 6
+   !! uses the adjoint of its synthesis (`Sg*`,`Sh*`) — the same ops with synth↔analysis
+   !! swapped — normalised by a per-degree factor calibrated once at init. Validated by
+   !! the round trip and the physical ∫τ:ε double-dot vs the B13 norms (test_tensor_sh).
    use fe_precision, only: wp
+   use fe_constants, only: pi
    use fe_sht,       only: sht_grid
    implicit none
    private
 
    public :: tensor_sh
-   ! Local component order 1..4 maps to Martinec's λ = 1,2,5,6 (as in strain_coeffs).
-   integer, parameter, public :: TLAM = 4
+   integer, parameter, public :: TLAM = 4          ! λ = 1,2,5,6 → local 1..4
+   ! Dyadic-field plane indices (the third dimension of the dyad array).
+   integer, parameter, public :: DY_RR = 1, DY_RT = 2, DY_RP = 3, &
+                                 DY_TT = 4, DY_TP = 5, DY_PP = 6
 
    type :: tensor_sh
-      !! Axisymmetric (m=0) tensor-SH dyadic transformer tied to one sht_grid.
-      integer :: lmax = 0, nlat = 0
-      ! Per-channel degree bases on the Gauss latitudes, (nlat, lmax):
-      real(wp), allocatable :: Brr(:,:)   !! rr  channel: Y_j
-      real(wp), allocatable :: Brt(:,:)   !! rθ  channel: E_j = ∂_θ Y_j
-      real(wp), allocatable :: Btr(:,:)   !! tr  channel: −2j(j+1) Y_j
-      real(wp), allocatable :: Bdf(:,:)   !! df  channel: 2 G_j
-      ! Analysis norms ‖basis‖²_w = Σ_i w_i B(i,j)², (lmax). Zero ⇒ that degree
-      ! has no such harmonic (Z⁶ at j=1) and its coefficient is identically zero.
-      real(wp), allocatable :: nrr(:), nrt(:), ntr(:), ndf(:)
-      real(wp), allocatable :: w(:)       !! Gauss weights (nlat), Σ = 2
+      integer :: lmax = 0, nlm = 0, nphi = 0, nlat = 0
+      integer,  allocatable :: ldeg(:)   !! (nlm) degree l of each coefficient
+      integer,  allocatable :: mord(:)   !! (nlm) order m of each coefficient
+      real(wp), allocatable :: llp1(:)   !! (nlm) l(l+1)
+      real(wp), allocatable :: cott(:)   !! (nlat) cotθ at the Gauss latitudes
+      real(wp), allocatable :: invsin(:) !! (nlat) 1/sinθ
+      real(wp), allocatable :: n6(:)     !! (0:lmax) spin-2 channel norm S₆*S₆ (calibrated)
    contains
       procedure :: init     => tensor_sh_init
-      procedure :: synth    => tensor_sh_synth      !! coeffs (TLAM,lmax) -> dyad fields (nlat,4)
-      procedure :: analysis => tensor_sh_analysis   !! dyad fields -> coeffs
+      procedure :: synth    => tensor_sh_synth      !! coeffs c(TLAM,nlm) -> dyad(nphi,nlat,6)
+      procedure :: analysis => tensor_sh_analysis   !! dyad(nphi,nlat,6) -> coeffs
       procedure :: destroy  => tensor_sh_destroy
    end type tensor_sh
-
-   ! Dyadic-field column order returned by synth / consumed by analysis.
-   integer, parameter, public :: DY_RR = 1, DY_RT = 2, DY_TR = 3, DY_DF = 4
 
 contains
 
    subroutine tensor_sh_init(self, sht)
-      !! Build the four degree bases from SHTns, axisymmetric (m=0).
       class(tensor_sh), intent(out) :: self
       type(sht_grid),   intent(in)  :: sht
-      complex(wp), allocatable :: slm(:)
-      real(wp),    allocatable :: y(:,:), vth(:,:), vph(:,:)
-      real(wp) :: jj, cott
-      integer  :: j, i, lm
+      complex(wp), allocatable :: c6(:), craw(:)
+      real(wp),    allocatable :: tt(:,:), pp(:,:), tp(:,:)
+      integer :: l, m, lm, i
 
-      self%lmax = sht%lmax;  self%nlat = sht%nlat
-      allocate(self%Brr(self%nlat,self%lmax), self%Brt(self%nlat,self%lmax))
-      allocate(self%Btr(self%nlat,self%lmax), self%Bdf(self%nlat,self%lmax))
-      allocate(self%nrr(self%lmax), self%nrt(self%lmax))
-      allocate(self%ntr(self%lmax), self%ndf(self%lmax))
-      allocate(self%w(self%nlat));  self%w = sht%gauss_w
-      allocate(slm(sht%nlm), y(sht%nphi,sht%nlat), vth(sht%nphi,sht%nlat), &
-               vph(sht%nphi,sht%nlat))
-
-      do j = 1, self%lmax
-         jj = real(j,wp)*real(j+1,wp)
-         lm = sht%lmidx(j, 0)
-         slm = (0.0_wp, 0.0_wp);  slm(lm) = (1.0_wp, 0.0_wp)
-         call sht%synthesis(slm, y)             ! Y_j(θ)         (column 1 = axisym profile)
-         call sht%sph_synthesis(slm, vth, vph)  ! E_j = ∂_θ Y_j  (vth)
-         do i = 1, self%nlat
-            cott = cos(sht%colat(i))/sin(sht%colat(i))
-            self%Brr(i,j) = y(1,i)
-            self%Brt(i,j) = vth(1,i)
-            self%Btr(i,j) = -2.0_wp*jj*y(1,i)
-            ! G_j = (∂_θθ − cotθ ∂_θ)Y_j = −j(j+1)Y_j − 2cotθ ∂_θ Y_j  (m=0)
-            self%Bdf(i,j) = 2.0_wp*( -jj*y(1,i) - 2.0_wp*cott*vth(1,i) )
+      self%lmax = sht%lmax;  self%nlm = sht%nlm
+      self%nphi = sht%nphi;  self%nlat = sht%nlat
+      allocate(self%ldeg(self%nlm), self%mord(self%nlm), self%llp1(self%nlm))
+      do m = 0, sht%mmax*sht%mres, sht%mres
+         do l = m, sht%lmax
+            lm = sht%lmidx(l, m)
+            self%ldeg(lm) = l;  self%mord(lm) = m
+            self%llp1(lm) = real(l,wp)*real(l+1,wp)
          end do
       end do
+      allocate(self%cott(self%nlat), self%invsin(self%nlat))
+      do i = 1, self%nlat
+         self%cott(i)   = cos(sht%colat(i))/sin(sht%colat(i))
+         self%invsin(i) = 1.0_wp/sin(sht%colat(i))
+      end do
 
-      ! Per-channel norms; degrees with a vanishing harmonic (Z⁶ at j=1, where the
-      ! analytic norm is exactly 0 but roundoff leaves ~1e-30) are zeroed relative to
-      ! the channel scale so analysis treats them as absent (coefficient ≡ 0) instead
-      ! of dividing by a numerical-noise norm.
-      self%nrr = clean(anorm(self%Brr, self%w))
-      self%nrt = clean(anorm(self%Brt, self%w))
-      self%ntr = clean(anorm(self%Btr, self%w))
-      self%ndf = clean(anorm(self%Bdf, self%w))
-
-      deallocate(slm, y, vth, vph)
+      ! Calibrate the spin-2 channel norm per degree: send a unit Z⁶ coefficient
+      ! through synthesis then its adjoint; the diagonal response is n6(l). Use a
+      ! representative order m (sectoral, m=l) so both G and H are present (l≥2).
+      allocate(self%n6(0:self%lmax));  self%n6 = 0.0_wp
+      allocate(c6(self%nlm), craw(self%nlm))
+      allocate(tt(self%nphi,self%nlat), pp(self%nphi,self%nlat), tp(self%nphi,self%nlat))
+      do l = 2, self%lmax
+         m = min(l, sht%mmax*sht%mres)
+         if (m < 1) cycle                     ! need m≥1 for H (else stays axisymmetric)
+         lm = sht%lmidx(l, m)
+         c6 = (0.0_wp, 0.0_wp);  c6(lm) = (1.0_wp, 0.0_wp)
+         call spin2_synth(self, sht, c6, tt, pp, tp)      ! Sg→±(tt,pp), 4Sh→tp
+         call spin2_adjoint(self, sht, tt, pp, tp, craw)  ! raw S₆* (unnormalised)
+         self%n6(l) = real(craw(lm), wp)
+      end do
+      ! Axisymmetric fallback: for runs with mmax=0 the sectoral calibration above is
+      ! skipped (m<1); calibrate at m=0 (H≡0, only G contributes) so 1-D still works.
+      if (sht%mmax == 0) then
+         do l = 2, self%lmax
+            lm = sht%lmidx(l, 0)
+            c6 = (0.0_wp, 0.0_wp);  c6(lm) = (1.0_wp, 0.0_wp)
+            call spin2_synth(self, sht, c6, tt, pp, tp)
+            call spin2_adjoint(self, sht, tt, pp, tp, craw)
+            self%n6(l) = real(craw(lm), wp)
+         end do
+      end if
+      deallocate(c6, craw, tt, pp, tp)
    end subroutine tensor_sh_init
 
-   pure function clean(d) result(dc)
-      !! Zero entries negligible relative to the channel's largest norm.
-      real(wp), intent(in) :: d(:)
-      real(wp) :: dc(size(d))
-      dc = merge(d, 0.0_wp, d > 1.0e-12_wp*maxval(d))
-   end function clean
+   ! --- synthesis -------------------------------------------------------------
 
-   pure function anorm(B, w) result(d)
-      !! Per-degree quadrature norm Σ_i w_i B(i,j)².
-      real(wp), intent(in) :: B(:,:), w(:)
-      real(wp) :: d(size(B,2))
-      integer  :: j
-      do j = 1, size(B,2)
-         d(j) = sum(w*B(:,j)*B(:,j))
-      end do
-   end function anorm
-
-   subroutine tensor_sh_synth(self, c, dyad)
-      !! Tensor-harmonic coefficients c(λ=1..4, degree) -> dyadic grid fields
-      !! dyad(nlat, {rr,rθ,tr,df}).
+   subroutine tensor_sh_synth(self, sht, c, dyad)
+      !! Tensor-harmonic coefficients c(λ=1..4, nlm) → six dyadic grid fields.
       class(tensor_sh), intent(in)  :: self
-      real(wp),         intent(in)  :: c(:,:)      !! (TLAM, lmax): rows λ=1,2,5,6
-      real(wp),         intent(out) :: dyad(:,:)   !! (nlat, 4)
-      dyad(:,DY_RR) = matmul(self%Brr, c(1,:))
-      dyad(:,DY_RT) = matmul(self%Brt, c(2,:))
-      dyad(:,DY_TR) = matmul(self%Btr, c(3,:))
-      dyad(:,DY_DF) = matmul(self%Bdf, c(4,:))
+      type(sht_grid),   intent(in)  :: sht
+      complex(wp),      intent(in)  :: c(:,:)        !! (TLAM, nlm)
+      real(wp),         intent(out) :: dyad(:,:,:)   !! (nphi, nlat, 6)
+      complex(wp) :: scaled(self%nlm)
+      real(wp)    :: tr(self%nphi,self%nlat), sg(self%nphi,self%nlat), sh(self%nphi,self%nlat)
+      real(wp)    :: tt(self%nphi,self%nlat), pp(self%nphi,self%nlat), tp(self%nphi,self%nlat)
+      ! rr (Z¹) and rθ,rφ (Z²)
+      call sht%synthesis(c(1,:), dyad(:,:,DY_RR))
+      call sht%sph_synthesis(c(2,:), dyad(:,:,DY_RT), dyad(:,:,DY_RP))
+      ! trace from Z⁵:  −l(l+1) Y
+      scaled = -self%llp1*c(3,:)
+      call sht%synthesis(scaled, tr)
+      ! spin-2 from Z⁶
+      call spin2_synth(self, sht, c(4,:), tt, pp, tp)   ! tt=Sg, pp=−Sg, tp=4Sh
+      sg = tt
+      dyad(:,:,DY_TT) = tr + sg
+      dyad(:,:,DY_PP) = tr - sg
+      dyad(:,:,DY_TP) = tp
    end subroutine tensor_sh_synth
 
-   subroutine tensor_sh_analysis(self, dyad, c)
-      !! Dyadic grid fields -> tensor-harmonic coefficients (orthogonal projection,
-      !! Gauss quadrature). Degrees with a zero basis norm (Z⁶ at j=1) give 0.
+   subroutine spin2_synth(self, sht, c6, tt, pp, tp)
+      !! Z⁶ contribution: tt=Sg=Σc6·G, pp=−Sg, tp=4Sh=4Σc6·H, via the exact grid
+      !! identities (no recurrence, no re-analysis).
       class(tensor_sh), intent(in)  :: self
-      real(wp),         intent(in)  :: dyad(:,:)   !! (nlat, 4)
-      real(wp),         intent(out) :: c(:,:)      !! (TLAM, lmax)
-      call project(dyad(:,DY_RR), self%Brr, self%w, self%nrr, c(1,:))
-      call project(dyad(:,DY_RT), self%Brt, self%w, self%nrt, c(2,:))
-      call project(dyad(:,DY_TR), self%Btr, self%w, self%ntr, c(3,:))
-      call project(dyad(:,DY_DF), self%Bdf, self%w, self%ndf, c(4,:))
-   end subroutine tensor_sh_analysis
+      type(sht_grid),   intent(in)  :: sht
+      complex(wp),      intent(in)  :: c6(:)
+      real(wp),         intent(out) :: tt(:,:), pp(:,:), tp(:,:)
+      complex(wp) :: imc(self%nlm)
+      real(wp) :: f(self%nphi,self%nlat), gt(self%nphi,self%nlat), gp(self%nphi,self%nlat)
+      real(wp) :: gtf(self%nphi,self%nlat), gpf(self%nphi,self%nlat)
+      real(wp) :: lap(self%nphi,self%nlat), sg(self%nphi,self%nlat), sh(self%nphi,self%nlat)
+      imc = cmplx(0.0_wp, real(self%mord,wp), wp)*c6            ! im·c6  (= ∂_φ on coeffs)
+      call sht%synthesis(c6, f)
+      call sht%sph_synthesis(c6, gt, gp)                        ! g_θ, g_φ
+      call sht%sph_synthesis(imc, gtf, gpf)                     ! ∂_φ g_θ, ∂_φ g_φ
+      call sht%synthesis(cmplx(-self%llp1,0.0_wp,wp)*c6, lap)   ! ∇₁²f = −l(l+1)f
+      ! Sg = ∇₁²f − 2cotθ g_θ − 2(1/sinθ)∂_φ g_φ ;  Sh = (1/sinθ)∂_φ g_θ − cotθ g_φ
+      sg = lap - 2.0_wp*byprof(gt, self%cott) - 2.0_wp*byprof(gpf, self%invsin)
+      sh =        byprof(gtf, self%invsin)     -        byprof(gp,  self%cott)
+      tt = sg;  pp = -sg;  tp = 4.0_wp*sh
+   end subroutine spin2_synth
 
-   pure subroutine project(field, B, w, nrm, c)
-      !! c_j = ⟨field, B(:,j)⟩_w / ‖B(:,j)‖²_w, or 0 where the norm vanishes.
-      real(wp), intent(in)  :: field(:), B(:,:), w(:), nrm(:)
-      real(wp), intent(out) :: c(:)
-      integer :: j
-      do j = 1, size(B,2)
-         if (nrm(j) > 0.0_wp) then
-            c(j) = sum(w*field*B(:,j)) / nrm(j)
+   ! --- analysis --------------------------------------------------------------
+
+   subroutine tensor_sh_analysis(self, sht, dyad, c)
+      !! Six dyadic grid fields → tensor-harmonic coefficients.
+      class(tensor_sh), intent(in)    :: self
+      type(sht_grid),   intent(in)    :: sht
+      real(wp),         intent(inout) :: dyad(:,:,:)   !! (nphi,nlat,6); SHTns overwrites
+      complex(wp),      intent(out)   :: c(:,:)        !! (TLAM, nlm)
+      complex(wp) :: craw(self%nlm)
+      real(wp)    :: vt(self%nphi,self%nlat), vp(self%nphi,self%nlat)
+      integer     :: lm
+      ! rr (Z¹): scalar analysis (inverse of synth)
+      call sht%analysis(dyad(:,:,DY_RR), c(1,:))
+      ! rθ,rφ (Z²): spheroidal vector analysis (inverse of sph_synth)
+      vt = dyad(:,:,DY_RT);  vp = dyad(:,:,DY_RP)
+      call sht%sph_analysis(vt, vp, c(2,:))
+      ! trace (Z⁵): analysis(θθ+φφ) = −2 l(l+1) T⁵
+      vt = dyad(:,:,DY_TT) + dyad(:,:,DY_PP)
+      call sht%analysis(vt, craw)
+      do lm = 1, self%nlm
+         if (self%llp1(lm) > 0.0_wp) then
+            c(3,lm) = craw(lm)/(-2.0_wp*self%llp1(lm))
          else
-            c(j) = 0.0_wp
+            c(3,lm) = (0.0_wp, 0.0_wp)
          end if
       end do
-   end subroutine project
+      ! spin-2 (Z⁶): adjoint of spin2_synth, normalised by the calibrated per-degree n6
+      call spin2_adjoint(self, sht, dyad(:,:,DY_TT), dyad(:,:,DY_PP), dyad(:,:,DY_TP), craw)
+      do lm = 1, self%nlm
+         if (self%n6(self%ldeg(lm)) /= 0.0_wp) then
+            c(4,lm) = craw(lm)/self%n6(self%ldeg(lm))
+         else
+            c(4,lm) = (0.0_wp, 0.0_wp)
+         end if
+      end do
+   end subroutine tensor_sh_analysis
+
+   subroutine spin2_adjoint(self, sht, dtt, dpp, dtp, craw)
+      !! Unnormalised adjoint of spin2_synth: craw = S_g*(θθ−φφ) + S_h*(θφ), where the
+      !! *-operators swap each forward op (synth↔analysis, grid-multiply self-adjoint,
+      !! im → −im). The ∫dΩ adjoint of synth IS analysis (= Wᵀ·synth), so this returns
+      !! ∫(Z⁶-basis):(reconstructed tensor) — the projection numerator. dtt/dpp/dtp are
+      !! overwritten by the SHTns analyses.
+      class(tensor_sh), intent(in)    :: self
+      type(sht_grid),   intent(in)    :: sht
+      real(wp),         intent(inout) :: dtt(:,:), dpp(:,:), dtp(:,:)
+      complex(wp),      intent(out)   :: craw(:)
+      complex(wp) :: q(self%nlm), s(self%nlm)
+      real(wp)    :: D(self%nphi,self%nlat), vt(self%nphi,self%nlat), vp(self%nphi,self%nlat), z(self%nphi,self%nlat)
+      ! The ∫dΩ adjoint of the spheroidal vector synth (SHsph_to_spat) is l(l+1)·
+      ! spat_to_SHsphtor (its INVERSE differs from its adjoint by the spheroidal norm
+      ! l(l+1)); the scalar synth's adjoint is plain analysis (orthonormal). So every
+      ! vector-analysis result below is scaled by llp1 to be the true adjoint.
+      D = dtt - dpp                                   ! θθ−φφ feeds S_g*
+      z = 0.0_wp
+      ! S_g*(D) = −l(l+1)·analysis(D) − 2·sphAnal(cotθ·D,0).S + 2 im·sphAnal(0,(1/sinθ)·D).S
+      call sht%analysis(D, q);   craw = -self%llp1*q
+      vt = byprof(D, self%cott);  vp = z
+      call sht%sph_analysis(vt, vp, s);   craw = craw - 2.0_wp*self%llp1*s
+      vt = z;  vp = byprof(D, self%invsin)
+      call sht%sph_analysis(vt, vp, s)
+      craw = craw + 2.0_wp*cmplx(0.0_wp, real(self%mord,wp), wp)*self%llp1*s
+      ! θφ contributes ∫T:Z⁶|_θφ = a_θφ·4H·(e_θφ:e_θφ=½) = 2 a_θφ H ⇒ 2·S_h*(θφ), with
+      ! S_h*(D) = −im·llp1·sphAnal((1/sinθ)D,0).S − llp1·sphAnal(0,cotθ·D).S.
+      D = dtp
+      vt = byprof(D, self%invsin);  vp = z
+      call sht%sph_analysis(vt, vp, s)
+      craw = craw - 2.0_wp*cmplx(0.0_wp, real(self%mord,wp), wp)*self%llp1*s
+      vt = z;  vp = byprof(D, self%cott)
+      call sht%sph_analysis(vt, vp, s)
+      craw = craw - 2.0_wp*self%llp1*s
+   end subroutine spin2_adjoint
+
+   ! --- helpers ---------------------------------------------------------------
+
+   pure function byprof(field, prof) result(out)
+      !! Multiply each Gauss-latitude column of a (nphi,nlat) field by prof(nlat).
+      real(wp), intent(in) :: field(:,:), prof(:)
+      real(wp) :: out(size(field,1), size(field,2))
+      integer  :: i
+      do i = 1, size(field,2)
+         out(:,i) = field(:,i)*prof(i)
+      end do
+   end function byprof
 
    subroutine tensor_sh_destroy(self)
       class(tensor_sh), intent(inout) :: self
-      if (allocated(self%Brr)) deallocate(self%Brr, self%Brt, self%Btr, self%Bdf)
-      if (allocated(self%nrr)) deallocate(self%nrr, self%nrt, self%ntr, self%ndf)
-      if (allocated(self%w))   deallocate(self%w)
-      self%lmax = 0;  self%nlat = 0
+      if (allocated(self%ldeg))   deallocate(self%ldeg, self%mord, self%llp1)
+      if (allocated(self%cott))   deallocate(self%cott, self%invsin)
+      if (allocated(self%n6))     deallocate(self%n6)
+      self%lmax = 0;  self%nlm = 0
    end subroutine tensor_sh_destroy
 
 end module fe_tensor_sh

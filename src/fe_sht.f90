@@ -45,6 +45,7 @@ module fe_sht
       procedure :: synthesis => sht_grid_synthesis   !! spectral -> spatial
       procedure :: analysis  => sht_grid_analysis    !! spatial  -> spectral
       procedure :: sph_synthesis => sht_grid_sph_synthesis !! spheroidal (gradient) vector synth
+      procedure :: sph_analysis  => sht_grid_sph_analysis  !! spheroidal vector analysis (inverse)
       procedure :: eval_point => sht_grid_eval_point !! scalar field at (colat,lon)
       procedure :: eval_point_horiz => sht_grid_eval_point_horiz !! ∇₁ field at (colat,lon)
       procedure :: lmidx     => sht_grid_lmidx       !! (l,m) -> coefficient index
@@ -183,6 +184,17 @@ contains
       real(wp),        intent(out) :: vth(:,:), vph(:,:)  !! (nphi, nlat)
       call SHsph_to_spat(self%cfg, slm, vth, vph)
    end subroutine sht_grid_sph_synthesis
+
+   subroutine sht_grid_sph_analysis(self, vth, vph, slm)
+      !! Spheroidal vector analysis — the inverse/adjoint of sph_synthesis: from a
+      !! horizontal field (vth,vph) recover the spheroidal potential coefficients slm
+      !! (the toroidal part is discarded). NB: SHTns overwrites the inputs.
+      class(sht_grid), intent(in)    :: self
+      real(wp),        intent(inout) :: vth(:,:), vph(:,:)  !! (nphi, nlat)
+      complex(wp),     intent(out)   :: slm(:)              !! length nlm
+      complex(wp) :: tlm(self%nlm)
+      call spat_to_SHsphtor(self%cfg, vth, vph, slm, tlm)
+   end subroutine sht_grid_sph_analysis
 
    subroutine sht_grid_eval_point(self, f_lm, colat, lon, val)
       !! Evaluate a scalar field (spectral coefficients f_lm) at an ARBITRARY point
