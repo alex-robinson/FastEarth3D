@@ -36,6 +36,7 @@ module fe_tensor_sh
    private
 
    public :: tensor_sh
+   public :: tensor_sh_init, tensor_sh_synth, tensor_sh_analysis, tensor_sh_thread_cfg, tensor_sh_destroy
    integer, parameter, public :: TLAM = 4          ! λ = 1,2,5,6 → local 1..4
    ! Dyadic-field plane indices (the third dimension of the dyad array).
    integer, parameter, public :: DY_RR = 1, DY_RT = 2, DY_RP = 3, &
@@ -54,18 +55,12 @@ module fe_tensor_sh
       ! single config is NOT safe for concurrent calls). Built serially at init.
       type(c_ptr), allocatable :: pool(:)   !! (npool) independent configs
       integer :: npool = 0
-   contains
-      procedure :: init       => tensor_sh_init
-      procedure :: synth      => tensor_sh_synth    !! coeffs c(TLAM,nlm) -> dyad(nphi,nlat,6)
-      procedure :: analysis   => tensor_sh_analysis !! dyad(nphi,nlat,6) -> coeffs
-      procedure :: thread_cfg => tensor_sh_thread_cfg  !! this thread's config (for the advance loop)
-      procedure :: destroy    => tensor_sh_destroy
    end type tensor_sh
 
 contains
 
    subroutine tensor_sh_init(self, sht)
-      class(tensor_sh), intent(out) :: self
+      type(tensor_sh), intent(out) :: self
       type(sht_grid),   intent(in)  :: sht
       complex(wp), allocatable :: c6(:), craw(:)
       real(wp),    allocatable :: tt(:,:), pp(:,:), tp(:,:)
@@ -127,7 +122,7 @@ contains
    function tensor_sh_thread_cfg(self) result(cfg)
       !! The calling OpenMP thread's private SHTns config (1-based pool index =
       !! thread id + 1). Serial / non-OpenMP builds always get pool(1).
-      class(tensor_sh), intent(in) :: self
+      type(tensor_sh), intent(in) :: self
       type(c_ptr) :: cfg
       integer :: tid
       tid = 0
@@ -140,7 +135,7 @@ contains
    subroutine tensor_sh_synth(self, sht, c, dyad, cfg)
       !! Tensor-harmonic coefficients c(λ=1..4, nlm) → six dyadic grid fields.
       !! Pass `cfg` (a thread_cfg handle) to transform on a thread-local config.
-      class(tensor_sh), intent(in)  :: self
+      type(tensor_sh), intent(in)  :: self
       type(sht_grid),   intent(in)  :: sht
       complex(wp),      intent(in)  :: c(:,:)        !! (TLAM, nlm)
       real(wp),         intent(out) :: dyad(:,:,:)   !! (nphi, nlat, 6)
@@ -165,7 +160,7 @@ contains
    subroutine spin2_synth(self, sht, c6, tt, pp, tp, cfg)
       !! Z⁶ contribution: tt=Sg=Σc6·G, pp=−Sg, tp=4Sh=4Σc6·H, via the exact grid
       !! identities (no recurrence, no re-analysis).
-      class(tensor_sh), intent(in)  :: self
+      type(tensor_sh), intent(in)  :: self
       type(sht_grid),   intent(in)  :: sht
       complex(wp),      intent(in)  :: c6(:)
       real(wp),         intent(out) :: tt(:,:), pp(:,:), tp(:,:)
@@ -190,7 +185,7 @@ contains
    subroutine tensor_sh_analysis(self, sht, dyad, c, cfg)
       !! Six dyadic grid fields → tensor-harmonic coefficients.
       !! Pass `cfg` (a thread_cfg handle) to transform on a thread-local config.
-      class(tensor_sh), intent(in)    :: self
+      type(tensor_sh), intent(in)    :: self
       type(sht_grid),   intent(in)    :: sht
       real(wp),         intent(inout) :: dyad(:,:,:)   !! (nphi,nlat,6); SHTns overwrites
       complex(wp),      intent(out)   :: c(:,:)        !! (TLAM, nlm)
@@ -230,7 +225,7 @@ contains
       !! im → −im). The ∫dΩ adjoint of synth IS analysis (= Wᵀ·synth), so this returns
       !! ∫(Z⁶-basis):(reconstructed tensor) — the projection numerator. dtt/dpp/dtp are
       !! overwritten by the SHTns analyses.
-      class(tensor_sh), intent(in)    :: self
+      type(tensor_sh), intent(in)    :: self
       type(sht_grid),   intent(in)    :: sht
       real(wp),         intent(inout) :: dtt(:,:), dpp(:,:), dtp(:,:)
       complex(wp),      intent(out)   :: craw(:)
@@ -274,7 +269,7 @@ contains
    end function byprof
 
    subroutine tensor_sh_destroy(self)
-      class(tensor_sh), intent(inout) :: self
+      type(tensor_sh), intent(inout) :: self
       integer :: i
       if (allocated(self%ldeg))   deallocate(self%ldeg, self%mord, self%llp1)
       if (allocated(self%cott))   deallocate(self%cott, self%invsin)

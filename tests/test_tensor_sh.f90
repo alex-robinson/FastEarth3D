@@ -12,7 +12,7 @@ program test_tensor_sh
    use fe_precision, only: wp
    use fe_constants, only: pi
    use fe_sht,       only: sht_grid, sht_grid_init, sht_grid_lmidx, sht_grid_destroy
-   use fe_tensor_sh, only: tensor_sh, TLAM, DY_RR, DY_RT, DY_RP, DY_TT, DY_TP, DY_PP
+   use fe_tensor_sh, only: tensor_sh, TLAM, DY_RR, DY_RT, DY_RP, DY_TT, DY_TP, DY_PP, tensor_sh_init, tensor_sh_synth, tensor_sh_analysis, tensor_sh_destroy
    implicit none
 
    integer, parameter :: LMAX = 10
@@ -26,7 +26,7 @@ program test_tensor_sh
 
    ok = .true.
    call sht_grid_init(sht, LMAX, nlat=4*LMAX, nphi=4*LMAX, mmax=LMAX)
-   call tsh%init(sht)
+   call tensor_sh_init(tsh, sht)
    allocate(c(TLAM,sht%nlm), c2(TLAM,sht%nlm), dyad(sht%nphi,sht%nlat,6))
 
    ! Random complex coefficients; m=0 real; drop harmonics that do not exist
@@ -49,8 +49,8 @@ program test_tensor_sh
    end do
 
    ! (1) round trip
-   call tsh%synth(sht, c, dyad)
-   call tsh%analysis(sht, dyad, c2)
+   call tensor_sh_synth(tsh, sht, c, dyad)
+   call tensor_sh_analysis(tsh, sht, dyad, c2)
    rt_err = maxval(abs(c2 - c))
    write(*,'(a,es11.2)') ' (1) round-trip max|analysis(synth(c)) - c| =', rt_err
    if (rt_err > 1.0e-9_wp) then
@@ -59,7 +59,7 @@ program test_tensor_sh
    end if
 
    ! (2) physical norm == spectral norm (τ = ε = c)
-   call tsh%synth(sht, c, dyad)
+   call tensor_sh_synth(tsh, sht, c, dyad)
    dmeas = 2.0_wp*pi/real(sht%nphi,wp)
    dd_phys = 0.0_wp
    do l = 1, sht%nlat
@@ -93,9 +93,9 @@ program test_tensor_sh
       write(*,'(a)') ' PASS: general-order tensor-SH dyadic transforms validated'
    else
       write(*,'(a)') ' FAIL: tensor-SH dyadic transforms did not all pass'
-      call tsh%destroy();  call sht_grid_destroy(sht);  error stop 1
+      call tensor_sh_destroy(tsh);  call sht_grid_destroy(sht);  error stop 1
    end if
-   call tsh%destroy();  call sht_grid_destroy(sht)
+   call tensor_sh_destroy(tsh);  call sht_grid_destroy(sht)
 
 contains
 

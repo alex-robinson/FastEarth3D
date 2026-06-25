@@ -31,7 +31,7 @@ module fe_response
                                  advance_memory, strain_coeffs, scheme_is_implicit, &
                                  SCHEME_FE, SCHEME_TRAP
    use fe_sht,             only: sht_grid, sht_grid_lmidx
-   use fe_tensor_sh,       only: tensor_sh, TLAM
+   use fe_tensor_sh,       only: tensor_sh, TLAM, tensor_sh_init, tensor_sh_thread_cfg, tensor_sh_synth, tensor_sh_analysis, tensor_sh_destroy
    use, intrinsic :: iso_c_binding, only: c_ptr
    implicit none
    private
@@ -766,7 +766,7 @@ contains
       if (size(pert_elem,1) /= sht%nphi .or. size(pert_elem,2) /= sht%nlat .or. &
           size(pert_elem,3) /= self%ne) &
          error stop 'enable_lateral_visc: pert_elem must be (nphi,nlat,ne)'
-      call self%tsh%init(sht)
+      call tensor_sh_init(self%tsh, sht)
       if (allocated(self%Mk3))      deallocate(self%Mk3)
       if (allocated(self%MkPerDt3)) deallocate(self%MkPerDt3)
       if (allocated(self%e3d))      deallocate(self%e3d)
@@ -864,7 +864,7 @@ contains
       allocate(cma(TLAM,sht%nlm), cmb(TLAM,sht%nlm), cmc(TLAM,sht%nlm))
       allocate(cea(TLAM,sht%nlm), ceb(TLAM,sht%nlm), cec(TLAM,sht%nlm))
       allocate(dtau(sht%nphi,sht%nlat,6), deps(sht%nphi,sht%nlat,6))
-      cfg = self%tsh%thread_cfg()                          ! this thread's private config
+      cfg = tensor_sh_thread_cfg(self%tsh)                          ! this thread's private config
       !$omp do schedule(dynamic)
       do ei = 1, self%ne3d                                 ! only the genuinely-3-D elements
          e = self%e3d(ei)
@@ -933,12 +933,12 @@ contains
       real(wp) :: twoMu
       integer  :: p
       twoMu = 2.0_wp*self%mu(e)
-      call self%tsh%synth(sht, c,   dtau, cfg)
-      call self%tsh%synth(sht, eps, deps, cfg)
+      call tensor_sh_synth(self%tsh, sht, c,   dtau, cfg)
+      call tensor_sh_synth(self%tsh, sht, eps, deps, cfg)
       do p = 1, 6
          dtau(:,:,p) = (1.0_wp - self%Mk3(:,:,e))*dtau(:,:,p) - twoMu*self%Mk3(:,:,e)*deps(:,:,p)
       end do
-      call self%tsh%analysis(sht, dtau, c, cfg)
+      call tensor_sh_analysis(self%tsh, sht, dtau, c, cfg)
    end subroutine advance_shape_tensor
 
    subroutine advance_memory_3d_trap(self, sht, sigma_lm)
@@ -967,7 +967,7 @@ contains
       allocate(cna(TLAM,sht%nlm),  cnb(TLAM,sht%nlm),  cnc(TLAM,sht%nlm))
       allocate(c1a(TLAM,sht%nlm),  c1b(TLAM,sht%nlm),  c1c(TLAM,sht%nlm))
       allocate(dt0(sht%nphi,sht%nlat,6), den(sht%nphi,sht%nlat,6), de1(sht%nphi,sht%nlat,6))
-      cfg = self%tsh%thread_cfg()
+      cfg = tensor_sh_thread_cfg(self%tsh)
       !$omp do schedule(dynamic)
       do ei = 1, self%ne3d                                 ! only the genuinely-3-D elements
          e = self%e3d(ei)
@@ -1059,15 +1059,15 @@ contains
       type(c_ptr),        intent(in)    :: cfg
       real(wp), dimension(size(dt0,1),size(dt0,2)) :: cold, weps
       integer  :: p
-      call self%tsh%synth(sht, c0,    dt0, cfg)
-      call self%tsh%synth(sht, eps_n, den, cfg)
-      call self%tsh%synth(sht, eps_1, de1, cfg)
+      call tensor_sh_synth(self%tsh, sht, c0,    dt0, cfg)
+      call tensor_sh_synth(self%tsh, sht, eps_n, den, cfg)
+      call tensor_sh_synth(self%tsh, sht, eps_1, de1, cfg)
       cold = (1.0_wp - 0.5_wp*self%Mk3(:,:,e)) / (1.0_wp + 0.5_wp*self%Mk3(:,:,e))
       weps = self%mu(e)*self%Mk3(:,:,e)        / (1.0_wp + 0.5_wp*self%Mk3(:,:,e))
       do p = 1, 6
          dt0(:,:,p) = cold*dt0(:,:,p) - weps*(den(:,:,p) + de1(:,:,p))
       end do
-      call self%tsh%analysis(sht, dt0, c0, cfg)
+      call tensor_sh_analysis(self%tsh, sht, dt0, c0, cfg)
    end subroutine advance_shape_tensor_trap
 
    subroutine snapshot_taun(self)
@@ -1365,7 +1365,7 @@ contains
       if (allocated(self%e3d))      deallocate(self%e3d)
       if (allocated(self%active1d)) deallocate(self%active1d)
       self%ne3d = 0
-      if (self%lat_visc) call self%tsh%destroy()
+      if (self%lat_visc) call tensor_sh_destroy(self%tsh)
       self%lat_visc = .false.
       if (allocated(self%Mk))     deallocate(self%Mk)
       if (allocated(self%Jr))     deallocate(self%Jr)
