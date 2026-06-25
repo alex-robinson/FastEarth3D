@@ -16,7 +16,7 @@ program test_response
    use fe_earth_structure, only: earth_model, earth_layer, build_M3L70V01, &
                                  RHEOL_ELASTIC
    use fe_radial_fe,       only: radial_fe_finalize
-   use fe_response,        only: elastic_response
+   use fe_response,        only: response_apply, response_destroy, response, response_init_elastic, response_init_ve, response_init_null
    use fe_sht,             only: sht_grid, sht_grid_init, sht_grid_lmidx, sht_grid_destroy
    implicit none
 
@@ -24,7 +24,7 @@ program test_response
    integer  :: j
    real(wp) :: phiL, hh, kk1, g, a
    logical  :: ok
-   type(elastic_response) :: resp
+   type(response) :: resp
 
    ok = .true.
 
@@ -45,7 +45,7 @@ program test_response
          write(*,'(a)') '      FAIL: ngain off the fluid 1+k limit (0)'; ok = .false.
       end if
    end do
-   call resp%destroy()
+   call response_destroy(resp)
 
    ! --- 2. rigid limit: ugain → 0, 1+k → 1 -----------------------------------
    write(*,'(a)') ''
@@ -61,7 +61,7 @@ program test_response
          write(*,'(a)') '      FAIL: not approaching the rigid limit'; ok = .false.
       end if
    end do
-   call resp%destroy()
+   call response_destroy(resp)
 
    ! --- 3. field apply() on M3-L70-V01: per-degree multiply + subsidence -----
    write(*,'(a)') ''
@@ -84,26 +84,26 @@ contains
    subroutine build_homog(mu, r)
       !! Single-layer incompressible homogeneous sphere of rigidity mu.
       real(wp),               intent(in)    :: mu
-      type(elastic_response), intent(inout) :: r
+      type(response), intent(inout) :: r
       type(earth_model) :: e
       e%name = "homog";  e%r_earth = 6371.0_wp*km;  e%r_core = 0.0_wp
       allocate(e%layers(1))
       e%layers(1) = earth_layer(0.0_wp, 6371.0_wp*km, 5511.0_wp, mu, &
                                 huge(1.0_wp), RHEOL_ELASTIC)
-      call r%init(e, lmax=6)
+      call response_init_elastic(r, e, lmax=6)
    end subroutine build_homog
 
    subroutine field_check(ok)
       logical, intent(inout) :: ok
       type(earth_model)      :: e
-      type(elastic_response) :: r
+      type(response) :: r
       type(sht_grid)         :: sht
       complex(wp), allocatable :: slm(:), ulm(:), nlm(:)
       integer  :: lm
       real(wp) :: sl_gf
 
       e = build_M3L70V01()
-      call r%init(e, lmax=8)
+      call response_init_elastic(r, e, lmax=8)
       call sht_grid_init(sht, 8)
       allocate(slm(sht%nlm), ulm(sht%nlm), nlm(sht%nlm))
       slm = (0.0_wp, 0.0_wp)
@@ -111,7 +111,7 @@ contains
       ! unit degree-2, order-0 surface load (1 kg m^-2)
       lm = sht_grid_lmidx(sht, 2, 0)
       slm(lm) = (1.0_wp, 0.0_wp)
-      call r%apply(sht, slm, ulm, nlm)
+      call response_apply(r, sht, slm, ulm, nlm)
 
       sl_gf = r%ngain(2) - r%ugain(2)     ! sea-level Green's fn = N − u
       write(*,'(a,es13.5,a,es13.5)') '      ugain(2) =', r%ugain(2), &
@@ -134,7 +134,7 @@ contains
          ok = .false.
       end if
 
-      call r%destroy();  call sht_grid_destroy(sht)
+      call response_destroy(r);  call sht_grid_destroy(sht)
    end subroutine field_check
 
 end program test_response

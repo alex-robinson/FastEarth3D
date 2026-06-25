@@ -30,10 +30,10 @@ program test_sle_couple_order
    use fe_constants,       only: kyr, pi, grav_G, rho_ice, rho_water, sec_per_year
    use fe_earth_structure, only: earth_model, earth_layer, RHEOL_MAXWELL
    use fe_radial_fe,       only: radial_fe_finalize
-   use fe_response,        only: ve_response
+   use fe_response,        only: response_destroy, response, response_init_elastic, response_init_ve, response_init_null
    use fe_viscoelastic,    only: SCHEME_TRAP
-   use fe_sht,             only: sht_grid
-   use fe_sle,             only: sle_solver, sle_result
+   use fe_sht,             only: sht_grid_destroy, sht_grid_init, sht_grid
+   use fe_sle,             only: sle_solve, sle_solver, sle_result
    implicit none
 
    real(wp), parameter :: km = 1.0e3_wp, yr = sec_per_year
@@ -61,7 +61,7 @@ program test_sle_couple_order
    logical  :: ok
 
    ok = .true.
-   call sht%init(LMAX, nlat=2*LMAX, nphi=4*LMAX)
+   call sht_grid_init(sht, LMAX, nlat=2*LMAX, nphi=4*LMAX)
    call mk_earth(e)
    allocate(topo0(sht%nphi,sht%nlat), Sref(sht%nphi,sht%nlat))
    allocate(S1(sht%nphi,sht%nlat,NS), Sk(sht%nphi,sht%nlat,NS))
@@ -120,9 +120,9 @@ program test_sle_couple_order
       write(*,'(a)') '       order through the field driver for a fast-evolving load (§3c 3b).'
    else
       write(*,'(a)') ' FAIL: SLE coupling-order characterization did not all pass'
-      call sht%destroy();  call radial_fe_finalize();  error stop 1
+      call sht_grid_destroy(sht);  call radial_fe_finalize();  error stop 1
    end if
-   call sht%destroy();  call radial_fe_finalize()
+   call sht_grid_destroy(sht);  call radial_fe_finalize()
 
 contains
 
@@ -133,7 +133,7 @@ contains
       real(wp), intent(in)  :: dt_yr, tol
       integer,  intent(in)  :: max_mem
       real(wp), intent(out) :: Sout(:,:)
-      type(ve_response) :: resp
+      type(response) :: resp
       type(sle_solver)  :: sle
       type(sle_result)  :: res
       real(wp), allocatable :: d_ice(:,:), ice(:,:), S(:,:), C(:,:)
@@ -141,7 +141,7 @@ contains
       integer  :: istep, nstep
 
       dt = dt_yr*yr
-      call resp%init(e, sht, dt)
+      call response_init_ve(resp, e, sht, dt)
       resp%scheme    = SCHEME_TRAP
       resp%couple_tol = tol
       sle%fixed_ocean = .true.        ! isolate the integrator: no coastline migration
@@ -161,11 +161,11 @@ contains
          frac = min(t/T_RAMP, 1.0_wp)
          call ice_field(frac*ICE_MAX, ice)
          d_ice = ice                  ! absolute = change (ice-free reference)
-         call sle%solve(sht, resp, d_ice, ice, topo0, S, C, res)
+         call sle_solve(sle, sht, resp, d_ice, ice, topo0, S, C, res)
       end do
       Sout = S
       deallocate(d_ice, ice, S, C)
-      call resp%destroy()
+      call response_destroy(resp)
    end subroutine run
 
    subroutine make_topo(topo0)

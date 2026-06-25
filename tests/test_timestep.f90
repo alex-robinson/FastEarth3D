@@ -18,11 +18,11 @@ program test_timestep
    use fe_constants,       only: kyr, pi, rho_ice, rho_water, sec_per_year
    use fe_earth_structure, only: earth_model, earth_layer, RHEOL_MAXWELL
    use fe_radial_fe,       only: radial_fe_finalize
-   use fe_response,        only: ve_response
+   use fe_response,        only: response_destroy, response_coarse_fine_error, response_restore_state, response_stash_coarse, response_set_dt, response_save_state, response_prime_sigma, response, response_init_elastic, response_init_ve, response_init_null
    use fe_viscoelastic,    only: SCHEME_TRAP
-   use fe_sht,             only: sht_grid
-   use fe_sle,             only: sle_solver, sle_result
-   use fe_timestep,        only: adaptive_stepper
+   use fe_sht,             only: sht_grid_destroy, sht_grid_init, sht_grid
+   use fe_sle,             only: sle_solve, sle_solver, sle_result
+   use fe_timestep,        only: stepper_advance, adaptive_stepper
    implicit none
 
    real(wp), parameter :: km = 1.0e3_wp, yr = sec_per_year
@@ -38,7 +38,7 @@ program test_timestep
    logical :: ok
 
    ok = .true.
-   call sht%init(LMAX, nlat=2*LMAX, nphi=4*LMAX)
+   call sht_grid_init(sht, LMAX, nlat=2*LMAX, nphi=4*LMAX)
    call mk_earth(e)
    allocate(topo0(sht%nphi,sht%nlat), iceF(sht%nphi,sht%nlat), &
             ice0(sht%nphi,sht%nlat), zero(sht%nphi,sht%nlat))
@@ -58,9 +58,9 @@ program test_timestep
       write(*,'(a)') '       controller converges to the reference with far fewer steps.'
    else
       write(*,'(a)') ' FAIL: adaptive-Δt controller checks did not all pass'
-      call sht%destroy();  call radial_fe_finalize();  error stop 1
+      call sht_grid_destroy(sht);  call radial_fe_finalize();  error stop 1
    end if
-   call sht%destroy();  call radial_fe_finalize()
+   call sht_grid_destroy(sht);  call radial_fe_finalize()
 
 contains
 
@@ -92,7 +92,7 @@ contains
       !! exercising the controller primitives directly.
       real(wp), intent(in) :: dt
       real(wp) :: est
-      type(ve_response) :: resp
+      type(response) :: resp
       type(sle_solver)  :: sle
       type(sle_result)  :: res
       real(wp), allocatable :: rsl(:,:), C(:,:), rsl_n(:,:)
@@ -104,20 +104,20 @@ contains
       rsl = 0.0_wp
       ! prime σ_0 (elastic-consistent load at t=0, report-only — no memory advance), so
       ! the FIRST step from rest is measured with σ_n tracked, like every later step
-      call sle%solve(sht, resp, iceF, iceF, topo0, rsl, C, res, &
+      call sle_solve(sle, sht, resp, iceF, iceF, topo0, rsl, C, res, &
                      report_only=.true., sigma_lm=sig0)
-      call resp%prime_sigma(sig0)
-      call resp%save_state();  rsl_n = rsl
-      call resp%set_dt(dt)
-      call sle%solve(sht, resp, iceF, iceF, topo0, rsl, C, res)     ! coarse (held load)
-      call resp%stash_coarse()
-      call resp%restore_state();  rsl = rsl_n
-      call resp%set_dt(0.5_wp*dt)
-      call sle%solve(sht, resp, iceF, iceF, topo0, rsl, C, res)     ! fine 1
-      call sle%solve(sht, resp, iceF, iceF, topo0, rsl, C, res)     ! fine 2
-      call resp%coarse_fine_error(err_inf, tau_inf)
+      call response_prime_sigma(resp, sig0)
+      call response_save_state(resp);  rsl_n = rsl
+      call response_set_dt(resp, dt)
+      call sle_solve(sle, sht, resp, iceF, iceF, topo0, rsl, C, res)     ! coarse (held load)
+      call response_stash_coarse(resp)
+      call response_restore_state(resp);  rsl = rsl_n
+      call response_set_dt(resp, 0.5_wp*dt)
+      call sle_solve(sle, sht, resp, iceF, iceF, topo0, rsl, C, res)     ! fine 1
+      call sle_solve(sle, sht, resp, iceF, iceF, topo0, rsl, C, res)     ! fine 2
+      call response_coarse_fine_error(resp, err_inf, tau_inf)
       est = err_inf/3.0_wp                                          ! 2^p−1 = 3
-      call resp%destroy()
+      call response_destroy(resp)
       deallocate(rsl, C, rsl_n, sig0)
    end function one_estimate
 
@@ -213,7 +213,7 @@ contains
       real(wp), intent(in)  :: dt_fixed, t_ramp, t_end
       real(wp), intent(out) :: rsl(:,:)
       integer,  intent(out) :: nsolve
-      type(ve_response)     :: resp
+      type(response)     :: resp
       type(sle_solver)      :: sle
       type(sle_result)      :: res
       real(wp), allocatable :: C(:,:), ice_now(:,:)
@@ -222,19 +222,19 @@ contains
       allocate(C(sht%nphi,sht%nlat), ice_now(sht%nphi,sht%nlat), sig0(sht%nlm))
       call setup(resp, sle, dt_fixed)
       rsl = 0.0_wp
-      call sle%solve(sht, resp, ice0, ice0, topo0, rsl, C, res, &
+      call sle_solve(sle, sht, resp, ice0, ice0, topo0, rsl, C, res, &
                      report_only=.true., sigma_lm=sig0)
-      call resp%prime_sigma(sig0)
+      call response_prime_sigma(resp, sig0)
       nsolve = 0;  t = 0.0_wp
       do
          if (t >= t_end - 1.0e-9_wp*t_end) exit
          dt = min(dt_fixed, t_end - t)
-         call resp%set_dt(dt)
+         call response_set_dt(resp, dt)
          ice_now = min((t + dt)/t_ramp, 1.0_wp)*iceF
-         call sle%solve(sht, resp, ice_now, ice_now, topo0, rsl, C, res)
+         call sle_solve(sle, sht, resp, ice_now, ice_now, topo0, rsl, C, res)
          nsolve = nsolve + 1;  t = t + dt
       end do
-      call resp%destroy();  deallocate(C, ice_now, sig0)
+      call response_destroy(resp);  deallocate(C, ice_now, sig0)
    end subroutine run_ramphold_fixed
 
    subroutine run_ramphold_adapt(rtol, t_ramp, dt_cap, t_end, rsl, nsolve)
@@ -244,7 +244,7 @@ contains
       real(wp), intent(in)  :: rtol, t_ramp, dt_cap, t_end
       real(wp), intent(out) :: rsl(:,:)
       integer,  intent(out) :: nsolve
-      type(ve_response)     :: resp
+      type(response)     :: resp
       type(sle_solver)      :: sle
       type(adaptive_stepper):: st
       real(wp), allocatable :: C(:,:)
@@ -253,18 +253,18 @@ contains
       st%rtol = rtol;  st%atol = 1.0e-3_wp
       st%dt_try = 0.2_wp*t_ramp;  st%dt_min = 0.0_wp;  st%dt_max = dt_cap
       rsl = 0.0_wp
-      call st%advance(sht, resp, sle, topo0, ice0, iceF,  zero, 0.0_wp,  t_ramp, rsl, C)
+      call stepper_advance(st, sht, resp, sle, topo0, ice0, iceF,  zero, 0.0_wp,  t_ramp, rsl, C)
       if (t_end > t_ramp) &
-         call st%advance(sht, resp, sle, topo0, iceF, iceF, zero, t_ramp, t_end, rsl, C)
+         call stepper_advance(st, sht, resp, sle, topo0, iceF, iceF, zero, t_ramp, t_end, rsl, C)
       nsolve = st%n_solve
-      call resp%destroy();  deallocate(C)
+      call response_destroy(resp);  deallocate(C)
    end subroutine run_ramphold_adapt
 
    subroutine run_fixed(dt_fixed, rsl, nsteps)
       real(wp), intent(in)  :: dt_fixed
       real(wp), intent(out) :: rsl(:,:)
       integer,  intent(out) :: nsteps
-      type(ve_response)     :: resp
+      type(response)     :: resp
       type(sle_solver)      :: sle
       type(adaptive_stepper):: st
       real(wp), allocatable :: C(:,:)
@@ -272,16 +272,16 @@ contains
       call setup(resp, sle, dt_fixed)
       st%dt_try = dt_fixed;  st%dt_min = dt_fixed;  st%dt_max = dt_fixed
       rsl = 0.0_wp
-      call st%advance(sht, resp, sle, topo0, ice0, iceF, zero, 0.0_wp, T_END, rsl, C)
+      call stepper_advance(st, sht, resp, sle, topo0, ice0, iceF, zero, 0.0_wp, T_END, rsl, C)
       nsteps = st%n_accept
-      call resp%destroy();  deallocate(C)
+      call response_destroy(resp);  deallocate(C)
    end subroutine run_fixed
 
    subroutine run_adaptive(rtol, rsl, nacc, nrej)
       real(wp), intent(in)  :: rtol
       real(wp), intent(out) :: rsl(:,:)
       integer,  intent(out) :: nacc, nrej
-      type(ve_response)     :: resp
+      type(response)     :: resp
       type(sle_solver)      :: sle
       type(adaptive_stepper):: st
       real(wp), allocatable :: C(:,:)
@@ -290,16 +290,16 @@ contains
       st%rtol = rtol;  st%atol = 1.0e-3_wp
       st%dt_try = 0.01_wp*T_END;  st%dt_min = 0.0_wp;  st%dt_max = T_END
       rsl = 0.0_wp
-      call st%advance(sht, resp, sle, topo0, ice0, iceF, zero, 0.0_wp, T_END, rsl, C)
+      call stepper_advance(st, sht, resp, sle, topo0, ice0, iceF, zero, 0.0_wp, T_END, rsl, C)
       nacc = st%n_accept;  nrej = st%n_reject
-      call resp%destroy();  deallocate(C)
+      call response_destroy(resp);  deallocate(C)
    end subroutine run_adaptive
 
    subroutine setup(resp, sle, dt)
-      type(ve_response), intent(out) :: resp
+      type(response), intent(out) :: resp
       type(sle_solver),  intent(out) :: sle
       real(wp),          intent(in)  :: dt
-      call resp%init(e, sht, dt)
+      call response_init_ve(resp, e, sht, dt)
       resp%scheme = SCHEME_TRAP;  resp%couple_tol = 1.0e-9_wp
       sle%fixed_ocean = .true.;  sle%subgrid = .false.;  sle%max_mem_iter = MAXIT
       sle%warm_start  = .true.

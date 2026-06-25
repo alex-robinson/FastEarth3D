@@ -15,7 +15,7 @@ program test_sle_ve
    use fe_constants,       only: kyr, pi, rho_ice, rho_water
    use fe_earth_structure, only: earth_model, build_M3L70V01
    use fe_radial_fe,       only: radial_fe_finalize
-   use fe_response,        only: ve_response
+   use fe_response,        only: response_destroy, response, response_init_elastic, response_init_ve, response_init_null
    use fe_sht,             only: sht_grid, sht_grid_init, sht_grid_surface_integral, sht_grid_destroy
    use fe_sle,             only: sle_solve, sle_solver, sle_result
    implicit none
@@ -23,7 +23,7 @@ program test_sle_ve
    integer, parameter :: LMAX = 16, NSTEP = 25
    type(sht_grid)     :: sht
    type(earth_model)  :: e
-   type(ve_response)  :: resp
+   type(response)  :: resp
    type(sle_solver)   :: sle
    type(sle_result)   :: res
    real(wp), allocatable :: topo0(:,:), d_ice(:,:), ice(:,:), S(:,:), C(:,:), Sfirst(:,:)
@@ -35,7 +35,7 @@ program test_sle_ve
    dt = 0.02_wp*kyr                                ! 20 yr step
    call sht_grid_init(sht, LMAX, nlat=2*LMAX, nphi=4*LMAX)
    e = build_M3L70V01()
-   call resp%init(e, sht, dt)
+   call response_init_ve(resp, e, sht, dt)
 
    allocate(topo0(sht%nphi,sht%nlat), d_ice(sht%nphi,sht%nlat), &
             ice(sht%nphi,sht%nlat), S(sht%nphi,sht%nlat), C(sht%nphi,sht%nlat), &
@@ -85,10 +85,10 @@ program test_sle_ve
       write(*,'(a)') '       eustatic mean, and relaxes viscoelastically'
    else
       write(*,'(a)') ' FAIL: viscoelastic SLE validation did not all pass'
-      call resp%destroy();  call sht_grid_destroy(sht);  call radial_fe_finalize()
+      call response_destroy(resp);  call sht_grid_destroy(sht);  call radial_fe_finalize()
       error stop 1
    end if
-   call resp%destroy();  call sht_grid_destroy(sht);  call radial_fe_finalize()
+   call response_destroy(resp);  call sht_grid_destroy(sht);  call radial_fe_finalize()
 
 contains
 

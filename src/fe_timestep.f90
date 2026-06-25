@@ -26,7 +26,7 @@ module fe_timestep
    !! cheap rescale — no operator re-factorization (the band LU is Δt-independent).
    use fe_precision,    only: wp
    use fe_sht,          only: sht_grid
-   use fe_response,     only: ve_response
+   use fe_response,     only: response_coarse_fine_error, response_stash_coarse, response_prime_sigma, response_restore_state, response_set_dt, response_save_state, response_memory_norm, response_max_rate, response, response_init_elastic, response_init_ve, response_init_null
    use fe_sle,          only: sle_solve, sle_solver, sle_result
    use fe_viscoelastic, only: scheme_order, scheme_is_implicit
    implicit none
@@ -79,7 +79,7 @@ contains
       !! rsl/C hold the converged sea-level fields there.
       type(adaptive_stepper),  intent(inout) :: self
       type(sht_grid),           intent(in)    :: sht
-      class(ve_response),       intent(inout) :: resp
+      type(response),       intent(inout) :: resp
       type(sle_solver),         intent(inout) :: sle
       real(wp),                 intent(in)    :: topo0(:,:)
       real(wp),                 intent(in)    :: ice0(:,:), ice1(:,:)  !! abs. ice at t0,t1
@@ -126,7 +126,7 @@ contains
          ! VILMA advances its explicit memory the same way (small fixed Δt).
          np = sht%nphi;  nl = sht%nlat
          allocate(rsl_n(np,nl), ice_now(np,nl), dice_now(np,nl))
-         rate = resp%max_rate()
+         rate = response_max_rate(resp)
          if (rate > 0.0_wp) then
             dt_stab = self%cfl/rate                  ! M = μΔt/η ≤ cfl
          else
@@ -137,16 +137,16 @@ contains
          n_sub = max(1, ceiling(span/dt_stab - 1.0e-9_wp))
          dt    = span/real(n_sub, wp)                 ! nominal (equal) sub-step
          t = t0
-         tau_run = resp%memory_norm()                ! established memory scale at entry
+         tau_run = response_memory_norm(resp)                ! established memory scale at entry
          do
             if (t >= t1 - 1.0e-9_wp*span) exit
             dt   = min(dt, t1 - t)
             rsl_n = rsl
-            tau0 = resp%memory_norm()                ! entering memory ∞-norm
-            call resp%save_state()
-            call resp%set_dt(dt)
+            tau0 = response_memory_norm(resp)                ! entering memory ∞-norm
+            call response_save_state(resp)
+            call response_set_dt(resp, dt)
             call solve_at(t + dt)                     ! advances memory by dt
-            err_inf = resp%memory_norm()
+            err_inf = response_memory_norm(resp)
             finite  = (err_inf <= huge(1.0_wp))      ! .false. for NaN / +Inf
             scale   = max(tau0, tau_run)             ! established memory magnitude
             if (scale <= 0.0_wp) then
@@ -159,7 +159,7 @@ contains
                t = t + dt;  self%n_accept = self%n_accept + 1
                dt = min(span/real(n_sub, wp), 2.0_wp*dt)   ! recover toward nominal
             else
-               call resp%restore_state();  rsl = rsl_n
+               call response_restore_state(resp);  rsl = rsl_n
                self%n_reject = self%n_reject + 1
                dt = 0.5_wp*dt
                if (dt <= 1.0e-12_wp*span) error stop &
@@ -183,7 +183,7 @@ contains
          ice_now = ice0;  dice_now = ice0 - ice_ref
          call sle_solve(sle, sht, resp, dice_now, ice_now, topo0, rsl, C, res, &
                         report_only=.true., sigma_lm=sig0, s_rot=s_rot)
-         call resp%prime_sigma(sig0)
+         call response_prime_sigma(resp, sig0)
       end if
 
       p      = scheme_order(resp%scheme)          ! global order (2 for trapezoidal)
@@ -199,16 +199,16 @@ contains
 
          ! --- field step-doubling around [t, t+dt] -------------------------------
          rsl_n = rsl
-         call resp%save_state()                   ! buffer A = τ_n
-         call resp%set_dt(dt)
+         call response_save_state(resp)                   ! buffer A = τ_n
+         call response_set_dt(resp, dt)
          call solve_at(t + dt)                     ! coarse: one Δt
-         call resp%stash_coarse()                  ! buffer B = τ_coarse
-         call resp%restore_state();  rsl = rsl_n   ! back to τ_n (and its rsl seed)
-         call resp%set_dt(0.5_wp*dt)
+         call response_stash_coarse(resp)                  ! buffer B = τ_coarse
+         call response_restore_state(resp);  rsl = rsl_n   ! back to τ_n (and its rsl seed)
+         call response_set_dt(resp, 0.5_wp*dt)
          call solve_at(t + 0.5_wp*dt)              ! fine sub-step 1
          call solve_at(t + dt)                     ! fine sub-step 2 → τ_fine
-         call resp%coarse_fine_error(err_inf, tau_inf)
-         call resp%set_dt(dt)                       ! leave resp%dt at the step size
+         call response_coarse_fine_error(resp, err_inf, tau_inf)
+         call response_set_dt(resp, dt)                       ! leave resp%dt at the step size
          errsc = (err_inf/ricfac) / (self%atol + self%rtol*tau_inf)
 
          ! --- accept / reject ----------------------------------------------------
@@ -217,7 +217,7 @@ contains
             t = t + dt;  self%n_accept = self%n_accept + 1
             if (at_floor .and. errsc > 1.0_wp) self%n_floor = self%n_floor + 1
          else
-            call resp%restore_state();  rsl = rsl_n
+            call response_restore_state(resp);  rsl = rsl_n
             self%n_reject = self%n_reject + 1
          end if
 

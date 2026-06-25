@@ -35,8 +35,8 @@ program test_couple_order
    use fe_precision,       only: wp
    use fe_constants,       only: pi, grav_G, sec_per_year
    use fe_earth_structure, only: earth_model, earth_layer, RHEOL_MAXWELL
-   use fe_radial_fe,       only: radial_mesh, radial_operator, radial_fe_finalize
-   use fe_viscoelastic,    only: ve_degree, SCHEME_FE, SCHEME_TRAP, SCHEME_BE
+   use fe_radial_fe,       only: radial_mesh_build, radial_mesh, radial_operator, radial_fe_finalize
+   use fe_viscoelastic,    only: ve_step_double, ve_destroy, ve_step, ve_init, ve_degree, SCHEME_FE, SCHEME_TRAP, SCHEME_BE
    implicit none
 
    real(wp), parameter :: km = 1.0e3_wp, yr = sec_per_year
@@ -178,16 +178,16 @@ contains
       real(wp) :: dt, t, ua, va, fa, h, tk
       integer  :: istep, nstep, kd
       call mk_earth(e)
-      call m%build(e)
+      call radial_mesh_build(m, e)
       dt = dt_yr*yr
-      call ve%init(e, m, j, dt)
+      call ve_init(ve, e, m, j, dt)
       ve%scheme          = scheme
       ve%max_couple_iter = max_iter
       ve%couple_tol      = tol
       nstep = nint(T_END*1.0e3_wp*yr/dt)
       hd = 0.0_wp;  kd = 1;  iters_max = 0
       do istep = 1, nstep
-         call ve%step(1.0_wp, t, ua, va, fa)
+         call ve_step(ve, 1.0_wp, t, ua, va, fa)
          h  = g*ua/phiL
          tk = t/(1.0e3_wp*yr)
          iters_max = max(iters_max, ve%couple_iters_last)
@@ -198,7 +198,7 @@ contains
       do while (kd <= ND)        ! fill any unreached diagnostics with the last value
          hd(kd) = h;  kd = kd + 1
       end do
-      call ve%destroy()
+      call ve_destroy(ve)
    end subroutine run
 
    subroutine cost_curve()
@@ -263,11 +263,11 @@ contains
       type(radial_mesh) :: m
       type(ve_degree)   :: ve
       call mk_earth(e)
-      call m%build(e)
-      call ve%init(e, m, j, dt_yr*yr)
+      call radial_mesh_build(m, e)
+      call ve_init(ve, e, m, j, dt_yr*yr)
       ve%scheme = scheme;  ve%max_couple_iter = max_iter;  ve%couple_tol = TOL_TIGHT
-      call ve%step_double(1.0_wp, est)
-      call ve%destroy()
+      call ve_step_double(ve, 1.0_wp, est)
+      call ve_destroy(ve)
    end function one_estimate
 
    pure function order(e_coarse, e_fine) result(p)

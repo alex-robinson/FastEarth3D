@@ -25,7 +25,7 @@ program test_benchmark_lvz
    use fe_constants,       only: kyr
    use fe_earth_structure, only: earth_model, build_M3L70V01
    use fe_radial_fe,       only: radial_fe_finalize
-   use fe_response,        only: ve_response
+   use fe_response,        only: response, response_init_elastic, response_init_ve, response_init_null
    use fe_sht,             only: sht_grid
    implicit none
 
@@ -92,13 +92,13 @@ contains
       !! t = 200 yr. With lvz_on, the soft column is injected via enable_lateral_visc.
       logical,  intent(in)  :: lvz_on
       real(wp), intent(out) :: u_end
-      type(ve_response) :: ve
+      type(response) :: ve
       complex(wp), allocatable :: disc_lm(:), slm(:), ulm(:), nlm(:)
       real(wp),    allocatable :: pert(:,:,:)
       real(wp) :: theta_c, t, H, rmid, depth, uval
       integer  :: i, ie, j, nstep
 
-      call ve%init(e, sht, DT)
+      call response_init_ve(ve, e, sht, DT)
       allocate(disc_lm(sht%nlm), slm(sht%nlm), ulm(sht%nlm), nlm(sht%nlm))
 
       ! Disc load → spectral via the EXACT spherical-cap coefficients (mass-correct,

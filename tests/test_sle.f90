@@ -12,7 +12,7 @@ program test_sle
    use fe_constants,       only: rho_ice, rho_water, pi
    use fe_earth_structure, only: earth_model, build_M3L70V01
    use fe_radial_fe,       only: radial_fe_finalize
-   use fe_response,        only: null_response, elastic_response
+   use fe_response,        only: response_destroy, response, response_init_elastic, response_init_ve, response_init_null
    use fe_sht,             only: sht_grid, sht_grid_init, sht_grid_destroy, sht_grid_surface_integral
    use fe_sle,             only: sle_solve, sle_solver, sle_result
    implicit none
@@ -82,7 +82,7 @@ contains
 
    subroutine eustatic_check(ok)
       logical, intent(inout) :: ok
-      type(null_response) :: resp
+      type(response) :: resp
       real(wp) :: ice_int, C_int, expect, smin, smax
       integer  :: i, j
 
@@ -125,13 +125,13 @@ contains
 
    subroutine elastic_check(ok)
       logical, intent(inout) :: ok
-      type(elastic_response) :: resp
+      type(response) :: resp
       type(earth_model)      :: e
       real(wp) :: smin, smax, smean, w, wsum
       integer  :: i, j
 
       e = build_M3L70V01()
-      call resp%init(e, lmax=LMAX)
+      call response_init_elastic(resp, e, lmax=LMAX)
       call sle_solve(sle, sht, resp, d_ice, ice, topo0, S, C, res)
 
       smin =  huge(1.0_wp);  smax = -huge(1.0_wp);  smean = 0.0_wp;  wsum = 0.0_wp
@@ -167,7 +167,7 @@ contains
       if (smean <= 0.0_wp) then
          write(*,'(a)') '      FAIL: net sea level should rise'; ok = .false.
       end if
-      call resp%destroy()
+      call response_destroy(resp)
    end subroutine elastic_check
 
 end program test_sle

@@ -19,7 +19,7 @@ program test_flotation
    !!   E  colat>80   topo=-4000  ice=3000  ->  floats  (C=1): 3 km ice, deep
    use fe_precision, only: wp
    use fe_constants, only: rho_ice, rho_water, pi
-   use fe_response,  only: null_response
+   use fe_response,  only: response, response_init_elastic, response_init_ve, response_init_null
    use fe_sht,       only: sht_grid, sht_grid_init, sht_grid_destroy
    use fe_sle,       only: sle_solve, sle_solver, sle_result
    implicit none
@@ -28,7 +28,7 @@ program test_flotation
    type(sht_grid)      :: sht
    type(sle_solver)    :: sle
    type(sle_result)    :: res
-   type(null_response) :: resp
+   type(response) :: resp
    real(wp), allocatable :: topo0(:,:), d_ice(:,:), ice(:,:), S(:,:), C(:,:), &
                             Cexpect(:,:)
    integer :: i, j, nmismatch, n_grounded, n_ocean

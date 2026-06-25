@@ -40,9 +40,9 @@ program test_benchmark_sle
    use fe_constants,       only: pi, kyr, rho_ice, rho_water
    use fe_earth_structure, only: earth_model, build_M3L70V01
    use fe_radial_fe,       only: radial_fe_finalize
-   use fe_response,        only: ve_response
-   use fe_sht,             only: sht_grid
-   use fe_sle,             only: sle_solver, sle_result
+   use fe_response,        only: response_destroy, response_horizontal, response, response_init_elastic, response_init_ve, response_init_null
+   use fe_sht,             only: sht_grid_destroy, sht_grid_eval_point_horiz, sht_grid_eval_point, sht_grid_analysis, sht_grid_surface_integral, sht_grid_init, sht_grid
+   use fe_sle,             only: sle_solve, sle_solver, sle_result
    use fe_field,           only: spherical_cap, exp_basin
    implicit none
 
@@ -82,7 +82,7 @@ program test_benchmark_sle
 
    type(sht_grid)     :: sht
    type(earth_model)  :: em
-   type(ve_response)  :: resp
+   type(response)  :: resp
    type(sle_solver)   :: sle
    type(sle_result)   :: res
    real(wp), allocatable :: topo0(:,:), basin(:,:), ice_now(:,:)
@@ -100,9 +100,9 @@ program test_benchmark_sle
    call set_case()
 
    dt = 0.02_wp*kyr
-   call sht%init(LMAX, nlat=2*LMAX, nphi=4*LMAX)
+   call sht_grid_init(sht, LMAX, nlat=2*LMAX, nphi=4*LMAX)
    em = build_M3L70V01()
-   call resp%init(em, sht, dt)
+   call response_init_ve(resp, em, sht, dt)
    sle%n_inner = 20     ! n_outer left at default 3 (converged: 3 == 12 on E2)
    sle%fixed_ocean = fixed_ocean_case   ! SLE1 (C2/D3) vs SLE2 migrating (E2/F1)
    sle%subgrid     = .not. binary_run   ! subgrid coast by default; "binary" 2nd arg opts out
@@ -136,7 +136,7 @@ program test_benchmark_sle
       do spin = 1, MAXSPIN
          call run_history()                              ! fills rsl, C, ice_now, res
          dtopo = (topo0 - rsl) - basin                   ! present-day surface - B2
-         spinerr = sht%surface_integral(abs(dtopo))/(16.0_wp*atan(1.0_wp))
+         spinerr = sht_grid_surface_integral(sht, abs(dtopo))/(16.0_wp*atan(1.0_wp))
          write(*,'(a,i2,a,f10.4,a)') '   spinup ', spin, ': mean|present - B2| = ', spinerr, ' m'
          if (spinerr < SPIN_TOL) exit
          topo0 = topo0 - 0.5_wp*dtopo                     ! Heun-style paleotopo update
@@ -151,23 +151,23 @@ program test_benchmark_sle
    ! resp%horizontal reuses the last begin_step's frozen drift, so v_lm is
    ! consistent with res%u/res%N.
    tmp = rho_ice*ice_now*(1.0_wp - C) + rho_water*(C*rsl)
-   call sht%analysis(tmp, u_lm)                           ! u_lm reused as load_lm
-   call resp%horizontal(sht, u_lm, v_lm)
+   call sht_grid_analysis(sht, tmp, u_lm)                           ! u_lm reused as load_lm
+   call response_horizontal(resp, sht, u_lm, v_lm)
 
    ! eustatic decomposition at the final state
    rho_ratio = rho_ice/rho_water
-   bary  = -rho_ratio*sht%surface_integral(ice_now)/sht%surface_integral(C)
-   shift = sht%surface_integral(C*(res%N - res%u))/sht%surface_integral(C)
+   bary  = -rho_ratio*sht_grid_surface_integral(sht, ice_now)/sht_grid_surface_integral(sht, C)
+   shift = sht_grid_surface_integral(sht, C*(res%N - res%u))/sht_grid_surface_integral(sht, C)
    write(*,'(a)') ''
    write(*,'(a,f10.4,a,f10.4,a,f10.4)') ' eustatic: dphi(esl)=', esl, '  barystatic=', bary, &
                                         '  ocean-mean(N-u)=', shift
    write(*,'(a,f8.4,a,f10.2)') ' ocean frac: migrated(C)=', res%ocean_frac, &
-        '  C_int[sr]=', sht%surface_integral(C)
+        '  C_int[sr]=', sht_grid_surface_integral(sht, C)
 
    ! spectral coefficients of the final converged scalar fields
-   tmp = res%u;  call sht%analysis(tmp, u_lm)
-   tmp = res%N;  call sht%analysis(tmp, N_lm)
-   tmp = rsl;    call sht%analysis(tmp, rsl_lm)
+   tmp = res%u;  call sht_grid_analysis(sht, tmp, u_lm)
+   tmp = res%N;  call sht_grid_analysis(sht, tmp, N_lm)
+   tmp = rsl;    call sht_grid_analysis(sht, tmp, rsl_lm)
 
    write(*,'(a)') ''
    write(*,'(3a)') ' Peak-normalized max error vs Martinec-2018 ', casename, ':'
@@ -179,9 +179,9 @@ program test_benchmark_sle
       write(*,'(3a)') ' PASS: Martinec-2018 case ', casename, ' (SLE u + horizontal + geoid + SLE) matches'
    else
       write(*,'(3a)') ' FAIL: Martinec-2018 case ', casename, ' SLE validation did not all pass'
-      call resp%destroy();  call sht%destroy();  call radial_fe_finalize();  error stop 1
+      call response_destroy(resp);  call sht_grid_destroy(sht);  call radial_fe_finalize();  error stop 1
    end if
-   call resp%destroy();  call sht%destroy();  call radial_fe_finalize()
+   call response_destroy(resp);  call sht_grid_destroy(sht);  call radial_fe_finalize()
 
 contains
 
@@ -263,7 +263,7 @@ contains
          alpha = frac*ALPHA_MAX;  h = frac*H0
          call spherical_cap(sht, ICE_COLAT, ICE_LON, alpha, h, ice_now)
          ! ice-free reference: d_ice (load) = ice (flotation) = current absolute cap
-         call sle%solve(sht, resp, ice_now, ice_now, topo0, rsl, C, res)
+         call sle_solve(sle, sht, resp, ice_now, ice_now, topo0, rsl, C, res)
          tot_inner = tot_inner + res%n_inner_last   ! inner iters in the last outer pass
          tot_outer = tot_outer + res%n_outer_done   ! coastline (outer) passes this step
          if (mod(istep,250) == 0 .or. istep == nsteps) &
@@ -278,8 +278,8 @@ contains
    subroutine reset_memory()
       !! Return the response to the relaxed, ice-free reference (zero memory, t=0)
       !! so each history (and each F1 spinup pass) starts from the same state.
-      call resp%destroy()
-      call resp%init(em, sht, dt)
+      call response_destroy(resp)
+      call response_init_ve(resp, em, sht, dt)
    end subroutine reset_memory
 
    subroutine compare_all()
@@ -315,10 +315,10 @@ contains
          else                              ! col1 = 180+lon; sample lon = col1 (SHTns periodic)
             colat = pfix(k);    lon = c1(i)*DEG
          end if
-         call sht%eval_point(u_lm,   colat, lon, um)
-         call sht%eval_point(N_lm,   colat, lon, nm)
-         call sht%eval_point(rsl_lm, colat, lon, slem)
-         call sht%eval_point_horiz(v_lm, colat, lon, vthm, vphm)
+         call sht_grid_eval_point(sht, u_lm,   colat, lon, um)
+         call sht_grid_eval_point(sht, N_lm,   colat, lon, nm)
+         call sht_grid_eval_point(sht, rsl_lm, colat, lon, slem)
+         call sht_grid_eval_point_horiz(sht, v_lm, colat, lon, vthm, vphm)
          ssm = nm + esl
          eu   = max(eu,   abs(um   - uref(i)))
          evth = max(evth, abs(vthm - vthref(i)))

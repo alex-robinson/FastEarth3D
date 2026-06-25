@@ -18,7 +18,7 @@ program test_sle_subgrid
    !! (coast does not move) subgrid and binary agree bit-for-bit.
    use fe_precision,  only: wp
    use fe_constants,  only: rho_ice, rho_water, pi
-   use fe_response,   only: null_response
+   use fe_response,   only: response, response_init_elastic, response_init_ve, response_init_null
    use fe_sht,        only: sht_grid, sht_grid_init, sht_grid_surface_integral, sht_grid_destroy
    use fe_sle,        only: sle_solve, sle_solver, sle_result
    use fe_field,      only: spherical_cap, exp_basin
@@ -27,7 +27,7 @@ program test_sle_subgrid
    real(wp), parameter :: DEG = pi/180.0_wp
    integer,  parameter :: LMAX = 48
    type(sht_grid)      :: sht
-   type(null_response) :: resp
+   type(response) :: resp
    type(sle_solver)    :: sle
    type(sle_result)    :: res
    real(wp), allocatable :: topo0(:,:), d_ice(:,:), ice(:,:), rsl(:,:), C(:,:)

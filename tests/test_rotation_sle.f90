@@ -17,7 +17,7 @@ program test_rotation_sle
    use fe_constants,       only: omega_earth
    use fe_earth_structure, only: earth_model, build_M3L70V01
    use fe_radial_fe,       only: radial_fe_finalize
-   use fe_response,        only: elastic_response
+   use fe_response,        only: response_destroy, response, response_init_elastic, response_init_ve, response_init_null
    use fe_sle,             only: sle_solve, sle_solver, sle_result
    use fe_rotation,        only: rotation_destroy, rotation_commit, rotation_s_rot, rotation_solve_m, rotation_begin_step, rotation_init, rotation_state
    use fe_sht,             only: sht_grid, sht_grid_init, sht_grid_destroy
@@ -31,7 +31,7 @@ program test_rotation_sle
 
    type(earth_model)      :: earth
    type(sht_grid)         :: sht
-   type(elastic_response) :: resp
+   type(response) :: resp
    type(sle_solver)       :: sle
    type(sle_result)       :: res0, res1
    type(rotation_state)   :: rot
@@ -45,7 +45,7 @@ program test_rotation_sle
    ok = .true.
    earth = build_M3L70V01()
    call sht_grid_init(sht, 128, nlat=256, nphi=512)
-   call resp%init(earth, 128)
+   call response_init_elastic(resp, earth, 128)
    allocate(d_ice(sht%nphi,sht%nlat), ice(sht%nphi,sht%nlat), topo0(sht%nphi,sht%nlat))
    allocate(rsl(sht%nphi,sht%nlat), rsl0(sht%nphi,sht%nlat), C(sht%nphi,sht%nlat))
    allocate(srot(sht%nphi,sht%nlat), srot_prev(sht%nphi,sht%nlat), lam(sht%nphi,sht%nlat))
@@ -154,7 +154,7 @@ program test_rotation_sle
       write(*,'(a)') ' FAIL: rotation-SLE coupling did not all pass'
       call sht_grid_destroy(sht);  call radial_fe_finalize();  error stop 1
    end if
-   call rotation_destroy(rot);  call resp%destroy();  call sht_grid_destroy(sht);  call radial_fe_finalize()
+   call rotation_destroy(rot);  call response_destroy(resp);  call sht_grid_destroy(sht);  call radial_fe_finalize()
 
 contains
 

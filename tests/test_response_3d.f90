@@ -18,7 +18,7 @@ program test_response_3d
    use fe_constants,       only: kyr
    use fe_earth_structure, only: earth_n_layers, earth_model, build_M3L70V01, RHEOL_MAXWELL
    use fe_radial_fe,       only: radial_fe_finalize
-   use fe_response,        only: ve_response
+   use fe_response,        only: response_apply, response_destroy, response_enable_lateral_visc, response_commit_step, response_begin_step, response, response_init_elastic, response_init_ve, response_init_null
    use fe_sht,             only: sht_grid, sht_grid_init, sht_grid_destroy, sht_grid_lmidx
    use fe_viscoelastic,    only: SCHEME_TRAP
    implicit none
@@ -104,7 +104,7 @@ contains
    subroutine drive_and_compare(ve3d, ve1d, label, ok)
       !! Drive both responses with the same load through NSTEP begin/apply/commit
       !! and report the max relative memory + uplift disagreement.
-      type(ve_response), intent(inout) :: ve3d, ve1d
+      type(response), intent(inout) :: ve3d, ve1d
       character(*),      intent(in)    :: label
       logical,           intent(inout) :: ok
       integer, parameter :: NSTEP = 25
@@ -117,11 +117,11 @@ contains
       call build_load(slm)
       dmem = 0.0_wp;  smem = 0.0_wp;  dupl = 0.0_wp;  supl = 0.0_wp
       do i = 1, NSTEP
-         call ve3d%begin_step(sht);  call ve3d%apply(sht, slm, u3, n3)
-         call ve1d%begin_step(sht);  call ve1d%apply(sht, slm, u1, n1)
+         call response_begin_step(ve3d, sht);  call response_apply(ve3d, sht, slm, u3, n3)
+         call response_begin_step(ve1d, sht);  call response_apply(ve1d, sht, slm, u1, n1)
          dupl = max(dupl, maxval(abs(u3 - u1)));  supl = max(supl, maxval(abs(u1)))
-         call ve3d%commit_step(sht, slm)
-         call ve1d%commit_step(sht, slm)
+         call response_commit_step(ve3d, sht, slm)
+         call response_commit_step(ve1d, sht, slm)
          dmem = max(dmem, mem_diff(ve3d%Are, ve1d%Are), mem_diff(ve3d%Bre, ve1d%Bre), &
                           mem_diff(ve3d%Cre, ve1d%Cre), mem_diff(ve3d%Aim, ve1d%Aim), &
                           mem_diff(ve3d%Bim, ve1d%Bim), mem_diff(ve3d%Cim, ve1d%Cim))
@@ -139,22 +139,22 @@ contains
 
    subroutine regression_zero(ok)
       logical, intent(inout) :: ok
-      type(ve_response)     :: ve3d, ve1d
+      type(response)     :: ve3d, ve1d
       real(wp), allocatable :: pert(:,:,:)
-      call ve1d%init(e, sht, dt)
-      call ve3d%init(e, sht, dt)
+      call response_init_ve(ve1d, e, sht, dt)
+      call response_init_ve(ve3d, e, sht, dt)
       allocate(pert(sht%nphi, sht%nlat, ve3d%ne));  pert = 0.0_wp
       ve3d%visc3d_tol = -1.0_wp     ! force every Maxwell element through the pseudo-spectral
-      call ve3d%enable_lateral_visc(sht, pert)   ! kernel (else a uniform field collapses to 1-D)
+      call response_enable_lateral_visc(ve3d, sht, pert)   ! kernel (else a uniform field collapses to 1-D)
       call drive_and_compare(ve3d, ve1d, 'pert=0 :', ok)
       deallocate(pert)
-      call ve3d%destroy();  call ve1d%destroy()
+      call response_destroy(ve3d);  call response_destroy(ve1d)
    end subroutine regression_zero
 
    subroutine consistency_uniform(p, ok)
       real(wp), intent(in)    :: p
       logical,  intent(inout) :: ok
-      type(ve_response)     :: ve3d, ve1d
+      type(response)     :: ve3d, ve1d
       type(earth_model)     :: es
       real(wp), allocatable :: pert(:,:,:)
       integer :: k
@@ -164,15 +164,15 @@ contains
          if (es%layers(k)%rheology == RHEOL_MAXWELL) &
             es%layers(k)%eta = es%layers(k)%eta * 10.0_wp**p
       end do
-      call ve1d%init(es, sht, dt)
+      call response_init_ve(ve1d, es, sht, dt)
       ! 3-D path: base Earth + a spatially-uniform perturbation p
-      call ve3d%init(e, sht, dt)
+      call response_init_ve(ve3d, e, sht, dt)
       allocate(pert(sht%nphi, sht%nlat, ve3d%ne));  pert = p
       ve3d%visc3d_tol = -1.0_wp     ! force the pseudo-spectral kernel (validate it reduces to 1-D)
-      call ve3d%enable_lateral_visc(sht, pert)
+      call response_enable_lateral_visc(ve3d, sht, pert)
       call drive_and_compare(ve3d, ve1d, 'uniform:', ok)
       deallocate(pert)
-      call ve3d%destroy();  call ve1d%destroy()
+      call response_destroy(ve3d);  call response_destroy(ve1d)
    end subroutine consistency_uniform
 
    subroutine consistency_trap(p, ok)
@@ -181,7 +181,7 @@ contains
       !! 1-D trapezoidal advance for a uniform field, to SHT round-trip precision.
       real(wp), intent(in)    :: p
       logical,  intent(inout) :: ok
-      type(ve_response)     :: ve3d, ve1d
+      type(response)     :: ve3d, ve1d
       type(earth_model)     :: es
       real(wp), allocatable :: pert(:,:,:)
       integer :: k
@@ -190,16 +190,16 @@ contains
          if (es%layers(k)%rheology == RHEOL_MAXWELL) &
             es%layers(k)%eta = es%layers(k)%eta * 10.0_wp**p
       end do
-      call ve1d%init(es, sht, dt)
-      call ve3d%init(e, sht, dt)
+      call response_init_ve(ve1d, es, sht, dt)
+      call response_init_ve(ve3d, e, sht, dt)
       ve1d%scheme = SCHEME_TRAP;  ve1d%max_couple_iter = 4
       ve3d%scheme = SCHEME_TRAP;  ve3d%max_couple_iter = 4
       allocate(pert(sht%nphi, sht%nlat, ve3d%ne));  pert = p
       ve3d%visc3d_tol = -1.0_wp     ! force the pseudo-spectral kernel (validate it reduces to 1-D)
-      call ve3d%enable_lateral_visc(sht, pert)
+      call response_enable_lateral_visc(ve3d, sht, pert)
       call drive_and_compare(ve3d, ve1d, 'trap-uni:', ok)
       deallocate(pert)
-      call ve3d%destroy();  call ve1d%destroy()
+      call response_destroy(ve3d);  call response_destroy(ve1d)
    end subroutine consistency_trap
 
 end program test_response_3d

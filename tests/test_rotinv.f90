@@ -22,7 +22,7 @@ program test_rotinv
    use fe_constants,       only: kyr
    use fe_earth_structure, only: earth_model, build_M3L70V01
    use fe_radial_fe,       only: radial_fe_finalize
-   use fe_response,        only: ve_response
+   use fe_response,        only: response_destroy, response_commit_step, response_apply, response_begin_step, response_enable_lateral_visc, response, response_init_elastic, response_init_ve, response_init_null
    use fe_sht,             only: sht_grid, sht_grid_init, sht_grid_destroy, sht_grid_analysis, sht_grid_eval_point
    use fe_viscoelastic,    only: SCHEME_TRAP
    implicit none
@@ -80,13 +80,13 @@ contains
       !! return the cap-centre uplift. Cap height and LVZ extent taper smoothly about n̂.
       real(wp), intent(in)  :: beta_c, lon_c   !! axis colatitude / longitude [rad]
       real(wp), intent(out) :: u_peak
-      type(ve_response) :: ve
+      type(response) :: ve
       complex(wp), allocatable :: cap_lm(:), slm(:), ulm(:), nlm(:)
       real(wp),    allocatable :: cap(:,:), pert(:,:,:)
       real(wp) :: gam, rmid, depth, t, H, uval
       integer  :: i, j, ie, nstep, istep
 
-      call ve%init(e, sht, DT)
+      call response_init_ve(ve, e, sht, DT)
       ve%scheme = SCHEME_TRAP;  ve%max_couple_iter = 2
       allocate(cap_lm(sht%nlm), slm(sht%nlm), ulm(sht%nlm), nlm(sht%nlm))
       allocate(cap(sht%nphi, sht%nlat), pert(sht%nphi, sht%nlat, ve%ne))
@@ -112,7 +112,7 @@ contains
             end do
          end if
       end do
-      call ve%enable_lateral_visc(sht, pert)
+      call response_enable_lateral_visc(ve, sht, pert)
 
       nstep = nint(T_END/DT)
       u_peak = 0.0_wp
@@ -120,9 +120,9 @@ contains
          t   = real(istep,wp)*DT
          H   = min(t/T_RAMP, 1.0_wp)*H_MAX
          slm = RHO_ICE*H*cap_lm
-         call ve%begin_step(sht)
-         call ve%apply(sht, slm, ulm, nlm)
-         call ve%commit_step(sht, slm)
+         call response_begin_step(ve, sht)
+         call response_apply(ve, sht, slm, ulm, nlm)
+         call response_commit_step(ve, sht, slm)
          if (istep == nstep) then
             call sht_grid_eval_point(sht, ulm, beta_c, lon_c, uval)   ! uplift at the cap centre
             u_peak = uval
@@ -130,7 +130,7 @@ contains
       end do
 
       deallocate(cap_lm, slm, ulm, nlm, cap, pert)
-      call ve%destroy()
+      call response_destroy(ve)
    end subroutine run_case
 
    pure real(wp) function ang_dist(th, ph, th0, ph0) result(g)

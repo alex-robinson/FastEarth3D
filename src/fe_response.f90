@@ -36,80 +36,37 @@ module fe_response
    implicit none
    private
 
-   public :: response_operator, elastic_response, null_response, ve_response
+   public :: response, RESP_NULL, RESP_ELASTIC, RESP_VE
+   public :: response_init_null, response_init_elastic, response_init_ve
+   public :: response_apply, response_horizontal, response_destroy
+   public :: response_begin_step, response_commit_step
+   public :: response_prepare_endpoint, response_advance_endpoint
+   public :: response_endpoint_converged, response_finalize_step
+   public :: response_set_dt, response_prime_sigma
+   public :: response_save_state, response_restore_state, response_stash_coarse
+   public :: response_coarse_fine_error, response_max_rate, response_memory_norm
+   public :: response_enable_lateral_visc, response_enable_lateral_visc_from_nodes
 
-   type, abstract :: response_operator
-      !! Maps a spectral surface load to surface displacement + geoid.
-      !!
-      !! Stateful (viscoelastic) responses are AFFINE in the current load at a
-      !! fixed time: apply() returns gain(l)·σ_lm + drift_lm, where drift_lm is
-      !! frozen from the past-relaxation memory. The SLE fixed point may call
-      !! apply() many times per time step with different trial loads (safe,
-      !! pure); the surrounding step is bracketed by begin_step (freeze the
-      !! drift) and commit_step (advance the memory with the converged load).
-      !! For elastic / null responses these brackets are no-ops.
-   contains
-      procedure(apply_if), deferred :: apply
-      procedure :: begin_step  => response_begin_default
-      procedure :: commit_step => response_commit_default
-      !! Co-convergence hooks for the SLE driver (§3c part 3b): when the load
-      !! evolves fast within a step, the load σ and the relaxation memory τ_{n+1}
-      !! are a mutual fixed point, so the driver iterates them together. It calls
-      !! prepare_endpoint once (snapshot τ_n), then repeatedly: converge σ against
-      !! the current τ_{n+1} estimate, advance_endpoint (one trapezoid pass that
-      !! also refreshes the report drift to τ_{n+1}), until endpoint_converged;
-      !! finalize_step then advances time. For stateless / 1st-order responses
-      !! these reduce to a single memory advance (no co-iteration), so they are
-      !! no-ops here except advance_endpoint, which stateful drivers override.
-      procedure :: prepare_endpoint   => response_prepare_default
-      procedure :: advance_endpoint   => response_advance_default
-      procedure :: endpoint_converged => response_converged_default
-      procedure :: finalize_step      => response_finalize_default
-      !! horizontal() returns the spheroidal scalar v_lm = V(a)·σ_lm (+ frozen
-      !! drift, for stateful responses) whose surface gradient ∇₁(Σ v_lm Y_lm) is
-      !! the horizontal displacement (u_θ, u_φ). It is a pure DIAGNOSTIC — the SLE
-      !! fixed point needs only u and N (apply), so it never calls this; a caller
-      !! evaluates it ONCE on the converged load. Default (rigid / null) ⇒ zero.
-      procedure :: horizontal  => response_horizontal_default
-   end type response_operator
+   integer, parameter :: RESP_NULL = 0, RESP_ELASTIC = 1, RESP_VE = 2
 
-   abstract interface
-      subroutine apply_if(self, sht, sigma_lm, u_lm, n_lm)
-         import :: response_operator, sht_grid, wp
-         class(response_operator), intent(inout) :: self
-         type(sht_grid),           intent(in)    :: sht
-         complex(wp),              intent(in)    :: sigma_lm(:)  !! load [kg m^-2]
-         complex(wp),              intent(out)   :: u_lm(:)      !! uplift  [m]
-         complex(wp),              intent(out)   :: n_lm(:)      !! geoid   [m]
-      end subroutine apply_if
-   end interface
-
-   type, extends(response_operator) :: elastic_response
-      !! Time-independent (elastic) response: per-degree surface response to a
-      !! unit load, precomputed once. Linear and order-independent, so a single
-      !! gain per degree multiplies every coefficient of that degree.
-      integer  :: lmax = 0
-      real(wp) :: g    = 0.0_wp          !! surface gravity [m s^-2]
-      real(wp) :: a    = 0.0_wp          !! surface radius  [m]
+   type :: response
+      !! Surface-load response operator as a tagged union. `kind` selects the
+      !! behaviour and the free functions response_* dispatch on it:
+      !!   RESP_NULL    rigid, non-self-gravitating: u ≡ 0, N ≡ 0 (eustatic limit)
+      !!   RESP_ELASTIC time-independent per-degree gains, precomputed once
+      !!   RESP_VE      viscoelastic field driver (stateful Maxwell memory)
+      !! The sea-level equation (fe_sle) depends only on this interface, so the
+      !! three earth responses are interchangeable. A default-initialised value
+      !! (kind = RESP_NULL) is a valid null response with no construction needed.
+      integer :: kind = RESP_NULL
+      ! --- RESP_ELASTIC: per-degree elastic surface gains ---------------------
       real(wp), allocatable :: ugain(:)  !! (0:lmax) U(a) per unit σ_l  [m / (kg m^-2)]
       real(wp), allocatable :: ngain(:)  !! (0:lmax) N(a)=−F(a)/g per unit σ_l
       real(wp), allocatable :: vgain(:)  !! (0:lmax) V(a) per unit σ_l (horizontal)
-   contains
-      procedure :: init       => elastic_response_init
-      procedure :: apply      => elastic_response_apply
-      procedure :: horizontal => elastic_response_horizontal
-      procedure :: destroy    => elastic_response_destroy
-   end type elastic_response
+      ! --- RESP_VE: viscoelastic field-driver state ---------------------------
 
-   type, extends(response_operator) :: null_response
-      !! Rigid, non-self-gravitating Earth: u ≡ 0 and N ≡ 0. The SLE then
-      !! reduces to a uniform (eustatic/barystatic) ocean response, which is the
-      !! textbook limit used to check mass conservation and the uniform term.
-   contains
-      procedure :: apply => null_response_apply
-   end type null_response
 
-   type, extends(response_operator) :: ve_response
+
       !! Viscoelastic field driver. Holds one per-degree saddle-point operator
       !! (assembled + factored once) shared across all orders m, plus an
       !! independent Maxwell memory-stress history per spectral coefficient
@@ -229,73 +186,152 @@ module fe_response
       real(wp)    :: time_s = 0.0_wp                       !! saved time (buffer A)
       complex(wp), allocatable :: sigma_n_s(:)             !! saved σ_n (buffer A)
       logical     :: sigma_primed_s = .false.
-   contains
-      procedure :: init        => ve_response_init
-      procedure :: begin_step  => ve_response_begin
-      procedure :: apply       => ve_response_apply
-      procedure :: horizontal  => ve_response_horizontal
-      procedure :: commit_step => ve_response_commit
-      procedure :: enable_lateral_visc => ve_response_enable_lateral_visc
-      procedure :: enable_lateral_visc_from_nodes => ve_response_enable_lateral_visc_from_nodes
-      procedure :: prepare_endpoint   => ve_response_prepare_endpoint
-      procedure :: advance_endpoint   => ve_response_advance_endpoint
-      procedure :: endpoint_converged => ve_response_endpoint_converged
-      procedure :: finalize_step      => ve_response_finalize_step
-      ! Adaptive-Δt controller primitives (§3c controller; see fe_timestep)
-      procedure :: prime_sigma       => ve_response_prime_sigma
-      procedure :: set_dt            => ve_response_set_dt
-      procedure :: save_state        => ve_response_save_state
-      procedure :: restore_state     => ve_response_restore_state
-      procedure :: stash_coarse      => ve_response_stash_coarse
-      procedure :: coarse_fine_error => ve_response_coarse_fine_error
-      ! Explicit-stepper primitives (fe_timestep): the Maxwell-rate stability ceiling
-      ! and the reactive-guard memory ∞-norm.
-      procedure :: max_rate          => ve_response_max_rate
-      procedure :: memory_norm       => ve_response_memory_norm
-      procedure :: destroy     => ve_response_destroy
-   end type ve_response
+   end type response
 
 contains
 
+   ! ===================================================================
+   ! Public interface: free functions over `response`. The eight SLE-facing
+   ! operators dispatch on self%kind; the constructors set it. RESP_NULL and
+   ! RESP_ELASTIC share the stateless (no-op) step brackets.
+   ! ===================================================================
+
+   subroutine response_init_null(self)
+      !! Rigid, non-self-gravitating response (u ≡ 0, N ≡ 0). Equivalent to a
+      !! default-initialised value; provided for explicit construction.
+      type(response), intent(out) :: self
+      self%kind = RESP_NULL
+   end subroutine response_init_null
+
+   subroutine response_apply(self, sht, sigma_lm, u_lm, n_lm)
+      type(response), intent(inout) :: self
+      type(sht_grid), intent(in)    :: sht
+      complex(wp),    intent(in)    :: sigma_lm(:)
+      complex(wp),    intent(out)   :: u_lm(:)
+      complex(wp),    intent(out)   :: n_lm(:)
+      select case (self%kind)
+      case (RESP_ELASTIC); call elastic_response_apply(self, sht, sigma_lm, u_lm, n_lm)
+      case (RESP_VE);      call ve_response_apply(self, sht, sigma_lm, u_lm, n_lm)
+      case default;        call null_response_apply(self, sht, sigma_lm, u_lm, n_lm)
+      end select
+   end subroutine response_apply
+
+   subroutine response_horizontal(self, sht, sigma_lm, v_lm)
+      type(response), intent(inout) :: self
+      type(sht_grid), intent(in)    :: sht
+      complex(wp),    intent(in)    :: sigma_lm(:)
+      complex(wp),    intent(out)   :: v_lm(:)
+      select case (self%kind)
+      case (RESP_ELASTIC); call elastic_response_horizontal(self, sht, sigma_lm, v_lm)
+      case (RESP_VE);      call ve_response_horizontal(self, sht, sigma_lm, v_lm)
+      case default;        call response_horizontal_default(self, sht, sigma_lm, v_lm)
+      end select
+   end subroutine response_horizontal
+
+   subroutine response_begin_step(self, sht)
+      type(response), intent(inout) :: self
+      type(sht_grid), intent(in)    :: sht
+      select case (self%kind)
+      case (RESP_VE); call ve_response_begin(self, sht)
+      case default;   call response_begin_default(self, sht)
+      end select
+   end subroutine response_begin_step
+
+   subroutine response_commit_step(self, sht, sigma_lm)
+      type(response), intent(inout) :: self
+      type(sht_grid), intent(in)    :: sht
+      complex(wp),    intent(in)    :: sigma_lm(:)
+      select case (self%kind)
+      case (RESP_VE); call ve_response_commit(self, sht, sigma_lm)
+      case default;   call response_commit_default(self, sht, sigma_lm)
+      end select
+   end subroutine response_commit_step
+
+   subroutine response_prepare_endpoint(self, sht)
+      type(response), intent(inout) :: self
+      type(sht_grid), intent(in)    :: sht
+      select case (self%kind)
+      case (RESP_VE); call ve_response_prepare_endpoint(self, sht)
+      case default;   call response_prepare_default(self, sht)
+      end select
+   end subroutine response_prepare_endpoint
+
+   subroutine response_advance_endpoint(self, sht, sigma_lm)
+      type(response), intent(inout) :: self
+      type(sht_grid), intent(in)    :: sht
+      complex(wp),    intent(in)    :: sigma_lm(:)
+      select case (self%kind)
+      case (RESP_VE); call ve_response_advance_endpoint(self, sht, sigma_lm)
+      case default;   call response_advance_default(self, sht, sigma_lm)
+      end select
+   end subroutine response_advance_endpoint
+
+   logical function response_endpoint_converged(self) result(done)
+      type(response), intent(in) :: self
+      select case (self%kind)
+      case (RESP_VE); done = ve_response_endpoint_converged(self)
+      case default;   done = response_converged_default(self)
+      end select
+   end function response_endpoint_converged
+
+   subroutine response_finalize_step(self, sht)
+      type(response), intent(inout) :: self
+      type(sht_grid), intent(in)    :: sht
+      select case (self%kind)
+      case (RESP_VE); call ve_response_finalize_step(self, sht)
+      case default;   call response_finalize_default(self, sht)
+      end select
+   end subroutine response_finalize_step
+
+   subroutine response_destroy(self)
+      !! Release whatever state the response holds (safe for any kind: every
+      !! deallocation is allocated-guarded).
+      type(response), intent(inout) :: self
+      call elastic_response_destroy(self)
+      call ve_response_destroy(self)
+      self%kind = RESP_NULL
+   end subroutine response_destroy
+
+
    subroutine response_begin_default(self, sht)
       !! No-op step bracket for stateless responses.
-      class(response_operator), intent(inout) :: self
+      type(response), intent(inout) :: self
       type(sht_grid),           intent(in)    :: sht
    end subroutine response_begin_default
 
    subroutine response_commit_default(self, sht, sigma_lm)
-      class(response_operator), intent(inout) :: self
+      type(response), intent(inout) :: self
       type(sht_grid),           intent(in)    :: sht
       complex(wp),              intent(in)    :: sigma_lm(:)
    end subroutine response_commit_default
 
    subroutine response_prepare_default(self, sht)
       !! No-op endpoint bracket for stateless / 1st-order responses.
-      class(response_operator), intent(inout) :: self
+      type(response), intent(inout) :: self
       type(sht_grid),           intent(in)    :: sht
    end subroutine response_prepare_default
 
    subroutine response_advance_default(self, sht, sigma_lm)
       !! No memory to advance (stateless response): nothing to do.
-      class(response_operator), intent(inout) :: self
+      type(response), intent(inout) :: self
       type(sht_grid),           intent(in)    :: sht
       complex(wp),              intent(in)    :: sigma_lm(:)
    end subroutine response_advance_default
 
    logical function response_converged_default(self) result(done)
       !! Stateless / 1st-order responses converge in a single pass.
-      class(response_operator), intent(in) :: self
+      type(response), intent(in) :: self
       done = .true.
    end function response_converged_default
 
    subroutine response_finalize_default(self, sht)
-      class(response_operator), intent(inout) :: self
+      type(response), intent(inout) :: self
       type(sht_grid),           intent(in)    :: sht
    end subroutine response_finalize_default
 
    subroutine response_horizontal_default(self, sht, sigma_lm, v_lm)
       !! No horizontal displacement for a rigid / non-deforming response.
-      class(response_operator), intent(inout) :: self
+      type(response), intent(inout) :: self
       type(sht_grid),           intent(in)    :: sht
       complex(wp),              intent(in)    :: sigma_lm(:)  !! load [kg m^-2]
       complex(wp),              intent(out)   :: v_lm(:)      !! spheroidal V(a) [m]
@@ -303,7 +339,7 @@ contains
    end subroutine response_horizontal_default
 
    subroutine null_response_apply(self, sht, sigma_lm, u_lm, n_lm)
-      class(null_response), intent(inout) :: self
+      type(response), intent(inout) :: self
       type(sht_grid),       intent(in)    :: sht
       complex(wp),          intent(in)    :: sigma_lm(:)
       complex(wp),          intent(out)   :: u_lm(:)
@@ -312,7 +348,7 @@ contains
       n_lm = (0.0_wp, 0.0_wp)
    end subroutine null_response_apply
 
-   subroutine elastic_response_init(self, earth, lmax)
+   subroutine response_init_elastic(self, earth, lmax)
       !! Precompute the per-degree elastic surface gains for degrees 0..lmax.
       !!
       !!   l = 0 : incompressibility (Div u = 0) forbids degree-0 radial
@@ -320,7 +356,7 @@ contains
       !!           monopole potential, N(0) = φ^L_0/g = 4πGa/g per unit σ.
       !!   l ≥ 1 : assemble the per-degree saddle-point operator, solve a unit
       !!           surface load, store U(a) and N(a) = −F(a)/g.
-      class(elastic_response), intent(inout) :: self
+      type(response), intent(inout) :: self
       type(earth_model),       intent(in)    :: earth
       integer,                 intent(in)    :: lmax
       type(radial_mesh)     :: mesh
@@ -328,7 +364,8 @@ contains
       integer  :: l
       real(wp) :: ua, va, fa
 
-      call self%destroy()
+      call elastic_response_destroy(self)
+      self%kind = RESP_ELASTIC
       self%lmax = lmax
       self%a    = earth%r_earth
       self%g    = earth_gravity_at(earth, earth%r_earth)
@@ -356,12 +393,12 @@ contains
       ! validated against the Spada-2011 disc n_disc, which matches once N₁ is
       ! dropped.) Displacement degree-1 (ugain(1)) is left as solved.
       if (lmax >= 1) self%ngain(1) = 0.0_wp
-   end subroutine elastic_response_init
+   end subroutine response_init_elastic
 
    subroutine elastic_response_apply(self, sht, sigma_lm, u_lm, n_lm)
       !! Spectral multiply: u_lm = ugain(l)·σ_lm, n_lm = ngain(l)·σ_lm. Degrees
       !! above the precomputed lmax are zeroed.
-      class(elastic_response), intent(inout) :: self
+      type(response), intent(inout) :: self
       type(sht_grid),          intent(in)    :: sht
       complex(wp),             intent(in)    :: sigma_lm(:)
       complex(wp),             intent(out)   :: u_lm(:)
@@ -384,7 +421,7 @@ contains
       !! Spheroidal multiply: v_lm = vgain(l)·σ_lm (degree-1 left as solved, like
       !! ugain — the horizontal displacement is in the CE-like gauge, not the geoid
       !! CM frame). Synthesize ∇₁(Σ v_lm Y_lm) for (u_θ, u_φ).
-      class(elastic_response), intent(inout) :: self
+      type(response), intent(inout) :: self
       type(sht_grid),          intent(in)    :: sht
       complex(wp),             intent(in)    :: sigma_lm(:)
       complex(wp),             intent(out)   :: v_lm(:)
@@ -400,7 +437,7 @@ contains
    end subroutine elastic_response_horizontal
 
    subroutine elastic_response_destroy(self)
-      class(elastic_response), intent(inout) :: self
+      type(response), intent(inout) :: self
       if (allocated(self%ugain)) deallocate(self%ugain)
       if (allocated(self%ngain)) deallocate(self%ngain)
       if (allocated(self%vgain)) deallocate(self%vgain)
@@ -409,11 +446,11 @@ contains
 
    ! --- viscoelastic field driver ---------------------------------------------
 
-   subroutine ve_response_init(self, earth, sht, dt)
+   subroutine response_init_ve(self, earth, sht, dt)
       !! Assemble the per-degree operators, precompute the unit-load response and
       !! Maxwell constants, and zero the per-(l,m) memory. Tied to the grid sht
       !! (sets lmax = sht%lmax and the coefficient layout).
-      class(ve_response), intent(inout) :: self
+      type(response), intent(inout) :: self
       type(earth_model),  intent(in)    :: earth
       type(sht_grid),     intent(in)    :: sht
       real(wp),           intent(in)    :: dt
@@ -422,7 +459,8 @@ contains
       real(wp) :: eta_e
       integer  :: l, m, e, lay, node, k
 
-      call self%destroy()
+      call ve_response_destroy(self)
+      self%kind = RESP_VE
       call radial_mesh_build(mesh, earth)
       self%lmax = sht%lmax;  self%nlm = sht%nlm
       self%nr = mesh%nr;  self%ne = mesh%ne;  self%ndof = ndof_of(mesh%nr)
@@ -488,7 +526,7 @@ contains
          end do
       end do
 
-      ! degree-1 geoid frame (see elastic_response_init): the geoid is referenced
+      ! degree-1 geoid frame (see response_init_elastic): the geoid is referenced
       ! to the CM frame ⇒ N₁≡0. Zero the degree-1 geoid gain here; the degree-1
       ! relaxation drift is likewise zeroed in begin_step. Displacement (gu(1),
       ! xUn/xVn) is left as solved (CE-like geocenter, h₁≈0).
@@ -529,14 +567,14 @@ contains
       self%dUn_re = 0.0_wp; self%dUn_im = 0.0_wp
       self%dVn_re = 0.0_wp; self%dVn_im = 0.0_wp
       self%mnorm = 0.0_wp                       ! zero memory ⇒ all slots skipped initially
-   end subroutine ve_response_init
+   end subroutine response_init_ve
 
    subroutine ve_response_begin(self, sht)
       !! Freeze the per-(l,m) drift from the entering memory τ_n: solve the memory
       !! forcing −∫τ^V:δε with the load held at zero, storing surface + nodal drift.
       !! The nodal drift (the ε_n term) lands in self%dUn_*/dVn_*; the implicit
       !! commit re-uses the same solver against the trial τ_{n+1} (see solve_drift).
-      class(ve_response), intent(inout) :: self
+      type(response), intent(inout) :: self
       type(sht_grid),     intent(in)    :: sht
       call solve_drift(self, sht, self%dUn_re, self%dUn_im, self%dVn_re, self%dVn_im)
    end subroutine ve_response_begin
@@ -547,7 +585,7 @@ contains
       !! target arrays. begin_step passes self%dUn_* (drift from τ_n); the implicit
       !! commit passes self%edUn_* (drift from the trial τ_{n+1}). Targets are distinct
       !! components from everything read via self, so there is no argument aliasing.
-      class(ve_response), intent(inout) :: self
+      type(response), intent(inout) :: self
       type(sht_grid),     intent(in)    :: sht
       real(wp),           intent(out)   :: Un_re(:,:), Un_im(:,:), Vn_re(:,:), Vn_im(:,:)
       real(wp), allocatable :: fre(:), fim(:), xre(:), xim(:)
@@ -623,7 +661,7 @@ contains
    subroutine ve_response_apply(self, sht, sigma_lm, u_lm, n_lm)
       !! Affine response at the frozen time: u = gu(l)·σ + drift_U,
       !! N = gn(l)·σ − drift_F/g.
-      class(ve_response), intent(inout) :: self
+      type(response), intent(inout) :: self
       type(sht_grid),     intent(in)    :: sht
       complex(wp),        intent(in)    :: sigma_lm(:)
       complex(wp),        intent(out)   :: u_lm(:)
@@ -649,7 +687,7 @@ contains
       !! frozen drift (dVa) as the last begin_step, so calling it after a converged
       !! step gives the horizontal consistent with apply()'s u/N. Degree 1 left as
       !! solved (CE-like gauge, like u — not the geoid CM frame).
-      class(ve_response), intent(inout) :: self
+      type(response), intent(inout) :: self
       type(sht_grid),     intent(in)    :: sht
       complex(wp),        intent(in)    :: sigma_lm(:)
       complex(wp),        intent(out)   :: v_lm(:)
@@ -670,7 +708,7 @@ contains
       !! form the endpoint strain, trapezoid-advance from τ_n, repeat to couple_tol.
       !! Advances time by Δt. For fast-evolving loads the SLE driver instead iterates
       !! prepare_endpoint/advance_endpoint/finalize_step so σ co-converges (3b).
-      class(ve_response), intent(inout) :: self
+      type(response), intent(inout) :: self
       type(sht_grid),     intent(in)    :: sht
       complex(wp),        intent(in)    :: sigma_lm(:)
       real(wp) :: cnorm, snorm
@@ -712,7 +750,7 @@ contains
       !! laterally-varying viscosity the genuinely-3-D elements (e3d) advance pseudo-
       !! spectrally (advance_memory_3d); the laterally-uniform + elastic/fluid elements
       !! (active1d) advance on this cheap spectral path, masked by `active`.
-      class(ve_response), intent(inout) :: self
+      type(response), intent(inout) :: self
       type(sht_grid),     intent(in)    :: sht
       complex(wp),        intent(in)    :: sigma_lm(:)
       real(wp), allocatable :: Ure(:), Uim(:), Vre(:), Vim(:)
@@ -745,7 +783,7 @@ contains
       !$omp end parallel
    end subroutine fe_advance
 
-   subroutine ve_response_enable_lateral_visc(self, sht, pert_elem)
+   subroutine response_enable_lateral_visc(self, sht, pert_elem)
       !! Rung 6 — turn on laterally-varying viscosity. `pert_elem` is the log10
       !! viscosity perturbation per element on the Gauss grid, (nphi,nlat,ne):
       !! η_eff(θ,φ) = η_radial · 10^pert, so the Maxwell rate scales by 10^(−pert).
@@ -758,7 +796,7 @@ contains
       !! to a scalar effective rate (its lateral MEAN) and advances on the cheap
       !! degree-diagonal spectral path. A laterally-uniform field therefore flags NO
       !! element 3-D, so the cost equals the 1-D run (exactly, not just to SHT round-off).
-      class(ve_response), intent(inout) :: self
+      type(response), intent(inout) :: self
       type(sht_grid),     intent(in)    :: sht
       real(wp),           intent(in)    :: pert_elem(:,:,:)   !! (nphi,nlat,ne) log10 η perturbation
       integer :: e, ne_grid
@@ -799,9 +837,9 @@ contains
          end if
       end do
       self%lat_visc = .true.
-   end subroutine ve_response_enable_lateral_visc
+   end subroutine response_enable_lateral_visc
 
-   subroutine ve_response_enable_lateral_visc_from_nodes(self, sht, visc_node)
+   subroutine response_enable_lateral_visc_from_nodes(self, sht, visc_node)
       !! Rung 6c — enable laterally-varying viscosity from a NODE-based ABSOLUTE
       !! log10(η) field on the Gauss grid, visc_node(nphi*nlat, nr) (as produced by
       !! fe_read_visc_3d). Bridges node→element by the log10-mean of the two
@@ -809,7 +847,7 @@ contains
       !! perturbation against the element's radial reference viscosity
       !! η_radial(e) = μ(e)/MkPerDt(e), and calls enable_lateral_visc. Elastic/
       !! fluid elements (MkPerDt=0) keep pert=0 — irrelevant, they stay memory-free.
-      class(ve_response), intent(inout) :: self
+      type(response), intent(inout) :: self
       type(sht_grid),     intent(in)    :: sht
       real(wp),           intent(in)    :: visc_node(:,:)   !! (nphi*nlat, nr) log10(η)
       real(wp), allocatable :: pert(:,:,:)
@@ -829,9 +867,9 @@ contains
             end do
          end do
       end do
-      call self%enable_lateral_visc(sht, pert)
+      call response_enable_lateral_visc(self, sht, pert)
       deallocate(pert)
-   end subroutine ve_response_enable_lateral_visc_from_nodes
+   end subroutine response_enable_lateral_visc_from_nodes
 
    subroutine advance_memory_3d(self, sht, sigma_lm)
       !! Tensor-correct pseudo-spectral FE memory advance for laterally-varying
@@ -849,7 +887,7 @@ contains
       !! loop embarrassingly parallel. Per-thread coeff/grid scratch is allocated
       !! inside the region; the memory writeback touches a distinct element per
       !! iteration, so there is no race.
-      class(ve_response), intent(inout) :: self
+      type(response), intent(inout) :: self
       type(sht_grid),     intent(in)    :: sht
       complex(wp),        intent(in)    :: sigma_lm(:)
       complex(wp), allocatable :: cma(:,:), cmb(:,:), cmc(:,:)   ! memory coeffs (TLAM,nlm)
@@ -888,7 +926,7 @@ contains
       !! Per element e, gather the memory shape-coeffs (Are/Aim …) and the current
       !! strain shape-coeffs (strain_coeffs of σ·xUn + drift, exactly as fe_advance)
       !! into complex (TLAM, nlm) blocks for the dyadic transform — all (l,m).
-      class(ve_response), intent(in)  :: self
+      type(response), intent(in)  :: self
       complex(wp),        intent(in)  :: sigma_lm(:)
       integer,            intent(in)  :: e
       complex(wp),        intent(out) :: cma(:,:), cmb(:,:), cmc(:,:), cea(:,:), ceb(:,:), cec(:,:)
@@ -923,7 +961,7 @@ contains
       !! component with the lateral field M(θ,φ)=Mk3(:,:,e), and project τ⁺ back. c is
       !! updated in place; dtau/deps are caller-provided scratch (nphi,nlat,6); cfg is
       !! the calling thread's private SHTns config (for the parallel element loop).
-      class(ve_response), intent(in)    :: self
+      type(response), intent(in)    :: self
       type(sht_grid),     intent(in)    :: sht
       integer,            intent(in)    :: e
       complex(wp),        intent(inout) :: c(:,:)
@@ -950,7 +988,7 @@ contains
       !! with the lateral field M=Mk3(θ,φ). With uniform M the dyadic round trip is the
       !! identity ⇒ reduces to the 1-D trapezoidal advance per (l,m). Parallel over
       !! elements on per-thread configs, exactly like the FE advance_memory_3d.
-      class(ve_response), intent(inout) :: self
+      type(response), intent(inout) :: self
       type(sht_grid),     intent(in)    :: sht
       complex(wp),        intent(in)    :: sigma_lm(:)              ! σ_{n+1}
       complex(wp), allocatable :: cm0a(:,:), cm0b(:,:), cm0c(:,:)   ! τ_n coeffs (TLAM,nlm)
@@ -994,7 +1032,7 @@ contains
       !! start strain ε_n (σ_n·xUn + dUn) and the endpoint strain ε_{n+1} (σ_{n+1}·xUn +
       !! edUn), each as complex (TLAM,nlm) blocks. σ_n is sigma_n when primed, else the
       !! first-step fallback σ_{n+1} (matching trapezoid_advance_all).
-      class(ve_response), intent(in)  :: self
+      type(response), intent(in)  :: self
       complex(wp),        intent(in)  :: sigma_lm(:)              ! σ_{n+1}
       integer,            intent(in)  :: e
       complex(wp),        intent(out) :: cm0a(:,:), cm0b(:,:), cm0c(:,:)
@@ -1050,7 +1088,7 @@ contains
       !! grid (six dyadic components) and apply the pointwise Crank–Nicolson update
       !! τ⁺ = [(1−M/2)τ_n − μM(ε_n+ε_{n+1})]/(1+M/2) per component with M=Mk3(:,:,e).
       !! c0 holds τ_n on entry, τ_{n+1} on exit; dt0/den/de1 are per-thread scratch.
-      class(ve_response), intent(in)    :: self
+      type(response), intent(in)    :: self
       type(sht_grid),     intent(in)    :: sht
       integer,            intent(in)    :: e
       complex(wp),        intent(inout) :: c0(:,:)
@@ -1074,7 +1112,7 @@ contains
       !! Snapshot the entering memory τ_n into the *0 arrays so every trapezoid pass
       !! advances from τ_n (not compounding). ε_n nodal drift is in self%dUn_* (set by
       !! begin_step) and stays fixed; ε_{n+1} drift is re-solved into self%edUn_*.
-      class(ve_response), intent(inout) :: self
+      type(response), intent(inout) :: self
       self%Are0 = self%Are;  self%Aim0 = self%Aim
       self%Bre0 = self%Bre;  self%Bim0 = self%Bim
       self%Cre0 = self%Cre;  self%Cim0 = self%Cim
@@ -1087,7 +1125,7 @@ contains
       !! τ_{n+1} drift estimate); writes self%Are…. Does not touch self%dUa. With
       !! laterally-varying viscosity the trapezoid factor M is a field, so the advance
       !! goes pseudo-spectral (advance_memory_3d_trap), exactly as FE uses advance_memory_3d.
-      class(ve_response), intent(inout) :: self
+      type(response), intent(inout) :: self
       type(sht_grid),     intent(in)    :: sht
       complex(wp),        intent(in)    :: sigma_lm(:)
       real(wp), allocatable :: Ure(:), Uim(:), Vre(:), Vim(:)
@@ -1147,7 +1185,7 @@ contains
       !! ε_{n+1} with the entering τ_n drift (begin_step's dUn). The SLE driver then
       !! converges σ against the current report drift (dUa, = drift(τ_n) on entry) and
       !! calls advance_endpoint, which refreshes the report drift to τ_{n+1}.
-      class(ve_response), intent(inout) :: self
+      type(response), intent(inout) :: self
       type(sht_grid),     intent(in)    :: sht
       self%couple_pass = 0
       self%couple_done = .false.
@@ -1166,7 +1204,7 @@ contains
       !! (and ε_{n+1}=edUn) from the new τ_{n+1} — so the driver's next σ-convergence,
       !! and the next pass's endpoint strain, see the advanced memory. Sets couple_done
       !! when the surface drift settles to couple_tol. Does NOT advance time.
-      class(ve_response), intent(inout) :: self
+      type(response), intent(inout) :: self
       type(sht_grid),     intent(in)    :: sht
       complex(wp),        intent(in)    :: sigma_lm(:)
       real(wp) :: cnorm, snorm
@@ -1191,14 +1229,14 @@ contains
    end subroutine ve_response_advance_endpoint
 
    logical function ve_response_endpoint_converged(self) result(done)
-      class(ve_response), intent(in) :: self
+      type(response), intent(in) :: self
       done = self%couple_done
    end function ve_response_endpoint_converged
 
    subroutine ve_response_finalize_step(self, sht)
       !! Close a co-converging step: the memory already holds the converged τ_{n+1}
       !! (advance_endpoint left it there), so only advance time.
-      class(ve_response), intent(inout) :: self
+      type(response), intent(inout) :: self
       type(sht_grid),     intent(in)    :: sht
       self%couple_iters_last = self%couple_pass
       if (allocated(self%sigma_next)) then          ! TRAP: commit σ_{n+1} as next σ_n
@@ -1207,21 +1245,21 @@ contains
       self%time = self%time + self%dt
    end subroutine ve_response_finalize_step
 
-   subroutine ve_response_set_dt(self, dt)
+   subroutine response_set_dt(self, dt)
       !! Change the step size. Δt enters only through Mk = (μ/η)·Δt, so rescale Mk from
       !! the Δt-invariant rate MkPerDt — exact (no drift from repeated halving/restoring)
       !! and no operator re-factor (the band LU is Δt-independent). The adaptive
       !! controller uses this to try a step, halve for the fine sub-steps, and restore.
-      class(ve_response), intent(inout) :: self
+      type(response), intent(inout) :: self
       real(wp),           intent(in)    :: dt
       self%dt = dt
       self%Mk = self%MkPerDt * dt
       if (self%lat_visc) self%Mk3 = self%MkPerDt3 * dt
-   end subroutine ve_response_set_dt
+   end subroutine response_set_dt
 
    subroutine ensure_state_scratch(self)
       !! Lazily allocate the controller's state buffers A (τ_n) and B (τ_coarse).
-      class(ve_response), intent(inout) :: self
+      type(response), intent(inout) :: self
       if (allocated(self%Are_s)) return
       allocate(self%Are_s(NLAM,self%ne,self%nk), self%Aim_s(NLAM,self%ne,self%nk))
       allocate(self%Bre_s(NLAM,self%ne,self%nk), self%Bim_s(NLAM,self%ne,self%nk))
@@ -1232,10 +1270,10 @@ contains
       allocate(self%sigma_n_s(self%nlm))
    end subroutine ensure_state_scratch
 
-   subroutine ve_response_save_state(self)
+   subroutine response_save_state(self)
       !! Snapshot the entering prognostic state (memory τ_n + time + σ_n) into buffer A.
       !! A rejected step or the fine sub-step path restores to this with restore_state.
-      class(ve_response), intent(inout) :: self
+      type(response), intent(inout) :: self
       call ensure_state_scratch(self)
       self%Are_s = self%Are;  self%Aim_s = self%Aim
       self%Bre_s = self%Bre;  self%Bim_s = self%Bim
@@ -1243,34 +1281,34 @@ contains
       self%time_s = self%time
       if (allocated(self%sigma_n)) self%sigma_n_s = self%sigma_n
       self%sigma_primed_s = self%sigma_primed
-   end subroutine ve_response_save_state
+   end subroutine response_save_state
 
-   subroutine ve_response_restore_state(self)
+   subroutine response_restore_state(self)
       !! Restore the prognostic state saved by save_state (buffer A).
-      class(ve_response), intent(inout) :: self
+      type(response), intent(inout) :: self
       self%Are = self%Are_s;  self%Aim = self%Aim_s
       self%Bre = self%Bre_s;  self%Bim = self%Bim_s
       self%Cre = self%Cre_s;  self%Cim = self%Cim_s
       self%time = self%time_s
       if (allocated(self%sigma_n)) self%sigma_n = self%sigma_n_s
       self%sigma_primed = self%sigma_primed_s
-   end subroutine ve_response_restore_state
+   end subroutine response_restore_state
 
-   subroutine ve_response_stash_coarse(self)
+   subroutine response_stash_coarse(self)
       !! Snapshot the current memory (the coarse one-Δt τ_{n+1}) into buffer B for the
       !! step-doubling error estimate, to be compared against the fine result.
-      class(ve_response), intent(inout) :: self
+      type(response), intent(inout) :: self
       call ensure_state_scratch(self)
       self%Are_c = self%Are;  self%Aim_c = self%Aim
       self%Bre_c = self%Bre;  self%Bim_c = self%Bim
       self%Cre_c = self%Cre;  self%Cim_c = self%Cim
-   end subroutine ve_response_stash_coarse
+   end subroutine response_stash_coarse
 
-   subroutine ve_response_coarse_fine_error(self, err_inf, tau_inf)
+   subroutine response_coarse_fine_error(self, err_inf, tau_inf)
       !! After the fine path, return the coarse↔fine memory difference ‖τ_fine−τ_coarse‖∞
       !! (buffer B is τ_coarse, self%Are… is τ_fine) and the memory magnitude ‖τ_fine‖∞,
       !! for the controller's scaled local-error estimate.
-      class(ve_response), intent(in)  :: self
+      type(response), intent(in)  :: self
       real(wp),           intent(out) :: err_inf, tau_inf
       err_inf = max(maxval(abs(self%Are - self%Are_c)), maxval(abs(self%Aim - self%Aim_c)), &
                     maxval(abs(self%Bre - self%Bre_c)), maxval(abs(self%Bim - self%Bim_c)), &
@@ -1278,26 +1316,26 @@ contains
       tau_inf = max(maxval(abs(self%Are)), maxval(abs(self%Aim)), &
                     maxval(abs(self%Bre)), maxval(abs(self%Bim)), &
                     maxval(abs(self%Cre)), maxval(abs(self%Cim)))
-   end subroutine ve_response_coarse_fine_error
+   end subroutine response_coarse_fine_error
 
-   real(wp) function ve_response_max_rate(self) result(rate)
+   real(wp) function response_max_rate(self) result(rate)
       !! Largest Maxwell rate μ/η over all memory-carrying elements (and, with
       !! lateral viscosity, over the 3D grid). Sets the explicit forward-Euler
       !! stability ceiling Δt ≤ cfl/rate (M = μΔt/η ≤ cfl). rate = 0 ⇒ no Maxwell
       !! memory (purely elastic) ⇒ the caller may take a single step.
-      class(ve_response), intent(in) :: self
+      type(response), intent(in) :: self
       rate = 0.0_wp
       if (allocated(self%MkPerDt)) rate = maxval(self%MkPerDt)
       if (self%lat_visc .and. allocated(self%MkPerDt3)) &
          rate = max(rate, maxval(self%MkPerDt3))
-   end function ve_response_max_rate
+   end function response_max_rate
 
-   real(wp) function ve_response_memory_norm(self) result(nrm)
+   real(wp) function response_memory_norm(self) result(nrm)
       !! ∞-norm of the viscoelastic memory stress over all coefficients/elements —
       !! the reactive-guard observable for the explicit stepper (a non-finite or
       !! runaway value flags an unstable sub-step). Explicit loop to avoid the
       !! abs(slice) heap temporaries maxval would create on these (NLAM,ne,nk) arrays.
-      class(ve_response), intent(in) :: self
+      type(response), intent(in) :: self
       integer  :: k, e, m
       real(wp) :: v
       nrm = 0.0_wp
@@ -1314,12 +1352,12 @@ contains
          end do
       end do
       !$omp end parallel do
-   end function ve_response_memory_norm
+   end function response_memory_norm
 
    subroutine ensure_commit_scratch(self)
       !! Lazily allocate the implicit-commit scratch (the τ_n memory snapshot doubles
       !! the memory footprint, so it is only paid when a TRAP commit is first used).
-      class(ve_response), intent(inout) :: self
+      type(response), intent(inout) :: self
       if (allocated(self%Are0)) return
       allocate(self%Are0(NLAM,self%ne,self%nk), self%Aim0(NLAM,self%ne,self%nk))
       allocate(self%Bre0(NLAM,self%ne,self%nk), self%Bim0(NLAM,self%ne,self%nk))
@@ -1333,26 +1371,26 @@ contains
    subroutine ensure_sigma(self)
       !! Lazily allocate the start-of-step load buffers (σ_n / σ_next). Separate from
       !! ensure_commit_scratch so prime_sigma can seed σ_0 before the first commit.
-      class(ve_response), intent(inout) :: self
+      type(response), intent(inout) :: self
       if (allocated(self%sigma_n)) return
       allocate(self%sigma_n(self%nlm), self%sigma_next(self%nlm))
       self%sigma_n = (0.0_wp, 0.0_wp)     ! σ at t=0; primed by prime_sigma or step 1
       self%sigma_primed = .false.
    end subroutine ensure_sigma
 
-   subroutine ve_response_prime_sigma(self, sigma_lm)
+   subroutine response_prime_sigma(self, sigma_lm)
       !! Seed the start-of-step load σ_n with a known load (the elastic-consistent SLE
       !! load at t=0) and mark it tracked, so the trapezoidal ε_n on the FIRST step uses
       !! the true σ_0 rather than the σ_{n+1} proxy — making that step 2nd→3rd order.
-      class(ve_response), intent(inout) :: self
+      type(response), intent(inout) :: self
       complex(wp),        intent(in)    :: sigma_lm(:)
       call ensure_sigma(self)
       self%sigma_n = sigma_lm
       self%sigma_primed = .true.
-   end subroutine ve_response_prime_sigma
+   end subroutine response_prime_sigma
 
    subroutine ve_response_destroy(self)
-      class(ve_response), intent(inout) :: self
+      type(response), intent(inout) :: self
       integer :: l
       if (allocated(self%ops)) then
          do l = 1, size(self%ops);  call radial_operator_destroy(self%ops(l));  end do

@@ -24,7 +24,7 @@ program test_benchmark_disc
    use fe_earth_structure, only: earth_gravity_at, earth_model, build_M3L70V01
    use fe_radial_fe,       only: radial_mesh_build, radial_mesh, radial_fe_finalize
    use fe_viscoelastic,    only: ve_destroy, ve_step, ve_init, ve_degree
-   use fe_response,        only: elastic_response
+   use fe_response,        only: response_destroy, response, response_init_elastic, response_init_ve, response_init_null
    implicit none
    character(*), parameter :: REF = 'data/benchmarks/disc_spada2011/'
    integer,  parameter :: NTH = 201, NT = 6
@@ -38,7 +38,7 @@ program test_benchmark_disc
    real(wp) :: g
    logical  :: ok, okr
    type(earth_model)      :: em
-   type(elastic_response) :: el
+   type(response) :: el
    integer  :: n
 
    ok = .true.
@@ -53,9 +53,9 @@ program test_benchmark_disc
    call disc_coeffs(ca, sig0, sig)            ! sig(n) = sig0/2 [P_{n-1}-P_{n+1}](ca)
 
    ! --- (1) elastic profile -----------------------------------------------------
-   call el%init(em, lmax=NMAX_EL)             ! ugain(l), ngain(l); ngain(1)=0 (CM)
+   call response_init_elastic(el, em, lmax=NMAX_EL)             ! ugain(l), ngain(l); ngain(1)=0 (CM)
    call check_elastic_profile(el, sig, uref(:,1), nref(:,1), ok)
-   call el%destroy()
+   call response_destroy(el)
 
    ! --- (2) viscoelastic centre transient --------------------------------------
    call check_ve_centre(em, sig, uref(1,:), ok)
@@ -103,7 +103,7 @@ contains
    end function legsum
 
    subroutine check_elastic_profile(el, sig, ur, nr, ok)
-      type(elastic_response), intent(in)    :: el
+      type(response), intent(in)    :: el
       real(wp),               intent(in)    :: sig(:), ur(:), nr(:)
       logical,                intent(inout) :: ok
       real(wp) :: cu(size(sig)), cn(size(sig))

@@ -29,7 +29,7 @@ module fe_coupling
    use fe_sht,             only: sht_grid, sht_grid_synthesis, sht_grid_surface_integral
    use fe_earth_structure, only: earth_model, build_earth, load_visc_3d
    use fe_viscoelastic,    only: scheme_from_name
-   use fe_response,        only: ve_response
+   use fe_response,        only: response_destroy, response_enable_lateral_visc_from_nodes, response, response_init_elastic, response_init_ve, response_init_null
    use fe_sle,             only: sle_solver, sle_result, ocean_function
    use fe_timestep,        only: stepper_advance, adaptive_stepper
    use fe_rotation,        only: rotation_destroy, rotation_update, rotation_s_rot, rotation_begin_step, rotation_init, rotation_state
@@ -41,7 +41,7 @@ module fe_coupling
    type :: solid_earth
       type(sht_grid), pointer  :: sht => null()  !! transform grid (borrowed, host-owned)
       type(earth_model)        :: earth     !! radial (+ optional 3D) structure
-      type(ve_response)        :: resp      !! viscoelastic field driver (load → u, N)
+      type(response)        :: resp      !! viscoelastic field driver (load → u, N)
       type(sle_solver)         :: sle       !! sea-level equation
       type(adaptive_stepper)   :: stepper   !! adaptive-Δt controller (fe_timestep)
       type(rotation_state)     :: rotation  !! TPW feedback (off by default)
@@ -97,7 +97,7 @@ contains
       ! Δt enters only through Mk = (μ/η)Δt, which the adaptive stepper rescales
       ! per sub-step (resp%set_dt) — so the init Δt is just a nominal seed.
       dt0 = p%dt_init;  if (dt0 <= 0.0_wp) dt0 = p%dt_couple
-      call self%resp%init(self%earth, sht, dt0)
+      call response_init_ve(self%resp, self%earth, sht, dt0)
       self%resp%scheme          = scheme_from_name(p%scheme)
       self%resp%max_couple_iter = p%max_couple_iter
 
@@ -108,7 +108,7 @@ contains
          block
             real(wp), allocatable :: visc_node(:,:)
             call load_visc_3d(p, sht, self%resp%r, visc_node)
-            call self%resp%enable_lateral_visc_from_nodes(sht, visc_node)
+            call response_enable_lateral_visc_from_nodes(self%resp, sht, visc_node)
          end block
       end if
 
@@ -240,7 +240,7 @@ contains
 
    subroutine solid_earth_finalize(self)
       class(solid_earth), intent(inout) :: self
-      call self%resp%destroy()
+      call response_destroy(self%resp)
       call rotation_destroy(self%rotation)
       self%sht => null()                 ! borrowed grid — the host destroys it
       if (allocated(self%s_rot))     deallocate(self%s_rot)

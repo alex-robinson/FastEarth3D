@@ -28,7 +28,7 @@ module fe_sle
    use fe_precision, only: wp
    use fe_constants, only: rho_ice, rho_water
    use fe_sht,       only: sht_grid, sht_grid_surface_integral, sht_grid_analysis, sht_grid_synthesis
-   use fe_response,  only: response_operator
+   use fe_response,  only: response_finalize_step, response_endpoint_converged, response_advance_endpoint, response_apply, response_prepare_endpoint, response_begin_step, response, response_init_elastic, response_init_ve, response_init_null
    implicit none
    private
 
@@ -115,7 +115,7 @@ contains
       !! absolute condition.
       type(sle_solver),        intent(inout) :: self
       type(sht_grid),           intent(in)    :: sht
-      class(response_operator), intent(inout) :: resp
+      type(response), intent(inout) :: resp
       real(wp),                 intent(in)    :: d_ice(:,:)  !! ice CHANGE [m] (load)
       real(wp),                 intent(in)    :: ice(:,:)    !! abs. ice [m] (flotation)
       real(wp),                 intent(in)    :: topo0(:,:)  !! (nphi,nlat) [m]
@@ -177,14 +177,14 @@ contains
 
       ! Freeze the response's relaxation drift for this time step; for elastic /
       ! null responses this is a no-op.
-      call resp%begin_step(sht)
+      call response_begin_step(resp, sht)
       ! Open the SLE<->memory co-convergence (§3c 3b): snapshot τ_n. The im loop
       ! re-converges the water load against the latest end-of-step memory estimate
       ! and advances the memory one trapezoid pass each time, until the response's
       ! report drift settles. For FE / elastic / null it runs exactly once (they
       ! report converged after a single advance). In report-only mode there is no
       ! memory advance, so a single load-convergence pass against τ_n suffices.
-      if (.not. ronly) call resp%prepare_endpoint(sht)
+      if (.not. ronly) call response_prepare_endpoint(resp, sht)
       n_mem = self%max_mem_iter;  if (ronly) n_mem = 1
 
       do im = 1, n_mem
@@ -231,7 +231,7 @@ contains
             ! wcorr is the subgrid sloping-coast term (zero unless self%subgrid).
             load = rho_ice*d_ice*(1.0_wp - C) + rho_water*(C*rsl) + wcorr
             call sht_grid_analysis(sht, load, load_lm)            ! analysis overwrites load
-            call resp%apply(sht, load_lm, u_lm, N_lm)
+            call response_apply(resp, sht, load_lm, u_lm, N_lm)
             call sht_grid_synthesis(sht, u_lm, u)
             call sht_grid_synthesis(sht, N_lm, N)
 
@@ -261,14 +261,14 @@ contains
       load = rho_ice*d_ice*(1.0_wp - C) + rho_water*(C*rsl) + wcorr
       call sht_grid_analysis(sht, load, load_lm)
       if (ronly) exit                    ! report only: do NOT advance the memory/time
-      call resp%advance_endpoint(sht, load_lm)
+      call response_advance_endpoint(resp, sht, load_lm)
       res%n_couple_done = im
       ! Converged when the report drift has settled (the σ<->τ fixed point); 1st-order
       ! / stateless responses report converged after a single pass.
-      if (resp%endpoint_converged()) exit
+      if (response_endpoint_converged(resp)) exit
       end do
 
-      if (.not. ronly) call resp%finalize_step(sht)
+      if (.not. ronly) call response_finalize_step(resp, sht)
       if (present(sigma_lm)) sigma_lm = load_lm   ! converged spectral surface load
 
       ! diagnostics. The conserved ocean-water volume is ∫s dΩ = ∫C·rsl − ζ̄⁽⁰⁾

@@ -18,7 +18,7 @@ module fe_io
    use fe_precision,    only: wp
    use fe_constants,    only: rad2deg, sec_per_year
    use fe_viscoelastic, only: NLAM
-   use fe_response,     only: ve_response
+   use fe_response,     only: response_prime_sigma, response, response_init_elastic, response_init_ve, response_init_null
    use fe_coupling,     only: solid_earth
    use ncio
    use variable_io
@@ -319,7 +319,7 @@ contains
       allocate(sre(nlm), sim(nlm))
       call nc_read(filename, "sigma_n_re", sre, start=[1,n], count=[nlm,1])
       call nc_read(filename, "sigma_n_im", sim, start=[1,n], count=[nlm,1])
-      call self%resp%prime_sigma(cmplx(sre, sim, wp))
+      call response_prime_sigma(self%resp, cmplx(sre, sim, wp))
    end subroutine restore_sigma
 
    subroutine get3d(filename, name, dat, ne, nk, n)

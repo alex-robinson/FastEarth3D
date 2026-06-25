@@ -17,7 +17,7 @@ program test_ve_response
    use fe_earth_structure, only: earth_model, build_M3L70V01
    use fe_radial_fe,       only: radial_mesh_build, radial_mesh, radial_fe_finalize
    use fe_viscoelastic,    only: ve_destroy, ve_step, ve_init, ve_degree, SCHEME_FE, SCHEME_TRAP
-   use fe_response,        only: elastic_response, ve_response
+   use fe_response,        only: response_commit_step, response_apply, response_begin_step, response_destroy, response, response_init_elastic, response_init_ve, response_init_null
    use fe_sht,             only: sht_grid, sht_grid_init, sht_grid_destroy, sht_grid_lmidx
    implicit none
 
@@ -67,12 +67,12 @@ contains
 
    subroutine elastic_limit(ok)
       logical, intent(inout) :: ok
-      type(ve_response)      :: ve
-      type(elastic_response) :: el
+      type(response)      :: ve
+      type(response) :: el
       integer  :: l
       real(wp) :: du, dn, dmax
-      call ve%init(e, sht, dt)
-      call el%init(e, lmax=LMAX)
+      call response_init_ve(ve, e, sht, dt)
+      call response_init_elastic(el, e, lmax=LMAX)
       ! The field driver carries degrees l>=1 (degree 1 in the CM frame via the
       ! sparse KKT border; degree 0 is the monopole geoid only), so compare the
       ! gains over the full deforming range.
@@ -91,13 +91,13 @@ contains
          write(*,'(a)') '      FAIL: degree-1 deformation should be nonzero'
          ok = .false.
       end if
-      call ve%destroy();  call el%destroy()
+      call response_destroy(ve);  call response_destroy(el)
    end subroutine elastic_limit
 
    subroutine stepper_agreement(j, scheme, max_iter, ok)
       integer, intent(in)    :: j, scheme, max_iter
       logical, intent(inout) :: ok
-      type(ve_response)  :: ve
+      type(response)  :: ve
       type(ve_degree)    :: vd
       type(radial_mesh)  :: mesh
       complex(wp), allocatable :: slm(:), ulm(:), nlm(:)
@@ -114,7 +114,7 @@ contains
       vd%scheme = scheme;  vd%max_couple_iter = max_iter;  vd%couple_tol = TOL
 
       ! field driver, single held (l=j,m=0) coefficient, same scheme/coupling settings
-      call ve%init(e, sht, dt)
+      call response_init_ve(ve, e, sht, dt)
       ve%scheme = scheme;  ve%max_couple_iter = max_iter;  ve%couple_tol = TOL
       g  = ve%g
       lm = sht_grid_lmidx(sht, j, 0)
@@ -125,11 +125,11 @@ contains
       write(*,'(a)') '       step   U_a(1D)      U_a(field)     F_a(1D)      F_a(field)'
       do i = 1, NSTEP
          call ve_step(vd, sigma, t1, ua1, va1, fa1)          ! 1-D: state then advance
-         call ve%begin_step(sht)
-         call ve%apply(sht, slm, ulm, nlm)               ! field: state at this t
+         call response_begin_step(ve, sht)
+         call response_apply(ve, sht, slm, ulm, nlm)               ! field: state at this t
          ua2 = real(ulm(lm), wp)
          fa2 = -real(nlm(lm), wp)*g                       ! N = -F/g  ->  F = -N g
-         call ve%commit_step(sht, slm)                    ! advance memory
+         call response_commit_step(ve, sht, slm)                    ! advance memory
          emax_u = max(emax_u, abs(ua1 - ua2))
          ref_u  = max(ref_u, abs(ua1))
          if (j >= 2) then
@@ -168,7 +168,7 @@ contains
             ok = .false.
          end if
       end if
-      call ve_destroy(vd);  call ve%destroy()
+      call ve_destroy(vd);  call response_destroy(ve)
    end subroutine stepper_agreement
 
 end program test_ve_response

@@ -17,7 +17,7 @@ program test_visc_load
    use fe_constants,       only: rad2deg
    use fe_earth_structure, only: earth_model, build_M3L70V01, fe_read_visc_3d
    use fe_radial_fe,       only: radial_fe_finalize
-   use fe_response,        only: ve_response
+   use fe_response,        only: response_enable_lateral_visc_from_nodes, response_destroy, response, response_init_elastic, response_init_ve, response_init_null
    use fe_sht,             only: sht_grid, sht_grid_init
    use ncio
    implicit none
@@ -30,13 +30,13 @@ program test_visc_load
 
    type(sht_grid)    :: sht
    type(earth_model) :: e
-   type(ve_response) :: ve
+   type(response) :: ve
    logical :: ok, exists
 
    ok = .true.
    call sht_grid_init(sht, LMAX, nlat=NLATF*LMAX, nphi=2*LMAX+2, mmax=LMAX)
    e = build_M3L70V01()
-   call ve%init(e, sht, DT)
+   call response_init_ve(ve, e, sht, DT)
 
    call test_synthetic()
 
@@ -47,7 +47,7 @@ program test_visc_load
       write(*,'(a)') ' [skip] pan2022.nc not found — synthetic round-trip only'
    end if
 
-   call ve%destroy()
+   call response_destroy(ve)
    call radial_fe_finalize()
    if (.not. ok) error stop 'test_visc_load FAILED'
    write(*,'(a)') ' test_visc_load PASSED'
@@ -109,7 +109,7 @@ contains
       if (vmin < 10.0_wp .or. vmax > 40.0_wp .or. vmin /= vmin) then
          ok = .false.; write(*,'(a)') '   FAIL: pan2022 values out of physical range'
       end if
-      call ve%enable_lateral_visc_from_nodes(sht, vn)
+      call response_enable_lateral_visc_from_nodes(ve, sht, vn)
       if (.not. allocated(ve%Mk3)) then
          ok = .false.; write(*,'(a)') '   FAIL: enable_from_nodes did not set up Mk3'
       else if (any(ve%Mk3 /= ve%Mk3) .or. minval(ve%Mk3) < 0.0_wp) then

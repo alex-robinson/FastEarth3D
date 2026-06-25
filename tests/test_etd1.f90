@@ -49,8 +49,8 @@ program test_etd1
    use fe_precision,       only: wp
    use fe_constants,       only: pi, grav_G, sec_per_year
    use fe_earth_structure, only: earth_model, earth_layer, RHEOL_MAXWELL
-   use fe_radial_fe,       only: radial_mesh, radial_operator, radial_fe_finalize
-   use fe_viscoelastic,    only: ve_degree, SCHEME_FE, SCHEME_ETD1
+   use fe_radial_fe,       only: radial_mesh_build, radial_mesh, radial_operator, radial_fe_finalize
+   use fe_viscoelastic,    only: ve_destroy, ve_step, ve_init, ve_degree, SCHEME_FE, SCHEME_ETD1
    implicit none
 
    real(wp), parameter :: km = 1.0e3_wp, yr = sec_per_year
@@ -159,14 +159,14 @@ contains
       real(wp) :: dt, t, ua, va, fa, h, tk
       integer  :: istep, nstep, kd
       call mk_earth(e)
-      call m%build(e)
+      call radial_mesh_build(m, e)
       dt = dt_yr*yr
-      call ve%init(e, m, j, dt)
+      call ve_init(ve, e, m, j, dt)
       ve%scheme = scheme
       nstep = nint(T_END*1.0e3_wp*yr/dt)
       hd = 0.0_wp;  stable = .true.;  err_est = 0.0_wp;  kd = 1
       do istep = 1, nstep
-         call ve%step(1.0_wp, t, ua, va, fa)
+         call ve_step(ve, 1.0_wp, t, ua, va, fa)
          h  = g*ua/phiL
          tk = t/(1.0e3_wp*yr)
          err_est = max(err_est, ve%err_last)
@@ -179,7 +179,7 @@ contains
       do while (kd <= ND)        ! fill any unreached diagnostics with the last value
          hd(kd) = h;  kd = kd + 1
       end do
-      call ve%destroy()
+      call ve_destroy(ve)
    end subroutine run
 
    pure function errmax(h, hr, stable) result(em)

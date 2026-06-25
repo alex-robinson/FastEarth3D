@@ -17,9 +17,9 @@ program test_sle_eustatic
    use fe_constants,       only: pi, kyr, rho_ice, rho_water
    use fe_earth_structure, only: earth_model, build_M3L70V01
    use fe_radial_fe,       only: radial_fe_finalize
-   use fe_response,        only: ve_response
-   use fe_sht,             only: sht_grid
-   use fe_sle,             only: sle_solver, sle_result
+   use fe_response,        only: response_destroy, response, response_init_elastic, response_init_ve, response_init_null
+   use fe_sht,             only: sht_grid_destroy, sht_grid_eval_point, sht_grid_analysis, sht_grid_surface_integral, sht_grid_init, sht_grid
+   use fe_sle,             only: sle_solve, sle_solver, sle_result
    use fe_field,           only: spherical_cap
    implicit none
 
@@ -27,7 +27,7 @@ program test_sle_eustatic
    real(wp), parameter :: DEG = pi/180.0_wp
    type(sht_grid)    :: sht
    type(earth_model) :: em
-   type(ve_response) :: resp
+   type(response) :: resp
    type(sle_solver)  :: sle
    type(sle_result)  :: res
    real(wp), allocatable :: topo0(:,:), ice(:,:), rsl(:,:), C(:,:), tmp(:,:)
@@ -37,9 +37,9 @@ program test_sle_eustatic
    real(wp) :: th
 
    dt = 0.02_wp*kyr
-   call sht%init(LMAX, nlat=2*LMAX, nphi=4*LMAX)
+   call sht_grid_init(sht, LMAX, nlat=2*LMAX, nphi=4*LMAX)
    em = build_M3L70V01()
-   call resp%init(em, sht, dt)
+   call response_init_ve(resp, em, sht, dt)
    rho_ratio = rho_ice/rho_water
 
    allocate(topo0(sht%nphi,sht%nlat), ice(sht%nphi,sht%nlat), &
@@ -57,23 +57,23 @@ program test_sle_eustatic
    write(*,'(a)') ' SLE eustatic self-check: N-pole cap on land, S-hemisphere ocean'
    write(*,'(a)') '   step   ocean_frac   mass_resid      esl(dphi)[m]'
    do istep = 1, NSTEP
-      call sle%solve(sht, resp, ice, ice, topo0, rsl, C, res)
+      call sle_solve(sle, sht, resp, ice, ice, topo0, rsl, C, res)
       if (mod(istep,5) == 0 .or. istep == 1) &
          write(*,'(i7,f12.5,es15.2,f16.5)') istep, res%ocean_frac, res%mass_resid, res%esl
    end do
 
    ! decomposition at the final state
-   ice_int = -rho_ratio*sht%surface_integral(ice)
-   C_int   = sht%surface_integral(C)
+   ice_int = -rho_ratio*sht_grid_surface_integral(sht, ice)
+   C_int   = sht_grid_surface_integral(sht, C)
    bary    = ice_int/C_int                                  ! pure barystatic eustatic
-   defo    = sht%surface_integral(C*(res%N - res%u))/C_int  ! ocean-mean(N-u)
-   tmp = res%N;  call sht%analysis(tmp, N_lm)
-   call sht%eval_point(N_lm, pi, 0.0_wp, Nsouth)            ! geoid at S pole (deep ocean)
+   defo    = sht_grid_surface_integral(sht, C*(res%N - res%u))/C_int  ! ocean-mean(N-u)
+   tmp = res%N;  call sht_grid_analysis(sht, tmp, N_lm)
+   call sht_grid_eval_point(sht, N_lm, pi, 0.0_wp, Nsouth)            ! geoid at S pole (deep ocean)
    ss_south = Nsouth + res%esl
 
    write(*,'(a)') ''
    write(*,'(a,f12.6)')  '   ocean fraction (expect 0.5000)      = ', res%ocean_frac
-   write(*,'(a,f12.4)')  '   <ice> surface integral [m]          = ', sht%surface_integral(ice)
+   write(*,'(a,f12.4)')  '   <ice> surface integral [m]          = ', sht_grid_surface_integral(sht, ice)
    write(*,'(a,f12.4)')  '   ocean area C_int [sr, expect 6.2832]= ', C_int
    write(*,'(a,f12.5)')  '   barystatic  -rho_r<ice>/<C> [m]     = ', bary
    write(*,'(a,f12.5)')  '   ocean-mean(N-u)  [m]                = ', defo
@@ -85,5 +85,5 @@ program test_sle_eustatic
    write(*,'(a,f12.5)')  '   sea-surface (N+dphi) at S pole [m]  = ', ss_south
    write(*,'(a,f12.5)')  '   (barystatic for comparison) [m]     = ', bary
 
-   call resp%destroy();  call sht%destroy();  call radial_fe_finalize()
+   call response_destroy(resp);  call sht_grid_destroy(sht);  call radial_fe_finalize()
 end program test_sle_eustatic

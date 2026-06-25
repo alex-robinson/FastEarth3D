@@ -17,7 +17,7 @@ program test_flotation_load
    use fe_constants,       only: pi, rho_ice, rho_water
    use fe_earth_structure, only: earth_model, build_M3L70V01
    use fe_radial_fe,       only: radial_fe_finalize
-   use fe_response,        only: elastic_response
+   use fe_response,        only: response_destroy, response, response_init_elastic, response_init_ve, response_init_null
    use fe_sht,             only: sht_grid, sht_grid_init, sht_grid_destroy
    use fe_sle,             only: sle_solve, sle_solver, sle_result
    implicit none
@@ -25,7 +25,7 @@ program test_flotation_load
    integer, parameter :: LMAX = 24
    type(sht_grid)         :: sht
    type(earth_model)      :: em
-   type(elastic_response) :: resp
+   type(response) :: resp
    type(sle_solver)       :: sle
    type(sle_result)       :: res
    real(wp), allocatable :: topo0(:,:), ice(:,:), rsl(:,:), C(:,:)
@@ -36,7 +36,7 @@ program test_flotation_load
    ok = .true.
    call sht_grid_init(sht, LMAX, nlat=2*LMAX, nphi=4*LMAX)
    em = build_M3L70V01()
-   call resp%init(em, LMAX)
+   call response_init_elastic(resp, em, LMAX)
    allocate(topo0(sht%nphi,sht%nlat), ice(sht%nphi,sht%nlat), &
             rsl(sht%nphi,sht%nlat), C(sht%nphi,sht%nlat))
 
@@ -81,9 +81,9 @@ program test_flotation_load
       write(*,'(a)') ' PASS: floating ice does not load the bed; grounded ice does'
    else
       write(*,'(a)') ' FAIL: grounded-ice load masking incorrect'
-      call resp%destroy();  call sht_grid_destroy(sht);  call radial_fe_finalize();  error stop 1
+      call response_destroy(resp);  call sht_grid_destroy(sht);  call radial_fe_finalize();  error stop 1
    end if
-   call resp%destroy();  call sht_grid_destroy(sht);  call radial_fe_finalize()
+   call response_destroy(resp);  call sht_grid_destroy(sht);  call radial_fe_finalize()
 
 contains
 
