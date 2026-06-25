@@ -663,10 +663,6 @@ contains
          return
       end if
 
-      if (self%lat_visc) error stop &
-         've_response: laterally-varying viscosity (rung 6a) supports the FE scheme &
-         &only; the implicit trapezoidal 3D path is not yet implemented.'
-
       ! --- implicit (TRAP): iterate the endpoint to a consistent τ_{n+1} ------------
       call ensure_commit_scratch(self)
       call snapshot_taun(self)                      ! τ_n base for every trapezoid pass
@@ -676,7 +672,7 @@ contains
          ! self%dUa (the surface drift, used as the convergence signal). Then reset to
          ! τ_n and trapezoid-advance with (ε_n, ε_{n+1}).
          call solve_drift(self, sht, self%edUn_re, self%edUn_im, self%edVn_re, self%edVn_im)
-         call trapezoid_advance_all(self, sigma_lm)
+         call trapezoid_advance_all(self, sht, sigma_lm)
          ! iter 1 re-solves drift from τ_n and so reproduces begin_step's drift; the
          ! fixed point only moves at iter 2 (never exit on the first pass).
          cnorm = maxval(abs(self%dUa - self%dUa_prev))
@@ -898,6 +894,134 @@ contains
       call self%tsh%analysis(sht, dtau, c, cfg)
    end subroutine advance_shape_tensor
 
+   subroutine advance_memory_3d_trap(self, sht, sigma_lm)
+      !! Trapezoidal (Crank–Nicolson) pseudo-spectral memory advance for laterally-
+      !! varying viscosity — the 3D analogue of trapezoid_advance_all. One endpoint
+      !! pass: reset to τ_n (the *0 snapshot) and advance per radial shape-coefficient
+      !! with ε_n (σ_n·xUn + dUn) and ε_{n+1} (σ_{n+1}·xUn + edUn), applying the
+      !! pointwise rule τ⁺ = [(1−M/2)τ_n − μM(ε_n+ε_{n+1})]/(1+M/2) on the Gauss grid
+      !! with the lateral field M=Mk3(θ,φ). With uniform M the dyadic round trip is the
+      !! identity ⇒ reduces to the 1-D trapezoidal advance per (l,m). Parallel over
+      !! elements on per-thread configs, exactly like the FE advance_memory_3d.
+      class(ve_response), intent(inout) :: self
+      type(sht_grid),     intent(in)    :: sht
+      complex(wp),        intent(in)    :: sigma_lm(:)              ! σ_{n+1}
+      complex(wp), allocatable :: cm0a(:,:), cm0b(:,:), cm0c(:,:)   ! τ_n coeffs (TLAM,nlm)
+      complex(wp), allocatable :: cna(:,:),  cnb(:,:),  cnc(:,:)    ! ε_n coeffs
+      complex(wp), allocatable :: c1a(:,:),  c1b(:,:),  c1c(:,:)    ! ε_{n+1} coeffs
+      real(wp),    allocatable :: dt0(:,:,:), den(:,:,:), de1(:,:,:) ! (nphi,nlat,6)
+      type(c_ptr) :: cfg
+      integer  :: e, k, lm
+
+      !$omp parallel default(shared) &
+      !$omp   private(e, k, lm, cm0a, cm0b, cm0c, cna, cnb, cnc, c1a, c1b, c1c, dt0, den, de1, cfg)
+      allocate(cm0a(TLAM,sht%nlm), cm0b(TLAM,sht%nlm), cm0c(TLAM,sht%nlm))
+      allocate(cna(TLAM,sht%nlm),  cnb(TLAM,sht%nlm),  cnc(TLAM,sht%nlm))
+      allocate(c1a(TLAM,sht%nlm),  c1b(TLAM,sht%nlm),  c1c(TLAM,sht%nlm))
+      allocate(dt0(sht%nphi,sht%nlat,6), den(sht%nphi,sht%nlat,6), de1(sht%nphi,sht%nlat,6))
+      cfg = self%tsh%thread_cfg()
+      !$omp do schedule(dynamic)
+      do e = 1, self%ne
+         if (.not. self%is_maxwell(e)) cycle
+         call gather_tensor_coeffs_trap(self, sigma_lm, e, cm0a, cm0b, cm0c, &
+                                        cna, cnb, cnc, c1a, c1b, c1c)
+         call advance_shape_tensor_trap(self, sht, e, cm0a, cna, c1a, dt0, den, de1, cfg)
+         call advance_shape_tensor_trap(self, sht, e, cm0b, cnb, c1b, dt0, den, de1, cfg)
+         call advance_shape_tensor_trap(self, sht, e, cm0c, cnc, c1c, dt0, den, de1, cfg)
+         do k = 1, self%nk                                 ! write updated memory back
+            lm = self%k2lm(k)
+            self%Are(:,e,k) = real(cm0a(:,lm), wp);  self%Aim(:,e,k) = aimag(cm0a(:,lm))
+            self%Bre(:,e,k) = real(cm0b(:,lm), wp);  self%Bim(:,e,k) = aimag(cm0b(:,lm))
+            self%Cre(:,e,k) = real(cm0c(:,lm), wp);  self%Cim(:,e,k) = aimag(cm0c(:,lm))
+         end do
+      end do
+      !$omp end do
+      deallocate(cm0a, cm0b, cm0c, cna, cnb, cnc, c1a, c1b, c1c, dt0, den, de1)
+      !$omp end parallel
+   end subroutine advance_memory_3d_trap
+
+   subroutine gather_tensor_coeffs_trap(self, sigma_lm, e, cm0a, cm0b, cm0c, &
+                                        cna, cnb, cnc, c1a, c1b, c1c)
+      !! Per element e, gather for the trapezoidal advance: τ_n (the *0 snapshot), the
+      !! start strain ε_n (σ_n·xUn + dUn) and the endpoint strain ε_{n+1} (σ_{n+1}·xUn +
+      !! edUn), each as complex (TLAM,nlm) blocks. σ_n is sigma_n when primed, else the
+      !! first-step fallback σ_{n+1} (matching trapezoid_advance_all).
+      class(ve_response), intent(in)  :: self
+      complex(wp),        intent(in)  :: sigma_lm(:)              ! σ_{n+1}
+      integer,            intent(in)  :: e
+      complex(wp),        intent(out) :: cm0a(:,:), cm0b(:,:), cm0c(:,:)
+      complex(wp),        intent(out) :: cna(:,:), cnb(:,:), cnc(:,:)
+      complex(wp),        intent(out) :: c1a(:,:), c1b(:,:), c1c(:,:)
+      real(wp) :: arn(NLAM), brn(NLAM), crn(NLAM), ain(NLAM), bin(NLAM), cin(NLAM)
+      real(wp) :: ar1(NLAM), br1(NLAM), cr1(NLAM), ai1(NLAM), bi1(NLAM), ci1(NLAM)
+      real(wp) :: sre, sim, srn, sin
+      real(wp) :: Urn, Urn1, Vrn, Vrn1, Uin, Uin1, Vin, Vin1
+      real(wp) :: Ur1, Ur11, Vr1, Vr11, Ui1, Ui11, Vi1, Vi11
+      integer  :: k, l, lm, lam
+      cm0a = (0.0_wp,0.0_wp); cm0b = (0.0_wp,0.0_wp); cm0c = (0.0_wp,0.0_wp)
+      cna  = (0.0_wp,0.0_wp); cnb  = (0.0_wp,0.0_wp); cnc  = (0.0_wp,0.0_wp)
+      c1a  = (0.0_wp,0.0_wp); c1b  = (0.0_wp,0.0_wp); c1c  = (0.0_wp,0.0_wp)
+      do k = 1, self%nk
+         l  = self%kdeg(k);  lm = self%k2lm(k)
+         sre = real(sigma_lm(lm), wp);  sim = aimag(sigma_lm(lm))          ! σ_{n+1}
+         if (self%sigma_primed) then
+            srn = real(self%sigma_n(lm), wp);  sin = aimag(self%sigma_n(lm))   ! σ_n
+         else
+            srn = sre;  sin = sim     ! first step: ε_n uses σ_{n+1} (load present at t=0)
+         end if
+         ! ε_n nodal (σ_n·xUn + begin_step drift dUn)
+         Urn  = srn*self%xUn(e,  l) + self%dUn_re(e,  k);  Uin  = sin*self%xUn(e,  l) + self%dUn_im(e,  k)
+         Urn1 = srn*self%xUn(e+1,l) + self%dUn_re(e+1,k);  Uin1 = sin*self%xUn(e+1,l) + self%dUn_im(e+1,k)
+         Vrn  = srn*self%xVn(e,  l) + self%dVn_re(e,  k);  Vin  = sin*self%xVn(e,  l) + self%dVn_im(e,  k)
+         Vrn1 = srn*self%xVn(e+1,l) + self%dVn_re(e+1,k);  Vin1 = sin*self%xVn(e+1,l) + self%dVn_im(e+1,k)
+         ! ε_{n+1} nodal (σ_{n+1}·xUn + endpoint drift edUn)
+         Ur1  = sre*self%xUn(e,  l) + self%edUn_re(e,  k);  Ui1  = sim*self%xUn(e,  l) + self%edUn_im(e,  k)
+         Ur11 = sre*self%xUn(e+1,l) + self%edUn_re(e+1,k);  Ui11 = sim*self%xUn(e+1,l) + self%edUn_im(e+1,k)
+         Vr1  = sre*self%xVn(e,  l) + self%edVn_re(e,  k);  Vi1  = sim*self%xVn(e,  l) + self%edVn_im(e,  k)
+         Vr11 = sre*self%xVn(e+1,l) + self%edVn_re(e+1,k);  Vi11 = sim*self%xVn(e+1,l) + self%edVn_im(e+1,k)
+         call strain_coeffs(Urn, Urn1, Vrn, Vrn1, self%Jr(l), arn, brn, crn)
+         call strain_coeffs(Uin, Uin1, Vin, Vin1, self%Jr(l), ain, bin, cin)
+         call strain_coeffs(Ur1, Ur11, Vr1, Vr11, self%Jr(l), ar1, br1, cr1)
+         call strain_coeffs(Ui1, Ui11, Vi1, Vi11, self%Jr(l), ai1, bi1, ci1)
+         do lam = 1, NLAM
+            cna(lam,lm) = cmplx(arn(lam), ain(lam), wp)
+            cnb(lam,lm) = cmplx(brn(lam), bin(lam), wp)
+            cnc(lam,lm) = cmplx(crn(lam), cin(lam), wp)
+            c1a(lam,lm) = cmplx(ar1(lam), ai1(lam), wp)
+            c1b(lam,lm) = cmplx(br1(lam), bi1(lam), wp)
+            c1c(lam,lm) = cmplx(cr1(lam), ci1(lam), wp)
+            cm0a(lam,lm) = cmplx(self%Are0(lam,e,k), self%Aim0(lam,e,k), wp)
+            cm0b(lam,lm) = cmplx(self%Bre0(lam,e,k), self%Bim0(lam,e,k), wp)
+            cm0c(lam,lm) = cmplx(self%Cre0(lam,e,k), self%Cim0(lam,e,k), wp)
+         end do
+      end do
+   end subroutine gather_tensor_coeffs_trap
+
+   subroutine advance_shape_tensor_trap(self, sht, e, c0, eps_n, eps_1, dt0, den, de1, cfg)
+      !! One radial shape-coefficient, trapezoidal: reconstruct τ_n, ε_n, ε_{n+1} on the
+      !! grid (six dyadic components) and apply the pointwise Crank–Nicolson update
+      !! τ⁺ = [(1−M/2)τ_n − μM(ε_n+ε_{n+1})]/(1+M/2) per component with M=Mk3(:,:,e).
+      !! c0 holds τ_n on entry, τ_{n+1} on exit; dt0/den/de1 are per-thread scratch.
+      class(ve_response), intent(in)    :: self
+      type(sht_grid),     intent(in)    :: sht
+      integer,            intent(in)    :: e
+      complex(wp),        intent(inout) :: c0(:,:)
+      complex(wp),        intent(in)    :: eps_n(:,:), eps_1(:,:)
+      real(wp),           intent(inout) :: dt0(:,:,:), den(:,:,:), de1(:,:,:)
+      type(c_ptr),        intent(in)    :: cfg
+      real(wp), dimension(size(dt0,1),size(dt0,2)) :: cold, weps
+      integer  :: p
+      call self%tsh%synth(sht, c0,    dt0, cfg)
+      call self%tsh%synth(sht, eps_n, den, cfg)
+      call self%tsh%synth(sht, eps_1, de1, cfg)
+      cold = (1.0_wp - 0.5_wp*self%Mk3(:,:,e)) / (1.0_wp + 0.5_wp*self%Mk3(:,:,e))
+      weps = self%mu(e)*self%Mk3(:,:,e)        / (1.0_wp + 0.5_wp*self%Mk3(:,:,e))
+      do p = 1, 6
+         dt0(:,:,p) = cold*dt0(:,:,p) - weps*(den(:,:,p) + de1(:,:,p))
+      end do
+      call self%tsh%analysis(sht, dt0, c0, cfg)
+   end subroutine advance_shape_tensor_trap
+
    subroutine snapshot_taun(self)
       !! Snapshot the entering memory τ_n into the *0 arrays so every trapezoid pass
       !! advances from τ_n (not compounding). ε_n nodal drift is in self%dUn_* (set by
@@ -908,17 +1032,26 @@ contains
       self%Cre0 = self%Cre;  self%Cim0 = self%Cim
    end subroutine snapshot_taun
 
-   subroutine trapezoid_advance_all(self, sigma_lm)
+   subroutine trapezoid_advance_all(self, sht, sigma_lm)
       !! One trapezoid endpoint advance for all (l,m): reset memory to τ_n (the *0
       !! snapshot), then advance with the entering strain ε_n (σ·xUn + dUn) and the
       !! endpoint strain ε_{n+1} (σ·xUn + edUn). Reads self%edUn_*/edVn_* (the current
-      !! τ_{n+1} drift estimate); writes self%Are…. Does not touch self%dUa.
+      !! τ_{n+1} drift estimate); writes self%Are…. Does not touch self%dUa. With
+      !! laterally-varying viscosity the trapezoid factor M is a field, so the advance
+      !! goes pseudo-spectral (advance_memory_3d_trap), exactly as FE uses advance_memory_3d.
       class(ve_response), intent(inout) :: self
+      type(sht_grid),     intent(in)    :: sht
       complex(wp),        intent(in)    :: sigma_lm(:)
       real(wp), allocatable :: Ure(:), Uim(:), Vre(:), Vim(:)
       real(wp), allocatable :: Ure_n(:), Uim_n(:), Vre_n(:), Vim_n(:)
       real(wp) :: sre, sim, srn, sin
       integer  :: k, l, lm, node
+
+      if (self%lat_visc) then
+         call advance_memory_3d_trap(self, sht, sigma_lm)
+         return
+      end if
+
       !$omp parallel default(shared) &
       !$omp   private(k, l, lm, node, sre, sim, srn, sin, Ure, Uim, Vre, Vim, Ure_n, Uim_n, Vre_n, Vim_n)
       allocate(Ure(self%nr), Uim(self%nr), Vre(self%nr), Vim(self%nr), &
@@ -996,11 +1129,7 @@ contains
          return
       end if
 
-      if (self%lat_visc) error stop &
-         've_response: laterally-varying viscosity (rung 6a) supports the FE scheme &
-         &only; the implicit trapezoidal 3D path is not yet implemented.'
-
-      call trapezoid_advance_all(self, sigma_lm)   ! ε_{n+1} from the previous estimate
+      call trapezoid_advance_all(self, sht, sigma_lm)   ! ε_{n+1} from the previous estimate
       self%sigma_next = sigma_lm                   ! stage σ_{n+1}; finalize commits it to σ_n
       ! refresh dUa + ε_{n+1} drift from the new τ_{n+1} (Are…), ready for the next pass
       call solve_drift(self, sht, self%edUn_re, self%edUn_im, self%edVn_re, self%edVn_im)

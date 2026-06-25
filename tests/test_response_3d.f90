@@ -20,6 +20,7 @@ program test_response_3d
    use fe_radial_fe,       only: radial_fe_finalize
    use fe_response,        only: ve_response
    use fe_sht,             only: sht_grid
+   use fe_viscoelastic,    only: SCHEME_TRAP
    implicit none
 
    integer, parameter :: LMAX = 8
@@ -45,6 +46,10 @@ program test_response_3d
    write(*,'(a)') ''
    write(*,'(a)') ' (2) uniform perturbation p: lateral path == 1-D run with eta*10^p'
    call consistency_uniform(-0.4_wp, ok)
+
+   write(*,'(a)') ''
+   write(*,'(a)') ' (3) TRAP-3D: trapezoidal lateral path == 1-D trapezoidal run (eta*10^p)'
+   call consistency_trap(-0.4_wp, ok)
 
    write(*,'(a)') ''
    if (ok) then
@@ -167,5 +172,31 @@ contains
       deallocate(pert)
       call ve3d%destroy();  call ve1d%destroy()
    end subroutine consistency_uniform
+
+   subroutine consistency_trap(p, ok)
+      !! Same as consistency_uniform but with the implicit trapezoidal scheme
+      !! (max_couple_iter>1): the TRAP-3D pseudo-spectral advance must reduce to the
+      !! 1-D trapezoidal advance for a uniform field, to SHT round-trip precision.
+      real(wp), intent(in)    :: p
+      logical,  intent(inout) :: ok
+      type(ve_response)     :: ve3d, ve1d
+      type(earth_model)     :: es
+      real(wp), allocatable :: pert(:,:,:)
+      integer :: k
+      es = build_M3L70V01()
+      do k = 1, es%n_layers()
+         if (es%layers(k)%rheology == RHEOL_MAXWELL) &
+            es%layers(k)%eta = es%layers(k)%eta * 10.0_wp**p
+      end do
+      call ve1d%init(es, sht, dt)
+      call ve3d%init(e, sht, dt)
+      ve1d%scheme = SCHEME_TRAP;  ve1d%max_couple_iter = 4
+      ve3d%scheme = SCHEME_TRAP;  ve3d%max_couple_iter = 4
+      allocate(pert(sht%nphi, sht%nlat, ve3d%ne));  pert = p
+      call ve3d%enable_lateral_visc(sht, pert)
+      call drive_and_compare(ve3d, ve1d, 'trap-uni:', ok)
+      deallocate(pert)
+      call ve3d%destroy();  call ve1d%destroy()
+   end subroutine consistency_trap
 
 end program test_response_3d
