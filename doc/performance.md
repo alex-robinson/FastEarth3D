@@ -93,3 +93,34 @@ A firmer scaling curve would come from recompiling at lmax 256 (a compile-time
 parameter in `tests/test_benchmark_sle.f90`) and timing a short segment, and/or
 instrumenting `begin_step` vs the SLE-loop SHT time to confirm the serial-bound
 diagnosis directly.
+
+## Forced deglaciation runs with 3D lateral viscosity (§14)
+
+LGM→present-day Tarasov forcing, RTopo present-day reference (`i_eq=1`), Pan/Bagge
+laterally-varying viscosity, 261 coupling steps (100 yr), 10-core Apple-silicon,
+OpenMP. Two cost components:
+
+- **Startup.** The online conservative RTopo→Gauss map (4.1M source cells) is
+  ~160 s and was built *twice* per run (bed + ice). Prebaked offline instead
+  (`fastearth_mkref` → `data/reference/rtopo_gauss_l*.nc`, read directly by
+  `read_ref2d`): startup drops to ~15 s (forcing remap only).
+- **Per step.** Dominated by the lateral-viscosity tensor advance
+  (`advance_memory_3d`, per-radial-element pseudo-spectral transforms), ~20× the
+  1-D per-step cost. The radial element count is ~lmax-independent, so the per-step
+  cost scales ~lmax² (grid points × SH coefficients).
+
+| lmax | Gauss (nphi×nlat) | per step (3D)        | full run (261 steps) |
+|------|-------------------|----------------------|----------------------|
+| 32   | 128×66            | ~20–25 s             | ~1.5 h               |
+| 64   | 256×130           | ~90–110 s (measured) | ~6.5 h               |
+| 128  | 512×258           | ~360–440 s (est. ~4×)| **~26–32 h**         |
+
+Reference: a 1-D run (M3-L70-V01, no lateral viscosity) is ~4.6 s/step (~20 min
+for the full deglaciation) — the lateral viscosity is the entire difference.
+
+Lever: most of the per-step cost is adaptive sub-stepping at `rtol=1e-4`; loosening
+to 1e-3 cuts sub-steps roughly in half for a proof-of-concept.
+
+**TODO — forced runs (not yet run).** Bagge2021 (default, matches CLIMBER-X), Pan2022,
+and Bagge ±1σ (`f_visc_sd=±1`), configs under `runs/s14_*`. Held pending a resolution
+choice; lmax 32 recommended for the first proof-of-concept, then 64/128.
