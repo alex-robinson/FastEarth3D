@@ -10,7 +10,6 @@ module fastearth3d
    use fe_earth_structure, only: earth_model, build_earth, build_M3L70V01
    use fe_radial_fe,       only: radial_operator
    use fe_viscoelastic,    only: ve_degree
-   use fe_gravity,         only: potential_perturbation
    use fe_sle,             only: sle_solver
    use fe_rotation,        only: rotation_state
    use fe_coupling,        only: solid_earth
