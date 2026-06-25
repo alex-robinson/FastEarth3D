@@ -85,6 +85,12 @@ fastearth: fastearth-static | $(bindir)
 		-o $(bindir)/fastearth.x $(objdir)/libfastearth.a $(LFLAGS)
 	@echo "    $(bindir)/fastearth.x is ready."
 
+# --- Offline lon-lat -> Gauss remapper ---------------------------------------
+fastearth_remap: fastearth-static | $(bindir)
+	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(srcdir)/fastearth_remap_main.f90 \
+		-o $(bindir)/fastearth_remap.x $(objdir)/libfastearth.a $(LFLAGS)
+	@echo "    $(bindir)/fastearth_remap.x is ready."
+
 # --- Tests -------------------------------------------------------------------
 test_params: fastearth-static | $(bindir)
 	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(testdir)/test_params.f90 \
