@@ -56,7 +56,6 @@ rewrite.
 | `fe_radial_fe` | per-degree saddle-point operator + banded-LU solve | done + tested |
 | `fe_viscoelastic` | Maxwell memory-stress time stepping (1-D, scheme-pluggable) + shared kernel | done + tested |
 | `fe_response` | surface-load → (uplift, geoid) operator: elastic + viscoelastic field driver | done + tested |
-| `fe_gravity` | self-gravitation / Poisson coupling | stub |
 | `fe_sle` | sea-level equation (ocean function, migration) | done + tested (elastic + VE) |
 | `fe_timestep` | adaptive-Δt controller (step-doubling on the Maxwell memory) | done + tested |
 | `fe_rotation` | rotational feedback / TPW (degree-2 Liouville + tidal VE channels, SLE-coupled) | done + tested (5a/5b/5c) |
@@ -256,13 +255,20 @@ displacement `u`.
    2/3) at the source — a direct disc re-run to confirm <1% is a quick follow-up.
    (The earlier "lift the degree-1 skip in `ve_response`" item is now DONE on main
    — the geocenter degree-1 response is carried in the field driver.)
-1. **`fe_coupling` wiring** — the CLIMBER-X contract (reference state: z_bed_eq +
-   reference ice/topo; host-grid mapping). A deliberate interface decision; swap
-   the `visco(:)` member for a `ve_response`, drive `sle%solve` per Δt across the
-   coupling interval, return `z_bed = z_bed_eq − rsl`.
-2. **Grounded-ice flotation** in the ocean function (currently `topo < 0` only):
-   a cell is ocean only where it is below sea level AND ice does not ground
-   (`ρ_i I < −ρ_w·topo`).
+1. **`fe_coupling` wiring — DONE.** The CLIMBER-X contract is wired: `ve_response`
+   member, `solid_earth%init(p, sht, z_bed_eq, h_ice_ref)` / `update(h_ice, dt)`
+   drives the adaptive stepper (SLE per Δt) across the coupling interval and returns
+   `z_bed = z_bed_eq − rsl` (`test_coupling`).
+2. **Grounded-ice flotation — DONE.** `ocean_function` (`fe_sle`) is ocean only where
+   `topo < 0` AND the ice floats (`ρ_i·I < −ρ_w·topo`); grounded ice over a subsided
+   bed stays land. The load splits grounded ice `ρ_i·dI·(1−C)` + ocean water
+   `ρ_w·C·rsl` + the subgrid sloping-coast term; floating ice contributes no load
+   (buoyancy) and no melt-water source. Wired through coupling → stepper → SLE with
+   absolute `ice` (flotation) and `d_ice` (load). `test_flotation`, `test_flotation_load`.
+   Consistency follow-ups (this session): removed the dead `fe_gravity` stub
+   (self-gravity is solved in `fe_radial_fe`), and the rotational polar-motion update
+   now uses the SLE's converged end-of-interval load (via the stepper's `sigma_out`)
+   instead of a hand re-derivation that dropped the subgrid term.
 3. **Martinec et al. (2018) cases A–E** quantitative match — the REFERENCE
    output curves are now in-repo (`data/benchmarks/sle_martinec2018/`, cases
    A/C2/D3/E2/F1, figs 10–13: u, v_θ, v_φ, F, sea-surface, SLE). The load/topo
