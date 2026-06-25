@@ -16,7 +16,7 @@ program test_tidal
    use fe_precision,       only: wp
    use fe_earth_structure, only: earth_gravity_at, earth_model, earth_layer, build_M3L70V01, &
                                  RHEOL_ELASTIC
-   use fe_radial_fe,       only: radial_mesh, radial_operator, tidal_love, &
+   use fe_radial_fe,       only: radial_operator_tidal_rhs, radial_operator_destroy, radial_operator_solve_vec, radial_operator_assemble, radial_mesh_build, radial_mesh, radial_operator, tidal_love, &
                                  radial_fe_finalize, idx_u, idx_v, idx_f
    implicit none
 
@@ -101,12 +101,12 @@ contains
       real(wp), allocatable :: x(:)
       integer :: it
       e = homog_earth(mu)
-      call m%build(e)
-      call op%assemble(e, m, j)
+      call radial_mesh_build(m, e)
+      call radial_operator_assemble(op, e, m, j)
       allocate(x(op%ndof))
-      call op%solve_vec(op%tidal_rhs(1.0_wp), x, iters=it, resid=rsd)
+      call radial_operator_solve_vec(op, radial_operator_tidal_rhs(op, 1.0_wp), x, iters=it, resid=rsd)
       ua = x(idx_u(m%nr));  va = x(idx_v(m%nr));  fa = x(idx_f(m%nr))
-      call op%destroy()
+      call radial_operator_destroy(op)
    end subroutine solve_homog_tidal
 
    function homog_earth(mu) result(e)
@@ -156,11 +156,11 @@ contains
       integer  :: jj, it
       real(wp) :: uu, vv, ff, hh, ll, kk, rr
       e = build_M3L70V01()
-      call m%build(e)
+      call radial_mesh_build(m, e)
       do jj = 2, 8
-         call op%assemble(e, m, jj)
+         call radial_operator_assemble(op, e, m, jj)
          allocate(x(op%ndof))
-         call op%solve_vec(op%tidal_rhs(1.0_wp), x, iters=it, resid=rr)
+         call radial_operator_solve_vec(op, radial_operator_tidal_rhs(op, 1.0_wp), x, iters=it, resid=rr)
          uu = x(idx_u(m%nr));  vv = x(idx_v(m%nr));  ff = x(idx_f(m%nr))
          call tidal_love(e, jj, 1.0_wp, uu, vv, ff, hh, ll, kk)
          write(*,'(i7,3es13.5)') jj, hh, ll, kk
@@ -174,7 +174,7 @@ contains
          if (jj == 2 .and. (kk <= 0.0_wp .or. kk >= 0.6_wp)) then
             write(*,'(a)') '      FAIL: M3 elastic k^T_2 outside physical range'; ok = .false.
          end if
-         call op%destroy()
+         call radial_operator_destroy(op)
       end do
    end subroutine elastic_M3
 

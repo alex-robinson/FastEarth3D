@@ -12,7 +12,7 @@ program test_love
    use fe_precision,       only: wp
    use fe_earth_structure, only: earth_model, earth_layer, build_M3L70V01, &
                                  RHEOL_ELASTIC, RHEOL_FLUID
-   use fe_radial_fe,       only: radial_mesh, radial_operator, loading_love, &
+   use fe_radial_fe,       only: radial_operator_solve_vec, radial_operator_load_rhs, radial_operator_solve, radial_operator_assemble, radial_mesh_build, radial_mesh, radial_operator, loading_love, &
                                  radial_fe_finalize, build_dense_operator, &
                                  uniq_weight, idx_u, idx_v, idx_f, ndof_of
    implicit none
@@ -93,9 +93,9 @@ contains
       allocate(e%layers(1))
       e%layers(1) = earth_layer(0.0_wp, 6371.0_wp*km, 5511.0_wp, mu, &
                                 huge(1.0_wp), RHEOL_ELASTIC)
-      call m%build(e)
-      call op%assemble(e, m, j)
-      call op%solve(1.0_wp, ua, va, fa, iters=it, resid=rsd)
+      call radial_mesh_build(m, e)
+      call radial_operator_assemble(op, e, m, j)
+      call radial_operator_solve(op, 1.0_wp, ua, va, fa, iters=it, resid=rsd)
    end subroutine solve_homogeneous
 
    subroutine love_for(j, ua, va, fa, h, l, k)
@@ -116,10 +116,10 @@ contains
       integer  :: jj, iter
       real(wp) :: uu, vv, ff, hh, ll, kk, rr
       e = build_M3L70V01()
-      call m%build(e)
+      call radial_mesh_build(m, e)
       do jj = 2, 8
-         call op%assemble(e, m, jj)
-         call op%solve(1.0_wp, uu, vv, ff, iters=iter, resid=rr)
+         call radial_operator_assemble(op, e, m, jj)
+         call radial_operator_solve(op, 1.0_wp, uu, vv, ff, iters=iter, resid=rr)
          call loading_love(e, jj, 1.0_wp, uu, vv, ff, hh, ll, kk)
          write(*,'(i7,3es13.5,i6,es10.2)') jj, hh, ll, kk, iter, rr
          if (rr > 1.0e-6_wp) then
@@ -159,13 +159,13 @@ contains
       integer  :: it, nd, nn
 
       e = build_M3L70V01()
-      call m%build(e)
-      call op%assemble(e, m, 1)                 ! bordered (sparse) KKT j=1 operator
+      call radial_mesh_build(m, e)
+      call radial_operator_assemble(op, e, m, 1)                 ! bordered (sparse) KKT j=1 operator
       nd = ndof_of(m%nr)
 
-      b = op%load_rhs(1.0_wp)                    ! unit degree-1 surface load (eq 84)
+      b = radial_operator_load_rhs(op, 1.0_wp)                    ! unit degree-1 surface load (eq 84)
       allocate(d(nd))
-      call op%solve_vec(b, d, iters=it, resid=rr)
+      call radial_operator_solve_vec(op, b, d, iters=it, resid=rr)
 
       ! (i) non-singular: the equilibrated GMRES residual is at solver tolerance.
       if (rr > 1.0e-8_wp) then

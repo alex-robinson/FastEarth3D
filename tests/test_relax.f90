@@ -11,7 +11,7 @@ program test_relax
    use fe_precision,       only: wp
    use fe_constants,       only: pi, grav_G, sec_per_year
    use fe_earth_structure, only: earth_model, earth_layer, RHEOL_MAXWELL
-   use fe_radial_fe,       only: radial_mesh, radial_operator, radial_fe_finalize
+   use fe_radial_fe,       only: radial_operator_destroy, radial_operator_solve, radial_operator_assemble, radial_mesh_build, radial_mesh, radial_operator, radial_fe_finalize
    use fe_viscoelastic,    only: ve_degree
    implicit none
 
@@ -77,11 +77,11 @@ contains
       type(radial_mesh)     :: m
       type(radial_operator) :: op
       real(wp) :: ua, va, fa
-      call mk_earth(e, 1.0e21_wp);  call m%build(e)
-      call op%assemble(e, m, j)
-      call op%solve(1.0_wp, ua, va, fa)
+      call mk_earth(e, 1.0e21_wp);  call radial_mesh_build(m, e)
+      call radial_operator_assemble(op, e, m, j)
+      call radial_operator_solve(op, 1.0_wp, ua, va, fa)
       h = g*ua/phiL
-      call op%destroy()
+      call radial_operator_destroy(op)
    end function elastic_h
 
    subroutine relax_run(eta, h0, hinf, t_efold)
@@ -95,7 +95,7 @@ contains
       real(wp) :: dt, t, ua, va, fa, h, frac, hprev, tprev, fprev
       integer  :: istep, nstep
       logical  :: crossed
-      call mk_earth(e, eta);  call m%build(e)
+      call mk_earth(e, eta);  call radial_mesh_build(m, e)
       dt = 10.0_wp*yr
       call ve%init(e, m, j, dt)
       nstep = nint(40.0e3_wp*yr/dt)
@@ -129,7 +129,7 @@ contains
       real(wp) :: dt, t, ua, va, fa, u0, ulast
       integer  :: istep, nstep
       logical  :: finite
-      call mk_earth(e, 1.0e21_wp);  call m%build(e)
+      call mk_earth(e, 1.0e21_wp);  call radial_mesh_build(m, e)
       dt = 10.0_wp*yr
       call ve%init(e, m, 1, dt)              ! degree 1
       nstep = nint(20.0e3_wp*yr/dt)

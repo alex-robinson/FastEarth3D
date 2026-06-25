@@ -6,7 +6,7 @@ program test_assembly
    use fe_precision,        only: wp
    use fe_constants,        only: pi, grav_G
    use fe_earth_structure,  only: earth_gravity_at, earth_model, build_M3L70V01
-   use fe_radial_fe,        only: radial_mesh, build_dense_operator, shell_Rk, &
+   use fe_radial_fe,        only: radial_mesh_build, radial_mesh, build_dense_operator, shell_Rk, &
                                   idx_u, idx_v, idx_f, idx_p, ndof_of
    use fe_radial_integrals, only: elem_k1, elem_k2
    implicit none
@@ -20,7 +20,7 @@ program test_assembly
    logical  :: ok
 
    earth = build_M3L70V01()
-   call mesh%build(earth)
+   call radial_mesh_build(mesh, earth)
    nr = mesh%nr;  ne = mesh%ne;  nd = ndof_of(nr)
    fourpiG = 4.0_wp*pi*grav_G
    ok = .true.

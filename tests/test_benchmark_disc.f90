@@ -22,7 +22,7 @@ program test_benchmark_disc
    use fe_precision,       only: wp
    use fe_constants,       only: pi, rho_ice, kyr
    use fe_earth_structure, only: earth_gravity_at, earth_model, build_M3L70V01
-   use fe_radial_fe,       only: radial_mesh, radial_fe_finalize
+   use fe_radial_fe,       only: radial_mesh_build, radial_mesh, radial_fe_finalize
    use fe_viscoelastic,    only: ve_degree
    use fe_response,        only: elastic_response
    implicit none
@@ -156,7 +156,7 @@ contains
       real(wp) :: dt, uc(NTV), t1, ua, va, fa, rel
       integer  :: nn, istep, it
       dt = 0.02_wp*kyr               ! 20 yr explicit step
-      call mm%build(em)
+      call radial_mesh_build(mm, em)
       uc = 0.0_wp
       do nn = 1, NMAX_VE
          if (nn == 1) cycle          ! geocenter: U_1 ~ 0 at centre, dense j=1 skip

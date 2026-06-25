@@ -22,7 +22,7 @@ module fe_viscoelastic
    !! done pointwise on the Gauss grid (the project's 3-D goal, built on top).
    use fe_precision,       only: wp
    use fe_earth_structure, only: earth_model
-   use fe_radial_fe,       only: radial_operator, radial_mesh, &
+   use fe_radial_fe,       only: radial_operator_destroy, radial_operator_solve_vec, radial_operator_load_rhs, radial_operator_assemble, radial_operator, radial_mesh, &
                                  idx_u, idx_v, idx_f, ndof_of
    implicit none
    private
@@ -104,7 +104,7 @@ contains
       self%j  = j;  self%dt = dt;  self%time = 0.0_wp
       self%nr = mesh%nr;  self%ne = mesh%ne;  self%ndof = ndof_of(mesh%nr)
       self%Jr = real(j, wp)*real(j+1, wp)
-      call self%op%assemble(earth, mesh, j)
+      call radial_operator_assemble(self%op, earth, mesh, j)
 
       allocate(self%r(self%nr));  self%r = mesh%r
       allocate(self%mu(self%ne), self%Mk(self%ne))
@@ -169,9 +169,9 @@ contains
       ! against the ENTERING memory τ_n. This is time-aligned with t_now and makes
       ! the first call (τ_0=0) the exact elastic state, regardless of scheme.
       allocate(f(self%ndof), x(self%ndof))
-      f = self%op%load_rhs(sigma)            ! elastic load forcing (eq 84)
+      f = radial_operator_load_rhs(self%op, sigma)            ! elastic load forcing (eq 84)
       call add_dissipative(self, f)          ! + memory forcing from τ_n (eqs 94,110)
-      call self%op%solve_vec(f, x)
+      call radial_operator_solve_vec(self%op, f, x)
       do node = 1, self%nr
          self%Un(node) = x(idx_u(node))      ! report strain ε_n
          self%Vn(node) = x(idx_v(node))
@@ -200,9 +200,9 @@ contains
 
       do iter = 1, self%max_couple_iter
          ! Endpoint balance against the current τ_{n+1} estimate (held load).
-         f = self%op%load_rhs(sigma)
+         f = radial_operator_load_rhs(self%op, sigma)
          call add_dissipative(self, f)
-         call self%op%solve_vec(f, x)
+         call radial_operator_solve_vec(self%op, f, x)
          do node = 1, self%nr
             Ue(node) = x(idx_u(node))        ! endpoint strain ε_{n+1} estimate
             Ve(node) = x(idx_v(node))
@@ -511,7 +511,7 @@ contains
 
    subroutine ve_destroy(self)
       class(ve_degree), intent(inout) :: self
-      call self%op%destroy()
+      call radial_operator_destroy(self%op)
       if (allocated(self%r))    deallocate(self%r)
       if (allocated(self%mu))   deallocate(self%mu)
       if (allocated(self%Mk))   deallocate(self%Mk)

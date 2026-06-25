@@ -25,7 +25,7 @@ module fe_response
    use fe_precision,       only: wp
    use fe_constants,       only: pi, grav_G
    use fe_earth_structure, only: earth_gravity_at, earth_model, RHEOL_MAXWELL
-   use fe_radial_fe,       only: radial_mesh, radial_operator, &
+   use fe_radial_fe,       only: radial_operator_load_rhs, radial_operator_solve_vec, radial_operator_destroy, radial_operator_solve, radial_operator_assemble, radial_mesh_build, radial_mesh, radial_operator, &
                                  idx_u, idx_v, idx_f, ndof_of
    use fe_viscoelastic,    only: NLAM, ve_strain_constants, dissipative_rhs, &
                                  advance_memory, strain_coeffs, scheme_is_implicit, &
@@ -339,14 +339,14 @@ contains
       self%ngain(0) = 4.0_wp*pi*grav_G*self%a / self%g
       self%vgain(0) = 0.0_wp                    ! no horizontal at degree 0
 
-      call mesh%build(earth)
+      call radial_mesh_build(mesh, earth)
       do l = 1, lmax
-         call op%assemble(earth, mesh, l)
-         call op%solve(1.0_wp, ua, va, fa)     ! unit surface load coefficient
+         call radial_operator_assemble(op, earth, mesh, l)
+         call radial_operator_solve(op, 1.0_wp, ua, va, fa)     ! unit surface load coefficient
          self%ugain(l) = ua
          self%ngain(l) = -fa / self%g
          self%vgain(l) = va
-         call op%destroy()
+         call radial_operator_destroy(op)
       end do
 
       ! degree-1 geoid frame: the per-degree solve fixes the displacement gauge
@@ -423,7 +423,7 @@ contains
       integer  :: l, m, e, lay, node, k
 
       call self%destroy()
-      call mesh%build(earth)
+      call radial_mesh_build(mesh, earth)
       self%lmax = sht%lmax;  self%nlm = sht%nlm
       self%nr = mesh%nr;  self%ne = mesh%ne;  self%ndof = ndof_of(mesh%nr)
       self%dt = dt;  self%time = 0.0_wp
@@ -477,8 +477,8 @@ contains
          self%Jr(l) = real(l, wp)*real(l+1, wp)
          call ve_strain_constants(self%Jr(l), self%nrmc(:,l), &
                                   self%sa(:,:,l), self%sb(:,:,l), self%sc(:,:,l))
-         call self%ops(l)%assemble(earth, mesh, l)
-         call self%ops(l)%solve_vec(self%ops(l)%load_rhs(1.0_wp), x)
+         call radial_operator_assemble(self%ops(l), earth, mesh, l)
+         call radial_operator_solve_vec(self%ops(l), radial_operator_load_rhs(self%ops(l), 1.0_wp), x)
          self%gu(l) = x(idx_u(self%nr))
          self%gn(l) = -x(idx_f(self%nr))/self%g
          self%gv(l) = x(idx_v(self%nr))         ! surface horizontal V(a)
@@ -601,8 +601,8 @@ contains
             call dissipative_rhs(self%ne, self%r, self%sa(:,:,l), self%sb(:,:,l), &
                  self%sc(:,:,l), self%nrmc(:,l), self%Aim(:,:,k), self%Bim(:,:,k), &
                  self%Cim(:,:,k), fim)
-            call self%ops(l)%solve_vec(fre, xre)
-            call self%ops(l)%solve_vec(fim, xim)
+            call radial_operator_solve_vec(self%ops(l), fre, xre)
+            call radial_operator_solve_vec(self%ops(l), fim, xim)
             self%dUa(k) = cmplx(xre(idx_u(self%nr)), xim(idx_u(self%nr)), wp)
             self%dFa(k) = cmplx(xre(idx_f(self%nr)), xim(idx_f(self%nr)), wp)
             self%dVa(k) = cmplx(xre(idx_v(self%nr)), xim(idx_v(self%nr)), wp)
@@ -1355,7 +1355,7 @@ contains
       class(ve_response), intent(inout) :: self
       integer :: l
       if (allocated(self%ops)) then
-         do l = 1, size(self%ops);  call self%ops(l)%destroy();  end do
+         do l = 1, size(self%ops);  call radial_operator_destroy(self%ops(l));  end do
          deallocate(self%ops)
       end if
       if (allocated(self%r))      deallocate(self%r)

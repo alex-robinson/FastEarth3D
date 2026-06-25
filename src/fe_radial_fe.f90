@@ -35,6 +35,7 @@ module fe_radial_fe
    ! Assembly building blocks (public so the unit tests can inspect them).
    public :: build_dense_operator, shell_Rk, uniq_weight
    public :: idx_u, idx_v, idx_f, idx_p, ndof_of
+   public :: radial_mesh_build, radial_operator_assemble, radial_operator_solve, radial_operator_solve_vec, radial_operator_load_rhs, radial_operator_tidal_rhs, radial_operator_destroy
 
    ! Default radial element-size targets [m], after VEGA (Martinec et al. 2018):
    ! 5 km in the lithosphere, 10 km in the upper mantle, 40 km in the lower
@@ -55,8 +56,6 @@ module fe_radial_fe
       integer :: ne = 0                       !! number of elements (= nr - 1)
       real(wp), allocatable :: r(:)           !! node radii [m], strictly ascending (nr)
       integer,  allocatable :: elem_layer(:)  !! source earth layer per element (ne)
-   contains
-      procedure :: build => radial_mesh_build
    end type radial_mesh
 
    type :: radial_operator
@@ -87,13 +86,6 @@ module fe_radial_fe
       logical               :: bordered = .false.
       real(wp), allocatable :: w(:)              !! degree-1 KKT constraint vector (ndof)
       logical  :: ready = .false.
-   contains
-      procedure :: assemble  => radial_operator_assemble
-      procedure :: solve     => radial_operator_solve
-      procedure :: solve_vec  => radial_operator_solve_vec
-      procedure :: load_rhs   => radial_operator_load_rhs
-      procedure :: tidal_rhs  => radial_operator_tidal_rhs
-      procedure :: destroy   => radial_operator_destroy
    end type radial_operator
 
 
@@ -121,7 +113,7 @@ contains
       !! subdivided into uniform elements no larger than the depth-dependent
       !! target, with nodes pinned to every material interface so no element
       !! straddles a density/rigidity jump.
-      class(radial_mesh), intent(inout) :: self
+      type(radial_mesh), intent(inout) :: self
       type(earth_model),  intent(in)    :: earth
       real(wp), allocatable :: r(:)
       integer,  allocatable :: lay(:)
@@ -388,7 +380,7 @@ contains
       !! essential for an iterative solve of a system whose physical entries span
       !! ~20 orders of magnitude. Independent of m and load, so reused across all
       !! orders and (later) time steps of degree j.
-      class(radial_operator), intent(inout) :: self
+      type(radial_operator), intent(inout) :: self
       type(earth_model),      intent(in)    :: earth
       type(radial_mesh),      intent(in)    :: mesh
       integer,                intent(in)    :: j
@@ -397,7 +389,7 @@ contains
       real(wp) :: dr_b, dc_b           !! border row/col equilibration (transient)
       integer  :: nd, ns, i, k, nnz
 
-      call self%destroy()
+      call radial_operator_destroy(self)
       ! Build the BAND part only (no dense E_uniq fill). For j=1 the rigid-mode
       ! removal is reinstated EXACTLY below as a sparse KKT constraint wᵀ d = 0
       ! (bordering the band with row wᵀ / column w); for j≥2 with_uniq is a no-op,
@@ -486,7 +478,7 @@ contains
    function radial_operator_load_rhs(self, sigma) result(b)
       !! Build the physical RHS for a degree-j surface mass load of coefficient
       !! `sigma` (eq 84 σ-terms): force −a²σ g₀(a) on U(a) and −a²σ on F(a).
-      class(radial_operator), intent(in) :: self
+      type(radial_operator), intent(in) :: self
       real(wp),               intent(in) :: sigma
       real(wp), allocatable :: b(:)
       allocate(b(self%ndof));  b = 0.0_wp
@@ -507,7 +499,7 @@ contains
       !! force −ρ₀∇φ₁ (captured through F), not a surface-mass weight. So tidal_rhs is
       !! load_rhs with φ^L → φ_t on the F term and the −a²σg₀ U-traction dropped —
       !! which is exactly why a load subsides while a tide-raising potential uplifts.
-      class(radial_operator), intent(in) :: self
+      type(radial_operator), intent(in) :: self
       real(wp),               intent(in) :: phi_t
       real(wp), allocatable :: b(:)
       allocate(b(self%ndof));  b = 0.0_wp
@@ -519,7 +511,7 @@ contains
       !! the full physical solution x. Applies the stored row/column equilibration
       !! around the direct banded-LU solve. The viscoelastic time stepper uses this
       !! with b = load + dissipative memory forcing.
-      class(radial_operator), intent(in)  :: self
+      type(radial_operator), intent(in)  :: self
       real(wp),               intent(in)  :: b(:)
       real(wp),               intent(out) :: x(:)
       integer,  optional,     intent(out) :: iters, info
@@ -551,7 +543,7 @@ contains
    subroutine radial_operator_solve(self, sigma, U_a, V_a, F_a, iters, resid, info, options)
       !! Convenience elastic solve: degree-j surface load of coefficient `sigma`,
       !! returning the surface coefficients U(a), V(a), F(a).
-      class(radial_operator), intent(in)  :: self
+      type(radial_operator), intent(in)  :: self
       real(wp),               intent(in)  :: sigma
       real(wp),               intent(out) :: U_a, V_a, F_a
       integer,  optional,     intent(out) :: iters, info
@@ -559,14 +551,14 @@ contains
       character(len=*), optional, intent(in) :: options
       real(wp), allocatable :: x(:)
       allocate(x(self%ndof))
-      call self%solve_vec(self%load_rhs(sigma), x, iters, resid, info, options)
+      call radial_operator_solve_vec(self, radial_operator_load_rhs(self, sigma), x, iters, resid, info, options)
       U_a = x(idx_u(self%nr))
       V_a = x(idx_v(self%nr))
       F_a = x(idx_f(self%nr))
    end subroutine radial_operator_solve
 
    subroutine radial_operator_destroy(self)
-      class(radial_operator), intent(inout) :: self
+      type(radial_operator), intent(inout) :: self
       call band_destroy(self%band)
       if (allocated(self%dr))   deallocate(self%dr)
       if (allocated(self%dc))   deallocate(self%dc)

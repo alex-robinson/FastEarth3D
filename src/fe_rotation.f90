@@ -42,7 +42,7 @@ module fe_rotation
    use fe_precision,       only: wp
    use fe_constants,       only: pi, grav_G
    use fe_earth_structure, only: earth_n_layers, earth_gravity_at, earth_model, RHEOL_FLUID
-   use fe_radial_fe,       only: radial_mesh, radial_operator, tidal_love, &
+   use fe_radial_fe,       only: radial_operator_load_rhs, radial_operator_tidal_rhs, radial_operator_destroy, radial_operator_solve_vec, radial_operator_assemble, radial_mesh_build, radial_mesh, radial_operator, tidal_love, &
                                  idx_u, idx_v, idx_f, ndof_of
    use fe_viscoelastic,    only: NLAM, ve_strain_constants, dissipative_rhs, &
                                  advance_memory, SCHEME_FE
@@ -131,7 +131,7 @@ contains
       type(radial_mesh) :: mesh
 
       call self%destroy()
-      call mesh%build(earth)
+      call radial_mesh_build(mesh, earth)
       self%a = earth%r_earth
       self%g = earth_gravity_at(earth, earth%r_earth)
       call self%load_ch%init(earth, mesh, dt, tidal=.false.)
@@ -315,12 +315,12 @@ contains
             ef%layers(lay)%mu = 0.0_wp;  ef%layers(lay)%rheology = RHEOL_FLUID
          end if
       end do
-      call op%assemble(ef, mesh, JROT)
+      call radial_operator_assemble(op, ef, mesh, JROT)
       allocate(x(op%ndof))
-      call op%solve_vec(op%tidal_rhs(1.0_wp), x)
+      call radial_operator_solve_vec(op, radial_operator_tidal_rhs(op, 1.0_wp), x)
       ua = x(idx_u(mesh%nr));  va = x(idx_v(mesh%nr));  fa = x(idx_f(mesh%nr))
       call tidal_love(ef, JROT, 1.0_wp, ua, va, fa, h, l, k_s)
-      call op%destroy()
+      call radial_operator_destroy(op)
    end function fluid_tidal_k
 
    ! === deg2_channel ==========================================================
@@ -358,14 +358,14 @@ contains
       self%Mk = self%MkPerDt*dt
 
       call ve_strain_constants(self%Jr, self%norm, self%sa, self%sb, self%sc)
-      call self%op%assemble(earth, mesh, JROT)
+      call radial_operator_assemble(self%op, earth, mesh, JROT)
 
       ! unit-forcing response: Fe (surface F) + nodal U,V for the memory forcing
       allocate(x(self%ndof), self%xUn(self%nr), self%xVn(self%nr))
       if (tidal) then
-         call self%op%solve_vec(self%op%tidal_rhs(1.0_wp), x)
+         call radial_operator_solve_vec(self%op, radial_operator_tidal_rhs(self%op, 1.0_wp), x)
       else
-         call self%op%solve_vec(self%op%load_rhs(1.0_wp), x)
+         call radial_operator_solve_vec(self%op, radial_operator_load_rhs(self%op, 1.0_wp), x)
       end if
       self%Fe = x(idx_f(self%nr))
       self%Ue = x(idx_u(self%nr))
@@ -405,8 +405,8 @@ contains
                            self%Are, self%Bre, self%Cre, fre)
       call dissipative_rhs(self%ne, self%r, self%sa, self%sb, self%sc, self%norm, &
                            self%Aim, self%Bim, self%Cim, fim)
-      call self%op%solve_vec(fre, xre)
-      call self%op%solve_vec(fim, xim)
+      call radial_operator_solve_vec(self%op, fre, xre)
+      call radial_operator_solve_vec(self%op, fim, xim)
       self%dF = cmplx(xre(idx_f(self%nr)), xim(idx_f(self%nr)), wp)
       self%dU = cmplx(xre(idx_u(self%nr)), xim(idx_u(self%nr)), wp)
       do node = 1, self%nr
@@ -439,7 +439,7 @@ contains
 
    subroutine channel_destroy(self)
       class(deg2_channel), intent(inout) :: self
-      call self%op%destroy()
+      call radial_operator_destroy(self%op)
       if (allocated(self%r))      deallocate(self%r)
       if (allocated(self%mu))     deallocate(self%mu)
       if (allocated(self%Mk))     deallocate(self%Mk)

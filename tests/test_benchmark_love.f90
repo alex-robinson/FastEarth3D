@@ -21,7 +21,7 @@ program test_benchmark_love
    !!     See doc/formulation.md "Elastic low-degree discrepancy (FIXED)".
    use fe_precision,       only: wp
    use fe_earth_structure, only: earth_model, build_M3L70V01, RHEOL_FLUID
-   use fe_radial_fe,       only: radial_mesh, radial_operator, loading_love, &
+   use fe_radial_fe,       only: radial_operator_solve, radial_operator_assemble, radial_mesh_build, radial_mesh, radial_operator, loading_love, &
                                  radial_fe_finalize
    implicit none
    character(*), parameter :: REF = 'data/benchmarks/love_M3-L70-V01/mod_M3-L70-V01'
@@ -48,10 +48,10 @@ program test_benchmark_love
    ef%layers(2)%mu = 0.0_wp;  ef%layers(2)%rheology = RHEOL_FLUID
    ef%layers(3)%mu = 0.0_wp;  ef%layers(3)%rheology = RHEOL_FLUID
    ef%layers(4)%mu = 0.0_wp;  ef%layers(4)%rheology = RHEOL_FLUID
-   call mf%build(ef)
+   call radial_mesh_build(mf, ef)
    do j = 2, 8
-      call op%assemble(ef, mf, j)
-      call op%solve(1.0_wp, u, v, f, iters=it, resid=rr)
+      call radial_operator_assemble(op, ef, mf, j)
+      call radial_operator_solve(op, 1.0_wp, u, v, f, iters=it, resid=rr)
       call loading_love(ef, j, 1.0_wp, u, v, f, h, l, k)
       write(*,'(i7,6f11.5)') j, h, hf(j), l, lf(j), k, kf(j)
       if (reldiff(h, hf(j)) > 1.0e-2_wp) then
@@ -69,10 +69,10 @@ program test_benchmark_love
    write(*,'(a)') ''
    write(*,'(a)') ' (2) M3-L70-V01 elastic loading Love numbers vs benchmark table'
    write(*,'(a)') '      j      h_ours     h_ref    dh%      k_ours     k_ref    dk%'
-   e = build_M3L70V01();  call m%build(e)
+   e = build_M3L70V01();  call radial_mesh_build(m, e)
    do j = 2, 48
-      call op%assemble(e, m, j)
-      call op%solve(1.0_wp, u, v, f, iters=it, resid=rr)
+      call radial_operator_assemble(op, e, m, j)
+      call radial_operator_solve(op, 1.0_wp, u, v, f, iters=it, resid=rr)
       call loading_love(e, j, 1.0_wp, u, v, f, h, l, k)
       if (j <= 8 .or. mod(j,8) == 0) &
          write(*,'(i7,2f11.5,f8.1,2f11.5,f8.1)') j, h, he(j), &

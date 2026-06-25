@@ -6,7 +6,7 @@ program test_mesh
    !! targets (5/10/40 km by depth).
    use fe_precision,       only: wp
    use fe_earth_structure, only: earth_model, build_M3L70V01
-   use fe_radial_fe,       only: radial_mesh
+   use fe_radial_fe,       only: radial_mesh_build, radial_mesh
    implicit none
 
    type(earth_model) :: em
@@ -22,7 +22,7 @@ program test_mesh
 
    ok = .true.
    em = build_M3L70V01()
-   call mesh%build(em)
+   call radial_mesh_build(mesh, em)
    print '(a,i0,a,i0,a)', ' mesh: ', mesh%nr, ' nodes, ', mesh%ne, ' elements'
    print '(a,f8.1,a,f8.1,a)', ' span: ', mesh%r(1)/km, ' km -> ', &
         mesh%r(mesh%nr)/km, ' km'
