@@ -16,7 +16,7 @@ program test_ve_response
    use fe_constants,       only: kyr
    use fe_earth_structure, only: earth_model, build_M3L70V01
    use fe_radial_fe,       only: radial_mesh_build, radial_mesh, radial_fe_finalize
-   use fe_viscoelastic,    only: ve_degree, SCHEME_FE, SCHEME_TRAP
+   use fe_viscoelastic,    only: ve_destroy, ve_step, ve_init, ve_degree, SCHEME_FE, SCHEME_TRAP
    use fe_response,        only: elastic_response, ve_response
    use fe_sht,             only: sht_grid, sht_grid_init, sht_grid_destroy, sht_grid_lmidx
    implicit none
@@ -110,7 +110,7 @@ contains
       sigma = 1.0_wp
       ! reference: validated 1-D stepper at degree j, same scheme/coupling settings
       call radial_mesh_build(mesh, e)
-      call vd%init(e, mesh, j=j, dt=dt)
+      call ve_init(vd, e, mesh, j=j, dt=dt)
       vd%scheme = scheme;  vd%max_couple_iter = max_iter;  vd%couple_tol = TOL
 
       ! field driver, single held (l=j,m=0) coefficient, same scheme/coupling settings
@@ -124,7 +124,7 @@ contains
       emax_u = 0.0_wp;  emax_f = 0.0_wp;  ref_u = 0.0_wp;  nmax1 = 0.0_wp
       write(*,'(a)') '       step   U_a(1D)      U_a(field)     F_a(1D)      F_a(field)'
       do i = 1, NSTEP
-         call vd%step(sigma, t1, ua1, va1, fa1)          ! 1-D: state then advance
+         call ve_step(vd, sigma, t1, ua1, va1, fa1)          ! 1-D: state then advance
          call ve%begin_step(sht)
          call ve%apply(sht, slm, ulm, nlm)               ! field: state at this t
          ua2 = real(ulm(lm), wp)
@@ -168,7 +168,7 @@ contains
             ok = .false.
          end if
       end if
-      call vd%destroy();  call ve%destroy()
+      call ve_destroy(vd);  call ve%destroy()
    end subroutine stepper_agreement
 
 end program test_ve_response

@@ -12,7 +12,7 @@ program test_relax
    use fe_constants,       only: pi, grav_G, sec_per_year
    use fe_earth_structure, only: earth_model, earth_layer, RHEOL_MAXWELL
    use fe_radial_fe,       only: radial_operator_destroy, radial_operator_solve, radial_operator_assemble, radial_mesh_build, radial_mesh, radial_operator, radial_fe_finalize
-   use fe_viscoelastic,    only: ve_degree
+   use fe_viscoelastic,    only: ve_destroy, ve_step, ve_init, ve_degree
    implicit none
 
    real(wp), parameter :: km = 1.0e3_wp, yr = sec_per_year
@@ -97,12 +97,12 @@ contains
       logical  :: crossed
       call mk_earth(e, eta);  call radial_mesh_build(m, e)
       dt = 10.0_wp*yr
-      call ve%init(e, m, j, dt)
+      call ve_init(ve, e, m, j, dt)
       nstep = nint(40.0e3_wp*yr/dt)
       h0 = 0.0_wp;  hinf = 0.0_wp;  t_efold = 0.0_wp
       crossed = .false.;  hprev = 0.0_wp;  tprev = 0.0_wp;  fprev = 0.0_wp
       do istep = 0, nstep
-         call ve%step(1.0_wp, t, ua, va, fa)
+         call ve_step(ve, 1.0_wp, t, ua, va, fa)
          h = g*ua/phiL
          if (istep == 0) h0 = h
          frac = (h - h0)/(hfluid - h0)
@@ -114,7 +114,7 @@ contains
          hprev = h;  tprev = t;  fprev = frac
       end do
       hinf = h
-      call ve%destroy()
+      call ve_destroy(ve)
    end subroutine relax_run
 
    subroutine ve_degree1_smoke()
@@ -131,16 +131,16 @@ contains
       logical  :: finite
       call mk_earth(e, 1.0e21_wp);  call radial_mesh_build(m, e)
       dt = 10.0_wp*yr
-      call ve%init(e, m, 1, dt)              ! degree 1
+      call ve_init(ve, e, m, 1, dt)              ! degree 1
       nstep = nint(20.0e3_wp*yr/dt)
       finite = .true.;  u0 = 0.0_wp;  ulast = 0.0_wp
       do istep = 0, nstep
-         call ve%step(1.0_wp, t, ua, va, fa)
+         call ve_step(ve, 1.0_wp, t, ua, va, fa)
          if (ua /= ua .or. abs(ua) > 1.0e30_wp) finite = .false.
          if (istep == 0) u0 = ua
          ulast = ua
       end do
-      call ve%destroy()
+      call ve_destroy(ve)
       write(*,'(a)') ''
       write(*,'(a,es12.4,a,es12.4)') '   j=1 VE: U(a) elastic=', u0, '  relaxed=', ulast
       if (.not. finite) then

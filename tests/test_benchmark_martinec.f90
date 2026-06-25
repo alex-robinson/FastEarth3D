@@ -21,7 +21,7 @@ program test_benchmark_martinec
    use fe_constants,       only: pi, rho_ice, kyr
    use fe_earth_structure, only: earth_gravity_at, earth_model, build_M3L70V01
    use fe_radial_fe,       only: radial_mesh_build, radial_mesh, radial_fe_finalize
-   use fe_viscoelastic,    only: ve_degree
+   use fe_viscoelastic,    only: ve_destroy, ve_step, ve_init, ve_degree
    implicit none
    character(*), parameter :: REF = 'data/benchmarks/sle_martinec2018/A_fig10_SBK.dat'
    integer,  parameter :: NROW = 721, NMAX = 128, NQ = 8000, NSTEP = 500
@@ -48,12 +48,12 @@ program test_benchmark_martinec
    dt = 0.02_wp*kyr
    Un = 0.0_wp;  Vn = 0.0_wp;  Nn = 0.0_wp
    do n = 2, NMAX                          ! n=0,1 dropped (giapy jmin=2)
-      call ve%init(em, mm, n, dt)
+      call ve_init(ve, em, mm, n, dt)
       do istep = 1, NSTEP
-         call ve%step(1.0_wp, t1, ua, va, fa)
+         call ve_step(ve, 1.0_wp, t1, ua, va, fa)
       end do
       Un(n) = ua;  Vn(n) = va;  Nn(n) = -fa/g
-      call ve%destroy()
+      call ve_destroy(ve)
    end do
 
    call synth_and_compare(eu, eh, en)

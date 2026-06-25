@@ -23,7 +23,7 @@ program test_benchmark_disc
    use fe_constants,       only: pi, rho_ice, kyr
    use fe_earth_structure, only: earth_gravity_at, earth_model, build_M3L70V01
    use fe_radial_fe,       only: radial_mesh_build, radial_mesh, radial_fe_finalize
-   use fe_viscoelastic,    only: ve_degree
+   use fe_viscoelastic,    only: ve_destroy, ve_step, ve_init, ve_degree
    use fe_response,        only: elastic_response
    implicit none
    character(*), parameter :: REF = 'data/benchmarks/disc_spada2011/'
@@ -160,17 +160,17 @@ contains
       uc = 0.0_wp
       do nn = 1, NMAX_VE
          if (nn == 1) cycle          ! geocenter: U_1 ~ 0 at centre, dense j=1 skip
-         call ve%init(em, mm, nn, dt)
+         call ve_init(ve, em, mm, nn, dt)
          it = 1
          do istep = 0, tsteps(NTV)
-            call ve%step(1.0_wp, t1, ua, va, fa)
+            call ve_step(ve, 1.0_wp, t1, ua, va, fa)
             if (it <= NTV) then
                if (istep == tsteps(it)) then
                   uc(it) = uc(it) + sig(nn)*ua;  it = it + 1
                end if
             end if
          end do
-         call ve%destroy()
+         call ve_destroy(ve)
       end do
       write(*,'(a)') ''
       write(*,'(a)') ' (2) viscoelastic centre uplift u(0,t)  [dt=20 yr, NMAX=128]'

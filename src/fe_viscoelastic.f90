@@ -34,6 +34,7 @@ module fe_viscoelastic
    ! Time-integration schemes for the Maxwell memory update (advance_memory):
    public :: SCHEME_FE, SCHEME_ETD1, SCHEME_TRAP, SCHEME_BE
    public :: scheme_is_implicit, scheme_order, scheme_from_name
+   public :: ve_init, ve_step, ve_step_double, ve_destroy
 
    ! Spheroidal strain keeps four tensor-harmonic components; LAM maps the local
    ! index 1..4 to Martinec's λ ∈ {1,2,5,6} (λ=3,4 are toroidal, dropped).
@@ -79,11 +80,6 @@ module fe_viscoelastic
                                              !! reaches the trapezoidal truncation floor in ~5-8 iters)
       integer  :: couple_iters_last = 0      !! iterations actually taken last step (diagnostic)
       real(wp), allocatable :: Am0(:,:), Bm0(:,:), Cm0(:,:)  !! (NLAM,ne) start-of-step memory (iter only)
-   contains
-      procedure :: init  => ve_init
-      procedure :: step  => ve_step
-      procedure :: step_double => ve_step_double
-      procedure :: destroy => ve_destroy
    end type ve_degree
 
 contains
@@ -92,7 +88,7 @@ contains
       !! Assemble the elastic operator and set up the per-element Maxwell factors
       !! M = μΔt/η. Elastic layers (η→∞) get M→0 (frozen, never relax); fluid
       !! layers (μ=0) carry no memory stress.
-      class(ve_degree),  intent(inout) :: self
+      type(ve_degree),  intent(inout) :: self
       type(earth_model), intent(in)    :: earth
       type(radial_mesh), intent(in)    :: mesh
       integer,           intent(in)    :: j
@@ -100,7 +96,7 @@ contains
       integer  :: e, lay
       real(wp) :: eta_e
 
-      call self%destroy()
+      call ve_destroy(self)
       self%j  = j;  self%dt = dt;  self%time = 0.0_wp
       self%nr = mesh%nr;  self%ne = mesh%ne;  self%ndof = ndof_of(mesh%nr)
       self%Jr = real(j, wp)*real(j+1, wp)
@@ -156,7 +152,7 @@ contains
       !! the endpoint balance against the current τ_{n+1} estimate until it converges.
       !! This iteration is what makes the 2nd-order trapezoidal rule solvable — it is
       !! not an independent accuracy lever (iterating a 1st-order rule stays 1st-order).
-      class(ve_degree), intent(inout) :: self
+      type(ve_degree), intent(inout) :: self
       real(wp),         intent(in)    :: sigma
       real(wp),         intent(out)   :: t_now, U_a, V_a, F_a
       real(wp), allocatable :: f(:), x(:), Ue(:), Ve(:), Up(:), Vp(:)
@@ -263,7 +259,7 @@ contains
       !! the observable's local error — the accept/reject + Δt signal a controller needs.
       !! No exponential integrator required: FE/trapezoidal are stable here (§3b/§3c).
       !! M = μΔt/η is linear in Δt, so halving Δt just halves Mk — no re-init needed.
-      class(ve_degree), intent(inout) :: self
+      type(ve_degree), intent(inout) :: self
       real(wp),         intent(in)    :: sigma
       real(wp),         intent(out)   :: err_est
       real(wp), allocatable :: Am_s(:,:), Bm_s(:,:), Cm_s(:,:), Mk_s(:)
@@ -277,15 +273,15 @@ contains
       Mk_s = self%Mk;  t_s = self%time;  dt_s = self%dt
 
       ! Coarse: one full Δt step; keep its memory state τ_coarse.
-      call self%step(sigma, t1, u1, v1, f1)
+      call ve_step(self, sigma, t1, u1, v1, f1)
       Am_c = self%Am;  Bm_c = self%Bm;  Cm_c = self%Cm
 
       ! Restore the entering state, then take two Δt/2 sub-steps (the fine path).
       self%Am = Am_s;  self%Bm = Bm_s;  self%Cm = Cm_s
       self%Un_prev = Up_s;  self%Vn_prev = Vp_s;  self%time = t_s
       self%dt = 0.5_wp*dt_s;  self%Mk = 0.5_wp*Mk_s
-      call self%step(sigma, t1, u1, v1, f1)
-      call self%step(sigma, t1, u1, v1, f1)
+      call ve_step(self, sigma, t1, u1, v1, f1)
+      call ve_step(self, sigma, t1, u1, v1, f1)
       self%dt = dt_s;  self%Mk = Mk_s    ! restore Δt/Mk; self left in the fine τ at t_s+Δt
 
       p   = scheme_order(self%scheme)
@@ -298,7 +294,7 @@ contains
 
    subroutine add_dissipative(self, f)
       !! Add the dissipative memory forcing −∫ τ^{V}:δε dV to this degree's RHS.
-      class(ve_degree), intent(in)    :: self
+      type(ve_degree), intent(in)    :: self
       real(wp),         intent(inout) :: f(:)
       call dissipative_rhs(self%ne, self%r, self%sa, self%sb, self%sc, &
                            self%norm, self%Am, self%Bm, self%Cm, f)
@@ -308,7 +304,7 @@ contains
       !! Advance this degree's memory stress from the new nodal strain, using the
       !! configured scheme (forward-Euler or ETD1). ETD1 also consumes the previous
       !! step's strain (ε_n) and returns an embedded local-error estimate.
-      class(ve_degree), intent(inout) :: self
+      type(ve_degree), intent(inout) :: self
       call advance_memory(self%ne, self%mu, self%Mk, self%Un, self%Vn, &
                           self%Jr, self%Am, self%Bm, self%Cm, &
                           scheme=self%scheme, Un_prev=self%Un_prev, &
@@ -510,7 +506,7 @@ contains
    end subroutine etd_phis
 
    subroutine ve_destroy(self)
-      class(ve_degree), intent(inout) :: self
+      type(ve_degree), intent(inout) :: self
       call radial_operator_destroy(self%op)
       if (allocated(self%r))    deallocate(self%r)
       if (allocated(self%mu))   deallocate(self%mu)
