@@ -17,7 +17,7 @@ program test_sle_ve
    use fe_radial_fe,       only: radial_fe_finalize
    use fe_response,        only: ve_response
    use fe_sht,             only: sht_grid, sht_grid_init, sht_grid_surface_integral, sht_grid_destroy
-   use fe_sle,             only: sle_solver, sle_result
+   use fe_sle,             only: sle_solve, sle_solver, sle_result
    implicit none
 
    integer, parameter :: LMAX = 16, NSTEP = 25
@@ -49,7 +49,7 @@ program test_sle_ve
    write(*,'(a)') '       step    mean S (ocean) [m]   mass resid    inner'
    dmax_mass = 0.0_wp
    do i = 1, NSTEP
-      call sle%solve(sht, resp, d_ice, ice, topo0, S, C, res)
+      call sle_solve(sle, sht, resp, d_ice, ice, topo0, S, C, res)
       dmax_mass = max(dmax_mass, res%mass_resid)
       if (i == 1)     Sfirst = S
       if (i == 1)     mean1  = ocean_mean(S, C)

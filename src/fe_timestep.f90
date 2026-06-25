@@ -27,7 +27,7 @@ module fe_timestep
    use fe_precision,    only: wp
    use fe_sht,          only: sht_grid
    use fe_response,     only: ve_response
-   use fe_sle,          only: sle_solver, sle_result
+   use fe_sle,          only: sle_solve, sle_solver, sle_result
    use fe_viscoelastic, only: scheme_order, scheme_is_implicit
    implicit none
    private
@@ -181,7 +181,7 @@ contains
       if (.not. resp%sigma_primed) then
          allocate(sig0(sht%nlm))
          ice_now = ice0;  dice_now = ice0 - ice_ref
-         call sle%solve(sht, resp, dice_now, ice_now, topo0, rsl, C, res, &
+         call sle_solve(sle, sht, resp, dice_now, ice_now, topo0, rsl, C, res, &
                         report_only=.true., sigma_lm=sig0, s_rot=s_rot)
          call resp%prime_sigma(sig0)
       end if
@@ -245,7 +245,7 @@ contains
          ice_now  = ice0 + frac*(ice1 - ice0)
          dice_now = ice_now - ice_ref
          self%n_solve = self%n_solve + 1
-         call sle%solve(sht, resp, dice_now, ice_now, topo0, rsl, C, res, &
+         call sle_solve(sle, sht, resp, dice_now, ice_now, topo0, rsl, C, res, &
                         sigma_lm=sig_last, s_rot=s_rot)
          self%worst_mass_resid = max(self%worst_mass_resid, res%mass_resid)
       end subroutine solve_at

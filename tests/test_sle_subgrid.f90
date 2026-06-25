@@ -20,7 +20,7 @@ program test_sle_subgrid
    use fe_constants,  only: rho_ice, rho_water, pi
    use fe_response,   only: null_response
    use fe_sht,        only: sht_grid, sht_grid_init, sht_grid_surface_integral, sht_grid_destroy
-   use fe_sle,        only: sle_solver, sle_result
+   use fe_sle,        only: sle_solve, sle_solver, sle_result
    use fe_field,      only: spherical_cap, exp_basin
    implicit none
 
@@ -60,7 +60,7 @@ program test_sle_subgrid
 
    ! (1)+(2) subgrid eustatic vs independent volume-balance root
    sle%subgrid = .true.;  sle%fixed_ocean = .false.
-   call sle%solve(sht, resp, d_ice, ice, topo0, rsl, C, res)
+   call sle_solve(sle, sht, resp, d_ice, ice, topo0, rsl, C, res)
    dphi_sub = res%esl
    h_root   = volume_root(ice_int)
    write(*,'(a,f12.6,a,f12.6,a,es10.2)') ' (1) subgrid dphi =', dphi_sub, &
@@ -77,7 +77,7 @@ program test_sle_subgrid
    ! (3) binary coastline: a different dphi here, and it does NOT solve the volume
    ! balance (it ignores the bathymetry swept by the moving coast).
    sle%subgrid = .false.
-   call sle%solve(sht, resp, d_ice, ice, topo0, rsl, C, res)
+   call sle_solve(sle, sht, resp, d_ice, ice, topo0, rsl, C, res)
    dphi_bin = res%esl
    write(*,'(a,f12.6,a,f12.6)') ' (3) binary  dphi =', dphi_bin, &
         '   (subgrid - binary) =', dphi_sub - dphi_bin
@@ -138,9 +138,9 @@ contains
       call spherical_cap(sht, 20.0_wp*DEG, 180.0_wp*DEG, 12.0_wp*DEG, 1.0e-3_wp, ice)
       d_ice = ice
       sle%subgrid = .true.
-      call sle%solve(sht, resp, d_ice, ice, topo0, rsl, C, res);  dsub = res%esl
+      call sle_solve(sle, sht, resp, d_ice, ice, topo0, rsl, C, res);  dsub = res%esl
       sle%subgrid = .false.
-      call sle%solve(sht, resp, d_ice, ice, topo0, rsl, C, res);  dbin = res%esl
+      call sle_solve(sle, sht, resp, d_ice, ice, topo0, rsl, C, res);  dbin = res%esl
       write(*,'(a,es12.4)') ' (4) no-migration |subgrid - binary| dphi =', abs(dsub - dbin)
       if (abs(dsub - dbin) > 1.0e-10_wp) then
          write(*,'(a)') '     FAIL: subgrid != binary when the coast does not move';  ok = .false.

@@ -21,7 +21,7 @@ program test_flotation
    use fe_constants, only: rho_ice, rho_water, pi
    use fe_response,  only: null_response
    use fe_sht,       only: sht_grid, sht_grid_init, sht_grid_destroy
-   use fe_sle,       only: sle_solver, sle_result
+   use fe_sle,       only: sle_solve, sle_solver, sle_result
    implicit none
 
    integer, parameter :: LMAX = 16
@@ -44,7 +44,7 @@ program test_flotation
    call make_fields(topo0, ice)
    d_ice = 0.0_wp                       ! no load change: isolate classification
 
-   call sle%solve(sht, resp, d_ice, ice, topo0, S, C, res)
+   call sle_solve(sle, sht, resp, d_ice, ice, topo0, S, C, res)
 
    ! S must be identically zero with no ice-change forcing
    smax = maxval(abs(S))

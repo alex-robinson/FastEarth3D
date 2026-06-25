@@ -18,7 +18,7 @@ program test_rotation_sle
    use fe_earth_structure, only: earth_model, build_M3L70V01
    use fe_radial_fe,       only: radial_fe_finalize
    use fe_response,        only: elastic_response
-   use fe_sle,             only: sle_solver, sle_result
+   use fe_sle,             only: sle_solve, sle_solver, sle_result
    use fe_rotation,        only: rotation_destroy, rotation_commit, rotation_s_rot, rotation_solve_m, rotation_begin_step, rotation_init, rotation_state
    use fe_sht,             only: sht_grid, sht_grid_init, sht_grid_destroy
    implicit none
@@ -65,9 +65,9 @@ program test_rotation_sle
 
    ! --- (1) hook off: s_rot ≡ 0 reproduces the plain SLE -----------------------
    rsl0 = 0.0_wp
-   call sle%solve(sht, resp, d_ice, ice, topo0, rsl0, C, res0)             ! no s_rot
+   call sle_solve(sle, sht, resp, d_ice, ice, topo0, rsl0, C, res0)             ! no s_rot
    srot = 0.0_wp;  rsl = 0.0_wp
-   call sle%solve(sht, resp, d_ice, ice, topo0, rsl,  C, res1, s_rot=srot) ! s_rot = 0
+   call sle_solve(sle, sht, resp, d_ice, ice, topo0, rsl,  C, res1, s_rot=srot) ! s_rot = 0
    write(*,'(a)') ' (1) hook off (s_rot=0) reproduces the plain SLE'
    write(*,'(a,es10.2,a,es10.2)') '      max|rsl diff| = ', maxval(abs(rsl - rsl0)), &
         '   |esl diff| = ', abs(res0%esl - res1%esl)
@@ -87,7 +87,7 @@ program test_rotation_sle
    write(*,'(a)') ' (4) rotation <-> SLE fixed point'
    write(*,'(a)') '      iter   |m| [deg]    max|d srot| [m]'
    do iter = 1, 12
-      call sle%solve(sht, resp, d_ice, ice, topo0, rsl, C, res1, s_rot=srot)
+      call sle_solve(sle, sht, resp, d_ice, ice, topo0, rsl, C, res1, s_rot=srot)
       load = rho_i*d_ice*(1.0_wp - C) + rho_w*(C*rsl)
       call rotation_solve_m(rot, sht, load)
       srot_prev = srot

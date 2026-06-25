@@ -33,6 +33,7 @@ module fe_sle
    private
 
    public :: sle_solver, sle_result, ocean_function
+   public :: sle_solve
 
    type :: sle_result
       !! Diagnostics returned by a solve.
@@ -87,8 +88,6 @@ module fe_sle
       !! to tolerance — only the iteration count drops. The caller must keep rsl
       !! alive across calls (the coupling driver does; it turns this on at init).
       logical  :: warm_start = .false.
-   contains
-      procedure :: solve => sle_solve
    end type sle_solver
 
 contains
@@ -114,7 +113,7 @@ contains
       !! does not float — even where the bed has subsided below the sea surface).
       !! Both are needed because the load is incremental but flotation is an
       !! absolute condition.
-      class(sle_solver),        intent(inout) :: self
+      type(sle_solver),        intent(inout) :: self
       type(sht_grid),           intent(in)    :: sht
       class(response_operator), intent(inout) :: resp
       real(wp),                 intent(in)    :: d_ice(:,:)  !! ice CHANGE [m] (load)

@@ -19,7 +19,7 @@ program test_flotation_load
    use fe_radial_fe,       only: radial_fe_finalize
    use fe_response,        only: elastic_response
    use fe_sht,             only: sht_grid, sht_grid_init, sht_grid_destroy
-   use fe_sle,             only: sle_solver, sle_result
+   use fe_sle,             only: sle_solve, sle_solver, sle_result
    implicit none
 
    integer, parameter :: LMAX = 24
@@ -53,7 +53,7 @@ program test_flotation_load
       end do
    end do
 
-   call sle%solve(sht, resp, ice, ice, topo0, rsl, C, res)
+   call sle_solve(sle, sht, resp, ice, ice, topo0, rsl, C, res)
 
    jg = row_near(7.0_wp);  jf = row_near(173.0_wp)
    u_ground = res%u(1,jg);  c_ground = C(1,jg)
