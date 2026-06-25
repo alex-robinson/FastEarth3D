@@ -61,7 +61,8 @@ rewrite.
 | `fe_rotation` | rotational feedback / TPW (degree-2 Liouville + tidal VE channels, SLE-coupled) | done + tested (5a/5b/5c) |
 | `fe_coupling` | CLIMBER-X-compatible init/update/finalize API (adaptive-coupled) | done + tested |
 | `fe_io` | netCDF restart + step output (yelmo variable-table convention) | done + tested |
-| `fe_drive` | standalone forced-run loop (`program fastearth`) | done + tested |
+| `fe_remap` | conservative lon-lat → Gauss remap (wraps fesm-utils `coords`) | done + tested |
+| `fe_drive` | standalone forced-run loop (`program fastearth`; online remap + `i_eq`) | done + tested |
 | `fastearth3d` | umbrella re-export (incl. `fe_param_class`, `fastearth_run`) | done |
 
 Convention in `fe_sht`: fully-normalized real harmonics, no Condon-Shortley
@@ -319,11 +320,15 @@ displacement `u`.
    state (`dt_try` + `σ_n`) → bit-for-bit continuation. Umbrella module renamed
    `fastearth`→`fastearth3d`; standalone `program fastearth` (`fe_drive`) runs a
    forced simulation from `&fe3d` + an ice forcing already on the Gauss grid.
-7. **Real ice forcing + lon-lat → Gauss remapping — DEFERRED (after the physics).**
-   The standalone driver assumes inputs already on the model Gauss grid. Real
-   forcing (e.g. CLIMBER-X `geo_ice_tarasov_deglac.nc`, 1×1° deglaciation ice+bed)
-   needs a conservative regridding layer (fesm-utils `mapping_scrip`) — reusable
-   for any lon-lat input, but built later. **Physics first.**
+7. **Real ice forcing + lon-lat → Gauss remapping — DONE (§13).** `fe_remap` wraps
+   the fesm-utils `coords` library (great-circle conservative polygon clipping) to map
+   a regular lon-lat field onto the Gauss grid; the standalone driver remaps each
+   forcing slice ONLINE by default (`remap_input=.true.`; no preprocessing, raw data
+   stays on disk) and an offline `fastearth_remap` tool can pre-bake a Gauss forcing
+   (identical engine). Reference / equilibration via `i_eq` (0: declare start slice as
+   relaxed; 1: ice-free + paleotopo spin-up to LGM equilibrium under `dt_equil`).
+   Validated on CLIMBER-X `geo_ice_tarasov_deglac.nc` (−26 ka→0). Depends on the
+   fesm-utils `coords-dev` branch (`coords` module). See §13.
 
 **Rung 6 (3D laterally-varying viscosity) — 6a/6b/6c DONE (§12).** Tensor-correct
 pseudo-spectral memory advance (`fe_tensor_sh`, general order `mmax≥0`), validated
@@ -493,5 +498,48 @@ ASPECT/Abaqus themselves differ 1–3% and ASPECT(no self-grav) vs TABOO(self-gr
   (all m) matches the on-pole (m=0) cap-centre uplift to ~3e-4 — a strong end-to-end
   m>0 check, run through TRAP-3D. In `make check` at lmax 16; full-res standalone via arg.
 
-**Open / next.** Conservative lon-lat→Gauss SCRIP remap for ice forcing (fesm-utils
-`mapping_scrip`); wiring `visc_3d` loading into the params/driver path.
+**Open / next.** Wiring `visc_3d` loading into the params/driver path (lateral
+viscosity from a file in a forced run).
+
+## 13. Real ice forcing — lon-lat → Gauss remapping + driver (working notes)
+
+Goal: drive the standalone model with real datasets (CLIMBER-X
+`geo_ice_tarasov_deglac.nc`: Tarasov PMIP4 ice+bed, 1°×0.5° lon-lat, −26 ka→0 at
+100-yr slices) with **no preprocessing** — raw data on disk, remapped internally so
+the remap is always consistent with the running code.
+
+**`fe_remap` — conservative lon-lat → Gauss.** Wraps the fesm-utils `coords` library
+(`map_init_conservative` great-circle polygon clipping; `map_field` area-weighted
+mean). `ll2gauss_map%init(sht, lon, lat)` builds the map once (target = the SHTns
+Gauss grid: longitudes `sht%lon`, latitudes `90−sht%colat`, built south-first for
+coords then flipped to the SHTns north-first row order); `%apply` remaps a field per
+slice. `coords` derives target cell boundaries from axis midpoints (not the Gauss
+weights), so `apply(conserve_mass=.true.)` rescales a mass-bearing field (ice) by one
+global factor so its SHTns quadrature integral equals the source area-integral exactly
+(the whole sphere is 4π sr — no planet radius needed). Geometry (bed) is remapped as-is.
+`test_remap`: constant preserved ~3e-15, latitude orientation, zonal accuracy, mass
+exact. **Depends on the fesm-utils `coords-dev` branch** (the `coords` module); point
+the `fesm-utils` symlink at a `coords-dev` checkout and build its utils lib.
+
+**Driver (`fe_drive`).** General forced-transient loop, fields read per
+(file, var, time-index) so experiments mix and match. `remap_input=.true.` (default)
+remaps each forcing slice online; `.false.` is the legacy Gauss-grid path. The offline
+`fastearth_remap` tool pre-bakes a Gauss forcing with the same engine (identical
+results) for workflows that prefer it. `time_init/time_end` clip the record.
+`fastearth.x cfg.nml [defaults.nml]` allows a sparse run config over `fastearth.nml`.
+
+**Reference / equilibration (`i_eq`).** The deglac record starts already glaciated
+(26 ka), so there is no ice-free pre-glacial slice. Two references:
+- `i_eq=0` — declare the first in-window slice as the relaxed reference (`z_bed_eq`=
+  bed[k0], `h_ice_ref`=ice[k0], memory 0); transient load = ice change vs that slice.
+- `i_eq=1` (default) — ice-free reference; a **paleotopo fixed point** (the F1 pattern,
+  §10) finds the ice-free relaxed bed whose viscoelastic equilibrium under the start
+  ice reproduces the data bed[k0], holding the load `dt_equil` per pass; this leaves
+  the model at LGM equilibrium (bed AND viscous memory) before deglaciating with the
+  absolute ice as load. Converges in ~3 passes (mean residual ~170→5→<1 m on the
+  Tarasov LGM), and the residual is the (i_eq=1 vs 0) consistency check — small ⇒ the
+  data bed is a good equilibrium ⇒ `i_eq=0` suffices and the spin-up can be skipped.
+
+Both modes agree on the physical bed at the LGM; they differ in the initial memory
+state, which changes the deglacial rebound — the thing `i_eq=1` gets right and the
+comparison quantifies.
