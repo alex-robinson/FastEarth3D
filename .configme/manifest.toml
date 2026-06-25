@@ -1,0 +1,8 @@
+# configme manifest for FastEarth3D.
+# fesm-utils is pinned to coords-dev: fe_remap needs the `coords` module, which
+# lives on that branch. This manifest pin is authoritative (it wins over the
+# orchestrator's shipped default), so the checkout self-describes the exact ref.
+package = "FastEarth3D"
+deps = [
+    "fesm-utils:coords-dev",
+]
