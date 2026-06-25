@@ -134,12 +134,9 @@ module fe_response
       ! degree-independent element fields
       real(wp), allocatable :: r(:)                     !! node radii (nr)
       real(wp), allocatable :: mu(:), Mk(:)             !! (ne) shear, M=μΔt/η
-      ! True only for genuinely viscous (Maxwell) elements. Elastic layers carry
-      ! η=huge ⇒ MkPerDt=μ/huge≈3e-298 (tiny but NONZERO), so a `MkPerDt==0` test
-      ! catches only the inviscid core. The lateral-viscosity advance and the
-      ! node→element bridge key off this flag so the elastic lithosphere is left
-      ! exactly elastic (not overwritten by a loaded 3D field).
-      logical,  allocatable :: is_maxwell(:)            !! (ne)
+      ! MkPerDt==0 marks an element with NO Maxwell memory (elastic or fluid): set in
+      ! init by rheology, so it is the single predicate for skipping such elements in
+      ! the memory advance and for leaving them untouched by a loaded 3D viscosity field.
       ! Rung 6 — laterally-varying viscosity (3D). When lat_visc is set the Maxwell
       ! memory advance goes pseudo-spectral: the lateral product M(θ,φ)·τ couples
       ! harmonics, so per (element, component, radial shape-coeff) the memory and
@@ -420,17 +417,24 @@ contains
       ! degree-independent element fields: node radii, shear, Maxwell factor
       allocate(self%r(self%nr));  self%r = mesh%r
       allocate(self%mu(self%ne), self%Mk(self%ne), self%MkPerDt(self%ne))
-      allocate(self%is_maxwell(self%ne))
       do e = 1, self%ne
          lay = mesh%elem_layer(e)
          self%mu(e) = earth%layers(lay)%mu
          eta_e      = earth%layers(lay)%eta
-         self%is_maxwell(e) = (earth%layers(lay)%rheology == RHEOL_MAXWELL)
-         if (eta_e > 0.0_wp) then
-            self%Mk(e)      = self%mu(e)*dt/eta_e     ! historical form (byte-identical)
-            self%MkPerDt(e) = self%mu(e)/eta_e        ! Δt-invariant; set_dt rescales Mk
+         ! Only genuinely Maxwell layers carry memory. Classify by RHEOLOGY, not by
+         ! eta>0: the elastic lithosphere is stored with eta=huge, which would give a
+         ! tiny-but-NONZERO rate μ/huge≈3e-298 — close enough to be inert in the 1-D
+         ! advance (Mk rounds away) but not exactly 0, which muddies the "no memory"
+         ! test. Setting it (and the inviscid core) to exactly 0 makes MkPerDt==0 the
+         ! universal "this element has no Maxwell memory" predicate, used to skip
+         ! elastic/fluid elements in the advance and to leave them untouched by a
+         ! loaded 3D viscosity field. (Observably identical: a μ/huge rate only ever
+         ! produced ~1e-267 memory, below ULP in every force/uplift.)
+         if (earth%layers(lay)%rheology == RHEOL_MAXWELL) then
+            self%Mk(e)      = self%mu(e)*dt/eta_e     ! M=μΔt/η; set_dt rescales from MkPerDt
+            self%MkPerDt(e) = self%mu(e)/eta_e        ! Δt-invariant rate μ/η
          else
-            self%Mk(e)      = 0.0_wp                  ! elastic layer: no memory
+            self%Mk(e)      = 0.0_wp                  ! elastic (η→∞) / fluid (μ=0): no memory
             self%MkPerDt(e) = 0.0_wp
          end if
       end do
@@ -770,7 +774,7 @@ contains
          error stop 'enable_lateral_visc_from_nodes: visc_node must be (nphi*nlat, nr)'
       allocate(pert(sht%nphi, sht%nlat, self%ne));  pert = 0.0_wp
       do e = 1, self%ne
-         if (.not. self%is_maxwell(e)) cycle              ! elastic/fluid: stay as-is
+         if (self%MkPerDt(e) == 0.0_wp) cycle             ! elastic/fluid: stay as-is
          logeta_ref = log10(self%mu(e)/self%MkPerDt(e))    ! log10 η_radial(e) (μ/MkPerDt)
          do j = 1, sht%nlat
             do i = 1, sht%nphi
@@ -817,10 +821,9 @@ contains
       cfg = self%tsh%thread_cfg()                          ! this thread's private config
       !$omp do schedule(dynamic)
       do e = 1, self%ne
-         ! Elastic/fluid elements carry no Maxwell memory, so the advance
-         ! τ⁺=(1−0)τ−0 is the identity — skip them exactly (no transforms). NB the
-         ! elastic lithosphere has MkPerDt≈3e-298 (η=huge), not 0, so key off the flag.
-         if (.not. self%is_maxwell(e)) cycle
+         ! Elastic/fluid elements carry no Maxwell memory (MkPerDt=0 by rheology), so
+         ! the advance τ⁺=(1−0)τ−0 is the identity — skip them exactly (no transforms).
+         if (self%MkPerDt(e) == 0.0_wp) cycle
          call gather_tensor_coeffs(self, sigma_lm, e, cma, cmb, cmc, cea, ceb, cec)
          call advance_shape_tensor(self, sht, e, cma, cea, dtau, deps, cfg)
          call advance_shape_tensor(self, sht, e, cmb, ceb, dtau, deps, cfg)
@@ -922,7 +925,7 @@ contains
       cfg = self%tsh%thread_cfg()
       !$omp do schedule(dynamic)
       do e = 1, self%ne
-         if (.not. self%is_maxwell(e)) cycle
+         if (self%MkPerDt(e) == 0.0_wp) cycle             ! elastic/fluid: no Maxwell memory
          call gather_tensor_coeffs_trap(self, sigma_lm, e, cm0a, cm0b, cm0c, &
                                         cna, cnb, cnc, c1a, c1b, c1c)
          call advance_shape_tensor_trap(self, sht, e, cm0a, cna, c1a, dt0, den, de1, cfg)
@@ -1275,7 +1278,6 @@ contains
       end if
       if (allocated(self%r))      deallocate(self%r)
       if (allocated(self%mu))     deallocate(self%mu)
-      if (allocated(self%is_maxwell)) deallocate(self%is_maxwell)
       if (allocated(self%Mk3))      deallocate(self%Mk3)
       if (allocated(self%MkPerDt3)) deallocate(self%MkPerDt3)
       if (self%lat_visc) call self%tsh%destroy()

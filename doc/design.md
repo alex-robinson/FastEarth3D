@@ -460,10 +460,12 @@ ASPECT/Abaqus themselves differ 1–3% and ASPECT(no self-grav) vs TABOO(self-gr
   periodic longitude; linear-in-radius, clamped) into `earth%visc_3d` as ABSOLUTE
   log10(η). `ve%enable_lateral_visc_from_nodes` bridges node→element by the log10-mean
   of the two bracketing nodes and forms the per-element perturbation against the
-  element's radial reference η. Only genuinely Maxwell elements receive the field
-  (`is_maxwell`): the elastic lithosphere uses η=huge ⇒ MkPerDt=μ/huge≈3e-298 (nonzero),
-  so a `MkPerDt==0` test would wrongly keep it, and the absolute field would otherwise
-  make it viscous. (`test_visc_load`: synthetic round trip ~2e-13; pan2022 loads finite.)
+  element's radial reference η. Only genuinely Maxwell elements receive the field: the
+  advance and the bridge skip elements with `MkPerDt==0`, and `ve_init` now sets that
+  rate to exactly 0 for elastic/fluid layers BY RHEOLOGY (previously the elastic
+  lithosphere kept η=huge ⇒ MkPerDt=μ/huge≈3e-298, nonzero), so the elastic lithosphere
+  is left exactly elastic rather than overwritten by the loaded field. (`test_visc_load`:
+  synthetic round trip ~2e-13; pan2022 loads finite.)
 - **Element-loop OpenMP with per-thread SHTns configs** — `tensor_sh` holds a config
   pool (one clone per `omp_get_max_threads`, built serially since FFTW planning is not
   thread-safe); each element's transforms run on the calling thread's `thread_cfg`. The
