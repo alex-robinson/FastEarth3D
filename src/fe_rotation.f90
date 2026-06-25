@@ -51,6 +51,7 @@ module fe_rotation
    private
 
    public :: rotation_state
+   public :: channel_init, channel_set_dt, channel_begin, channel_commit, channel_destroy, rotation_init, rotation_begin_step, rotation_solve_m, rotation_s_rot, rotation_commit, rotation_update, rotation_destroy
 
    integer, parameter :: JROT = 2          !! rotation is purely degree 2
 
@@ -76,12 +77,6 @@ module fe_rotation
       complex(wp) :: dF = (0.0_wp, 0.0_wp)         !! surface F drift
       complex(wp) :: dU = (0.0_wp, 0.0_wp)         !! surface U drift (uplift)
       real(wp), allocatable :: dUn_re(:), dUn_im(:), dVn_re(:), dVn_im(:)  !! nodal ε_n drift
-   contains
-      procedure :: init       => channel_init
-      procedure :: set_dt     => channel_set_dt
-      procedure :: begin_step => channel_begin
-      procedure :: commit     => channel_commit
-      procedure :: destroy    => channel_destroy
    end type deg2_channel
 
    type :: rotation_state
@@ -104,14 +99,6 @@ module fe_rotation
       complex(wp) :: cload   = (0.0_wp,0.0_wp)!! load-channel operator coefficient (set by solve_m, used by commit)
       type(deg2_channel) :: load_ch          !! (1+k^L)∗ channel
       type(deg2_channel) :: tidal_ch         !! k^T∗ channel
-   contains
-      procedure :: init       => rotation_init
-      procedure :: begin_step => rotation_begin_step
-      procedure :: solve_m    => rotation_solve_m
-      procedure :: s_rot      => rotation_s_rot
-      procedure :: commit     => rotation_commit
-      procedure :: update     => rotation_update
-      procedure :: destroy    => rotation_destroy
    end type rotation_state
 
 contains
@@ -123,19 +110,19 @@ contains
       !! the secular k_s = k^T_f (the relaxed tidal limit = elastic tidal solve of
       !! the model with every Maxwell layer fluidized). Pass k_s to override it with
       !! an observed-flattening value (Mitrovica et al. 2005) for deep-time runs.
-      class(rotation_state), intent(inout) :: self
+      type(rotation_state), intent(inout) :: self
       type(earth_model),     intent(in)    :: earth
       type(sht_grid),        intent(in)    :: sht
       real(wp),              intent(in)    :: dt
       real(wp), optional,    intent(in)    :: k_s
       type(radial_mesh) :: mesh
 
-      call self%destroy()
+      call rotation_destroy(self)
       call radial_mesh_build(mesh, earth)
       self%a = earth%r_earth
       self%g = earth_gravity_at(earth, earth%r_earth)
-      call self%load_ch%init(earth, mesh, dt, tidal=.false.)
-      call self%tidal_ch%init(earth, mesh, dt, tidal=.true.)
+      call channel_init(self%load_ch, earth, mesh, dt, tidal=.false.)
+      call channel_init(self%tidal_ch, earth, mesh, dt, tidal=.true.)
       ! elastic tidal Love numbers from the tidal channel's unit response (φ_t = 1):
       ! k^T = −F(a)/φ_t − 1, h^T = g U(a)/φ_t (tidal_love convention).
       self%kTe = -self%tidal_ch%Fe - 1.0_wp
@@ -163,15 +150,15 @@ contains
       !! entering memory τ_n. The polar motion (solve_m) and the rotational SLE field
       !! (s_rot) are then AFFINE in the current load / m, so the caller may iterate the
       !! rotation ↔ SLE fixed point without advancing memory; commit closes the step.
-      class(rotation_state), intent(inout) :: self
+      type(rotation_state), intent(inout) :: self
       type(sht_grid),        intent(in)    :: sht
       real(wp),              intent(in)    :: dt
       if (.not. self%enabled) return
       if (dt /= self%load_ch%dt) then
-         call self%load_ch%set_dt(dt);  call self%tidal_ch%set_dt(dt)
+         call channel_set_dt(self%load_ch, dt);  call channel_set_dt(self%tidal_ch, dt)
       end if
-      call self%load_ch%begin_step()
-      call self%tidal_ch%begin_step()
+      call channel_begin(self%load_ch)
+      call channel_begin(self%tidal_ch)
    end subroutine rotation_begin_step
 
    subroutine rotation_solve_m(self, sht, load)
@@ -179,7 +166,7 @@ contains
       !! motion under the surface mass load `load` [kg m⁻²], using the drift frozen by
       !! begin_step (pure — no memory advance, safe inside the fixed point). Sets
       !! self%m and self%cload (the load-channel coefficient commit will advance with).
-      class(rotation_state), intent(inout) :: self
+      type(rotation_state), intent(inout) :: self
       type(sht_grid),        intent(in)    :: sht
       real(wp),              intent(in)    :: load(:,:)
       complex(wp) :: Irig, Itot, psiL
@@ -204,7 +191,7 @@ contains
       !! et al. 2016, eq. 8): N_rot = (1+k^T)Λ/g, u_rot = h^T Λ/g. The VE (1+k^T),h^T are
       !! the tidal channel's affine response to m: total potential coeff = m + P_ind with
       !! P_ind = k^T_e m − dF_tidal, uplift coeff C_u = U_e m + dU_tidal (so g·C_u = h^T∗m).
-      class(rotation_state), intent(inout) :: self
+      type(rotation_state), intent(inout) :: self
       type(sht_grid),        intent(in)    :: sht
       real(wp),              intent(out)   :: srot(:,:)
       complex(wp) :: cN, cU
@@ -231,11 +218,11 @@ contains
    subroutine rotation_commit(self, sht)
       !! Close the step: advance both channels' Maxwell memory with the converged
       !! state (loading with self%cload, tidal with self%m) and advance time.
-      class(rotation_state), intent(inout) :: self
+      type(rotation_state), intent(inout) :: self
       type(sht_grid),        intent(in)    :: sht
       if (.not. self%enabled) return
-      call self%load_ch%commit(self%cload)
-      call self%tidal_ch%commit(self%m)
+      call channel_commit(self%load_ch, self%cload)
+      call channel_commit(self%tidal_ch, self%m)
       self%time = self%time + self%load_ch%dt
    end subroutine rotation_commit
 
@@ -245,20 +232,20 @@ contains
       !! the entry time (first call ⇒ elastic m₀), then advances both channels' memory.
       !! The SLE-coupled driver instead calls begin_step / solve_m / s_rot / commit so
       !! it can iterate the rotation ↔ sea-level fixed point before committing.
-      class(rotation_state), intent(inout) :: self
+      type(rotation_state), intent(inout) :: self
       type(sht_grid),        intent(in)    :: sht
       real(wp),              intent(in)    :: load(:,:)
       real(wp),              intent(in)    :: dt
       if (.not. self%enabled) return
-      call self%begin_step(sht, dt)
-      call self%solve_m(sht, load)
-      call self%commit(sht)
+      call rotation_begin_step(self, sht, dt)
+      call rotation_solve_m(self, sht, load)
+      call rotation_commit(self, sht)
    end subroutine rotation_update
 
    subroutine rotation_destroy(self)
-      class(rotation_state), intent(inout) :: self
-      call self%load_ch%destroy()
-      call self%tidal_ch%destroy()
+      type(rotation_state), intent(inout) :: self
+      call channel_destroy(self%load_ch)
+      call channel_destroy(self%tidal_ch)
       self%m = (0.0_wp, 0.0_wp);  self%time = 0.0_wp
       self%k_s = 0.0_wp;  self%kTe = 0.0_wp;  self%hTe = 0.0_wp
    end subroutine rotation_destroy
@@ -329,7 +316,7 @@ contains
       !! Assemble the degree-2 operator, the unit-forcing response (Fe + nodal U,V),
       !! the per-element Maxwell factors, and zero the memory. `tidal` picks the
       !! forcing kind (tidal_rhs vs load_rhs).
-      class(deg2_channel), intent(inout) :: self
+      type(deg2_channel), intent(inout) :: self
       type(earth_model),   intent(in)    :: earth
       type(radial_mesh),   intent(in)    :: mesh
       real(wp),            intent(in)    :: dt
@@ -338,7 +325,7 @@ contains
       real(wp) :: eta_e
       integer  :: e, lay, node
 
-      call self%destroy()
+      call channel_destroy(self)
       self%tidal = tidal
       self%nr = mesh%nr;  self%ne = mesh%ne;  self%ndof = ndof_of(mesh%nr)
       self%Jr = real(JROT, wp)*real(JROT+1, wp);  self%dt = dt
@@ -387,7 +374,7 @@ contains
 
    subroutine channel_set_dt(self, dt)
       !! Rescale the Maxwell factor for a new Δt (Mk = (μ/η)·Δt); no re-factor.
-      class(deg2_channel), intent(inout) :: self
+      type(deg2_channel), intent(inout) :: self
       real(wp),            intent(in)    :: dt
       self%dt = dt;  self%Mk = self%MkPerDt*dt
    end subroutine channel_set_dt
@@ -396,7 +383,7 @@ contains
       !! Freeze the drift from the entering memory τ_n: solve the load-free memory
       !! forcing −∫τ^V:δε for the real and imaginary parts, storing the surface F
       !! drift (self%dF) and the nodal strain drift (ε_n term for the commit).
-      class(deg2_channel), intent(inout) :: self
+      type(deg2_channel), intent(inout) :: self
       real(wp), allocatable :: fre(:), fim(:), xre(:), xim(:)
       integer :: node
       allocate(fre(self%ndof), fim(self%ndof), xre(self%ndof), xim(self%ndof))
@@ -418,7 +405,7 @@ contains
    subroutine channel_commit(self, coeff)
       !! Advance the Maxwell memory (forward-Euler) with the converged forcing
       !! coefficient: total nodal strain = coeff·(unit response) + drift(τ_n).
-      class(deg2_channel), intent(inout) :: self
+      type(deg2_channel), intent(inout) :: self
       complex(wp),         intent(in)    :: coeff
       real(wp), allocatable :: Ure(:), Uim(:), Vre(:), Vim(:)
       real(wp) :: cr, ci
@@ -438,7 +425,7 @@ contains
    end subroutine channel_commit
 
    subroutine channel_destroy(self)
-      class(deg2_channel), intent(inout) :: self
+      type(deg2_channel), intent(inout) :: self
       call radial_operator_destroy(self%op)
       if (allocated(self%r))      deallocate(self%r)
       if (allocated(self%mu))     deallocate(self%mu)

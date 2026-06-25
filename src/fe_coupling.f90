@@ -32,7 +32,7 @@ module fe_coupling
    use fe_response,        only: ve_response
    use fe_sle,             only: sle_solver, sle_result, ocean_function
    use fe_timestep,        only: stepper_advance, adaptive_stepper
-   use fe_rotation,        only: rotation_state
+   use fe_rotation,        only: rotation_destroy, rotation_update, rotation_s_rot, rotation_begin_step, rotation_init, rotation_state
    implicit none
    private
 
@@ -143,7 +143,7 @@ contains
       ! recommended override (avoids the lithosphere-thickness paradox).
       self%rotation%enabled = p%rotation
       if (p%rotation) then
-         call self%rotation%init(self%earth, sht, dt0)
+         call rotation_init(self%rotation, self%earth, sht, dt0)
          self%rotation%enabled = .true.          ! init clears it; turn back on
          allocate(self%s_rot(np,nl), source=0.0_wp)
       end if
@@ -187,8 +187,8 @@ contains
          ! per-step fixed point is validated in test_rotation_sle). Open the rotation
          ! step, build s_rot from the current m, drive the interval with it, then update
          ! the polar motion from the end-of-interval load and commit.
-         call self%rotation%begin_step(self%sht, dt)
-         call self%rotation%s_rot(self%sht, self%s_rot)
+         call rotation_begin_step(self%rotation, self%sht, dt)
+         call rotation_s_rot(self%rotation, self%sht, self%s_rot)
          allocate(sigma_lm(self%sht%nlm))
          call stepper_advance(self%stepper, self%sht, self%resp, self%sle, self%z_bed_eq, &
                                    self%h_ice, h_ice, self%h_ice_ref, t0, t1, &
@@ -204,7 +204,7 @@ contains
          n_sub  = max(1, ceiling(dt/self%rotation%dt_fe_max))
          dt_sub = dt/real(n_sub, wp)
          do k = 1, n_sub
-            call self%rotation%update(self%sht, load, dt_sub)
+            call rotation_update(self%rotation, self%sht, load, dt_sub)
          end do
       else
          call stepper_advance(self%stepper, self%sht, self%resp, self%sle, self%z_bed_eq, &
@@ -241,7 +241,7 @@ contains
    subroutine solid_earth_finalize(self)
       class(solid_earth), intent(inout) :: self
       call self%resp%destroy()
-      call self%rotation%destroy()
+      call rotation_destroy(self%rotation)
       self%sht => null()                 ! borrowed grid — the host destroys it
       if (allocated(self%s_rot))     deallocate(self%s_rot)
       if (allocated(self%z_bed_eq))  deallocate(self%z_bed_eq)

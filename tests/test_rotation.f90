@@ -14,7 +14,7 @@ program test_rotation
    use fe_precision,       only: wp
    use fe_earth_structure, only: earth_model, build_M3L70V01
    use fe_radial_fe,       only: radial_fe_finalize
-   use fe_rotation,        only: rotation_state
+   use fe_rotation,        only: rotation_update, rotation_destroy, rotation_init, rotation_state
    use fe_sht,             only: sht_grid, sht_grid_init, sht_grid_destroy, sht_grid_surface_integral
    implicit none
 
@@ -46,7 +46,7 @@ program test_rotation
    dt = 25.0_wp*yr
 
    ! Love numbers are load-independent: report once.
-   call rot%init(earth, sht, dt)
+   call rotation_init(rot, earth, sht, dt)
    k_s = rot%k_s;  kTe = rot%kTe
    write(*,'(a)')       ' (2) tidal Love numbers (degree 2)'
    write(*,'(a,f9.4)')  '      elastic  k^T_e     = ', kTe
@@ -57,7 +57,7 @@ program test_rotation
    if (kTe <= 0.0_wp .or. kTe >= k_s) then
       write(*,'(a)') '      FAIL: elastic k^T_e unphysical (expect 0 < k^T_e < k_s)'; ok = .false.
    end if
-   call rot%destroy()
+   call rotation_destroy(rot)
 
    call run_load('cap',  1.5e3_wp, G_cap, m_cap)
    call run_load('disc', 1.0e3_wp, G_dsc, m_dsc)
@@ -97,14 +97,14 @@ contains
       end if
 
       ! (3) polar motion |m(t)| vs Table 14 (Cw=0)
-      call rot%init(earth, sht, dt)
+      call rotation_init(rot, earth, sht, dt)
       rot%enabled = .true.
       write(*,'(3a)') ' (3) ', name, ': polar motion |m(t)| vs Table 14 (Cw=0)'
       write(*,'(a)')  '      t[kyr]   |m| model[deg]   |m| ref[deg]    rel.err'
       nsteps = nint(20.0_wp*kyr/dt)
       do istep = 0, nsteps
          t_now = rot%time
-         call rot%update(sht, load, dt)            ! rot%m is now m(t_now)
+         call rotation_update(rot, sht, load, dt)            ! rot%m is now m(t_now)
          iref = ref_index(t_now/kyr)
          if (iref > 0) then
             mdeg = abs(rot%m)*rad2deg
@@ -115,7 +115,7 @@ contains
             end if
          end if
       end do
-      call rot%destroy()
+      call rotation_destroy(rot)
    end subroutine run_load
 
    subroutine build_load(name, h, load)

@@ -19,7 +19,7 @@ program test_rotation_sle
    use fe_radial_fe,       only: radial_fe_finalize
    use fe_response,        only: elastic_response
    use fe_sle,             only: sle_solver, sle_result
-   use fe_rotation,        only: rotation_state
+   use fe_rotation,        only: rotation_destroy, rotation_commit, rotation_s_rot, rotation_solve_m, rotation_begin_step, rotation_init, rotation_state
    use fe_sht,             only: sht_grid, sht_grid_init, sht_grid_destroy
    implicit none
 
@@ -60,7 +60,7 @@ program test_rotation_sle
    end where
 
    dt = 50.0_wp*yr
-   call rot%init(earth, sht, dt)
+   call rotation_init(rot, earth, sht, dt)
    rot%enabled = .true.
 
    ! --- (1) hook off: s_rot ≡ 0 reproduces the plain SLE -----------------------
@@ -76,12 +76,12 @@ program test_rotation_sle
    end if
 
    ! --- ice-only elastic polar motion (reference for the feedback size) --------
-   call rot%begin_step(sht, dt)
-   call rot%solve_m(sht, rho_i*d_ice)
+   call rotation_begin_step(rot, sht, dt)
+   call rotation_solve_m(rot, sht, rho_i*d_ice)
    m_ice = rot%m;  mice = abs(m_ice)/deg
 
    ! --- (4) rotation <-> SLE fixed point (elastic; channels at rest) -----------
-   call rot%begin_step(sht, dt)
+   call rotation_begin_step(rot, sht, dt)
    rsl = 0.0_wp;  srot = 0.0_wp;  srot_prev = 0.0_wp
    write(*,'(a)') ''
    write(*,'(a)') ' (4) rotation <-> SLE fixed point'
@@ -89,14 +89,14 @@ program test_rotation_sle
    do iter = 1, 12
       call sle%solve(sht, resp, d_ice, ice, topo0, rsl, C, res1, s_rot=srot)
       load = rho_i*d_ice*(1.0_wp - C) + rho_w*(C*rsl)
-      call rot%solve_m(sht, load)
+      call rotation_solve_m(rot, sht, load)
       srot_prev = srot
-      call rot%s_rot(sht, srot)
+      call rotation_s_rot(rot, sht, srot)
       dmax = maxval(abs(srot - srot_prev))
       write(*,'(i8,f12.6,es16.3)') iter, abs(rot%m)/deg, dmax
       if (iter >= 2 .and. dmax < 1.0e-6_wp) exit
    end do
-   call rot%commit(sht)
+   call rotation_commit(rot, sht)
    mcpl = abs(rot%m)/deg
 
    ! --- (3) mass conservation with rotation on --------------------------------
@@ -154,7 +154,7 @@ program test_rotation_sle
       write(*,'(a)') ' FAIL: rotation-SLE coupling did not all pass'
       call sht_grid_destroy(sht);  call radial_fe_finalize();  error stop 1
    end if
-   call rot%destroy();  call resp%destroy();  call sht_grid_destroy(sht);  call radial_fe_finalize()
+   call rotation_destroy(rot);  call resp%destroy();  call sht_grid_destroy(sht);  call radial_fe_finalize()
 
 contains
 
