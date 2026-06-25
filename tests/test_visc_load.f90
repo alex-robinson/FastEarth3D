@@ -15,11 +15,10 @@ program test_visc_load
    !! that a few forced steps produce a finite, non-trivial uplift.
    use fe_precision,       only: wp
    use fe_constants,       only: rad2deg
-   use fe_earth_structure, only: earth_model, build_M3L70V01
+   use fe_earth_structure, only: earth_model, build_M3L70V01, fe_read_visc_3d
    use fe_radial_fe,       only: radial_fe_finalize
    use fe_response,        only: ve_response
    use fe_sht,             only: sht_grid
-   use fe_io,              only: fe_read_visc_3d
    use ncio
    implicit none
 

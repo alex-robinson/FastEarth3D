@@ -32,7 +32,7 @@ module fe_sle
    implicit none
    private
 
-   public :: sle_solver, sle_result
+   public :: sle_solver, sle_result, ocean_function
 
    type :: sle_result
       !! Diagnostics returned by a solve.

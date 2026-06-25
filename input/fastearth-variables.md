@@ -24,7 +24,8 @@ rest are diagnostic.
 | 10 | rsl          | lon, lat      | m      | Relative sea-level change (full field)           |
 | 11 | z_bed        | lon, lat      | m      | Bedrock elevation (z_bed_eq - rsl)               |
 | 12 | C_ocean      | lon, lat      | 1      | Ocean function (1 ocean / 0 land)                |
-| 13 | dt_try       | time          | s      | Adaptive time-stepping next-step Δt suggestion   |
+| 13 | dt_try       | time          | years  | Adaptive time-stepping next-step Δt suggestion   |
 | 14 | sigma_n_re   | nlm, time     | kg m-2 | Trapezoidal start-of-step load σ_n (real part)   |
 | 15 | sigma_n_im   | nlm, time     | kg m-2 | Trapezoidal start-of-step load σ_n (imag part)   |
 | 16 | sigma_primed | time          | 1      | Flag: σ_n is tracked (1) or not yet primed (0)   |
+| 17 | bsl          | time          | m      | Barystatic sea level vs reference (eustatic eq.) |

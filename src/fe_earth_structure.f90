@@ -14,8 +14,12 @@ module fe_earth_structure
    use fe_precision, only: wp
    use fe_constants, only: pi, grav_G
    use fe_params,    only: fe_param_class, MAX_LAYER
+   use fe_sht,       only: sht_grid
+   use ncio,         only: nc_read, nc_size
    implicit none
    private
+
+   real(wp), parameter :: DEG2RAD_ = acos(-1.0_wp)/180.0_wp
 
    ! Rheology of a layer.
    integer, parameter, public :: RHEOL_ELASTIC = 0   !! elastic (viscosity -> inf)
@@ -23,6 +27,7 @@ module fe_earth_structure
    integer, parameter, public :: RHEOL_FLUID   = 2   !! inviscid fluid (mu = 0)
 
    public :: earth_layer, earth_model, build_M3L70V01, build_earth
+   public :: fe_read_visc_3d, load_visc_3d
 
    type :: earth_layer
       !! A homogeneous spherical shell, r_bot <= r <= r_top.
@@ -202,5 +207,153 @@ contains
       class(earth_model), intent(in) :: self
       yes = allocated(self%visc_3d)
    end function earth_is_3d
+
+   ! --- 3D viscosity loading (real lon-lat-r log10(eta) fields) ----------------
+
+   subroutine load_visc_3d(p, sht, r_node, visc_node)
+      !! Read p%visc_3d_file onto the Gauss grid x FE nodes (absolute log10 eta),
+      !! optionally perturb by f_visc_sd standard deviations, and clamp to
+      !! [visc_log10_min, visc_log10_max]. sigma is read from name_visc_sd if that
+      !! variable is named, else taken RELATIVE to the field, f_visc_rel*log10(eta)
+      !! (so the perturbation tracks the viscosity structure rather than a constant
+      !! floor). The clamp also imposes the viscosity floor on the raw field.
+      type(fe_param_class), intent(in)  :: p
+      type(sht_grid),       intent(in)  :: sht
+      real(wp),             intent(in)  :: r_node(:)
+      real(wp), allocatable, intent(out) :: visc_node(:,:)
+      real(wp), allocatable :: sd_node(:,:)
+      call fe_read_visc_3d(p%visc_3d_file, sht, r_node, visc_node, varname=p%name_visc, &
+           lonname=p%name_visc_lon, latname=p%name_visc_lat, rname=p%name_visc_r)
+      if (p%f_visc_sd /= 0.0_wp) then
+         if (len_trim(p%name_visc_sd) > 0) then
+            call fe_read_visc_3d(p%visc_3d_file, sht, r_node, sd_node, varname=p%name_visc_sd, &
+                 lonname=p%name_visc_lon, latname=p%name_visc_lat, rname=p%name_visc_r)
+         else
+            allocate(sd_node, source=abs(visc_node)*p%f_visc_rel)   ! relative sigma [log10 dex]
+         end if
+         visc_node = visc_node + p%f_visc_sd*sd_node
+      end if
+      visc_node = min(max(visc_node, p%visc_log10_min), p%visc_log10_max)
+   end subroutine load_visc_3d
+
+   subroutine fe_read_visc_3d(filename, sht, r_node, visc_node, varname, &
+                              lonname, latname, rname)
+      !! Read a real 3D viscosity field (lon, lat, radius) from netCDF and
+      !! interpolate it onto the Gauss-Legendre grid × the FE radial nodes,
+      !! returning ABSOLUTE log10(η [Pa·s]) as visc_node(nphi*nlat, nr). Horizontal
+      !! interp is bilinear in log10(η) with periodic longitude; vertical interp is
+      !! linear in radius (clamped to the source range), also on log10(η). The
+      !! node→element bridge and the perturbation against the radial reference η
+      !! happen later in ve_response (which owns the per-element rheology).
+      !!
+      !! The stored variable is assumed to already be log10(η). Coordinate names
+      !! default to lon/lat/r; the radius coordinate must be metres, ascending.
+      character(len=*), intent(in)  :: filename
+      type(sht_grid),   intent(in)  :: sht
+      real(wp),         intent(in)  :: r_node(:)              !! (nr) FE node radii [m], ascending
+      real(wp), allocatable, intent(out) :: visc_node(:,:)    !! (nphi*nlat, nr) log10(η)
+      character(len=*), intent(in), optional :: varname, lonname, latname, rname
+      character(len=64) :: vnm, lnm, tnm, rnm
+      real(wp), allocatable :: lon_s(:), lat_s(:), r_s(:), eta_s(:,:,:)
+      integer,  allocatable :: il0(:), il1(:), jl0(:), jl1(:)
+      real(wp), allocatable :: wl(:), wt(:)
+      integer  :: nlon, nlat_s, nr_s, nr, nphi, nlat
+      integer  :: i, j, k, k0, k1, sp
+      real(wp) :: lon_t, lat_t, span, wr, v0, v1
+
+      vnm = 'eta';  lnm = 'lon';  tnm = 'lat';  rnm = 'r'
+      if (present(varname)) vnm = varname
+      if (present(lonname)) lnm = lonname
+      if (present(latname)) tnm = latname
+      if (present(rname))   rnm = rname
+
+      nlon   = nc_size(filename, trim(lnm))
+      nlat_s = nc_size(filename, trim(tnm))
+      nr_s   = nc_size(filename, trim(rnm))
+      allocate(lon_s(nlon), lat_s(nlat_s), r_s(nr_s), eta_s(nlon, nlat_s, nr_s))
+      call nc_read(filename, trim(lnm), lon_s)
+      call nc_read(filename, trim(tnm), lat_s)
+      call nc_read(filename, trim(rnm), r_s)
+      call nc_read(filename, trim(vnm), eta_s)        ! eta_s(lon, lat, r) = log10(η)
+
+      nphi = sht%nphi;  nlat = sht%nlat;  nr = size(r_node)
+      allocate(visc_node(nphi*nlat, nr))
+
+      ! Horizontal interpolation weights, computed once (reused over all radii).
+      span = lon_s(nlon) - lon_s(1) + (lon_s(2) - lon_s(1))   ! ≈ 360°
+      allocate(il0(nphi), il1(nphi), wl(nphi))
+      do i = 1, nphi
+         lon_t = sht%lon(i) / DEG2RAD_                        ! [0,360)
+         call locate_periodic(lon_s, lon_t, span, il0(i), il1(i), wl(i))
+      end do
+      allocate(jl0(nlat), jl1(nlat), wt(nlat))
+      do j = 1, nlat
+         lat_t = 90.0_wp - sht%colat(j)/DEG2RAD_
+         call locate_clamped(lat_s, lat_t, jl0(j), jl1(j), wt(j))
+      end do
+
+      ! Per node: vertical bracket (clamped), then bilinear blend of the two levels.
+      do k = 1, nr
+         call locate_clamped(r_s, r_node(k), k0, k1, wr)
+         do j = 1, nlat
+            do i = 1, nphi
+               sp = i + (j-1)*nphi
+               v0 = bilin(eta_s(:,:,k0), il0(i), il1(i), wl(i), jl0(j), jl1(j), wt(j))
+               v1 = bilin(eta_s(:,:,k1), il0(i), il1(i), wl(i), jl0(j), jl1(j), wt(j))
+               visc_node(sp, k) = (1.0_wp - wr)*v0 + wr*v1
+            end do
+         end do
+      end do
+   end subroutine fe_read_visc_3d
+
+   pure real(wp) function bilin(f, i0, i1, wi, j0, j1, wj) result(v)
+      !! Bilinear sample of f(lon,lat) given precomputed bracketing indices/weights.
+      real(wp), intent(in) :: f(:,:), wi, wj
+      integer,  intent(in) :: i0, i1, j0, j1
+      v = (1.0_wp-wi)*(1.0_wp-wj)*f(i0,j0) + wi*(1.0_wp-wj)*f(i1,j0) &
+        + (1.0_wp-wi)*wj         *f(i0,j1) + wi*wj         *f(i1,j1)
+   end function bilin
+
+   pure subroutine locate_clamped(x, xt, i0, i1, w)
+      !! Bracket xt in the ascending array x, clamping to the ends (w in [0,1]).
+      real(wp), intent(in)  :: x(:), xt
+      integer,  intent(out) :: i0, i1
+      real(wp), intent(out) :: w
+      integer :: n, i
+      n = size(x)
+      if (xt <= x(1))  then; i0 = 1; i1 = 1; w = 0.0_wp; return; end if
+      if (xt >= x(n))  then; i0 = n; i1 = n; w = 0.0_wp; return; end if
+      i0 = 1
+      do i = 1, n-1
+         if (xt >= x(i) .and. xt <= x(i+1)) then; i0 = i; exit; end if
+      end do
+      i1 = i0 + 1
+      w  = (xt - x(i0)) / (x(i1) - x(i0))
+   end subroutine locate_clamped
+
+   pure subroutine locate_periodic(x, xt0, span, i0, i1, w)
+      !! Bracket xt0 in the ascending periodic array x (period `span`), wrapping
+      !! between x(n) and x(1)+span. xt0 is normalised into [x(1), x(1)+span).
+      real(wp), intent(in)  :: x(:), xt0, span
+      integer,  intent(out) :: i0, i1
+      real(wp), intent(out) :: w
+      integer  :: n, i
+      real(wp) :: xt
+      n = size(x)
+      xt = xt0
+      do while (xt <  x(1));        xt = xt + span; end do
+      do while (xt >= x(1) + span); xt = xt - span; end do
+      if (xt >= x(n)) then          ! wrap interval [x(n), x(1)+span)
+         i0 = n; i1 = 1
+         w  = (xt - x(n)) / (x(1) + span - x(n))
+         return
+      end if
+      i0 = 1
+      do i = 1, n-1
+         if (xt >= x(i) .and. xt < x(i+1)) then; i0 = i; exit; end if
+      end do
+      i1 = i0 + 1
+      w  = (xt - x(i0)) / (x(i1) - x(i0))
+   end subroutine locate_periodic
 
 end module fe_earth_structure

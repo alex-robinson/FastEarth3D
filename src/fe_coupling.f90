@@ -24,12 +24,13 @@ module fe_coupling
    !! ice load drive the deformation and sea-level change incrementally. The
    !! reference topography z_bed_eq doubles as the SLE's reference topo0.
    use fe_precision,       only: wp
+   use fe_constants,       only: rho_ice, rho_water
    use fe_params,          only: fe_param_class
    use fe_sht,             only: sht_grid
-   use fe_earth_structure, only: earth_model, build_earth
+   use fe_earth_structure, only: earth_model, build_earth, load_visc_3d
    use fe_viscoelastic,    only: scheme_from_name
    use fe_response,        only: ve_response
-   use fe_sle,             only: sle_solver, sle_result
+   use fe_sle,             only: sle_solver, sle_result, ocean_function
    use fe_timestep,        only: adaptive_stepper
    use fe_rotation,        only: rotation_state
    implicit none
@@ -57,6 +58,7 @@ module fe_coupling
       real(wp) :: time      = 0.0_wp   !! model time [s] (mirrors resp%time)
       ! diagnostics from the last update
       real(wp) :: worst_mass_resid = 0.0_wp  !! worst SLE mass residual over the last interval
+      real(wp) :: bsl = 0.0_wp   !! barystatic sea level vs reference [m] (eustatic equivalent)
    contains
       procedure :: init     => solid_earth_init
       procedure :: update   => solid_earth_update
@@ -99,6 +101,17 @@ contains
       self%resp%scheme          = scheme_from_name(p%scheme)
       self%resp%max_couple_iter = p%max_couple_iter
 
+      ! optional laterally-varying (3D) viscosity (rung 6c): read the lon-lat-r
+      ! log10(eta) field, perturb/clamp per the uncertainty knobs (load_visc_3d),
+      ! and enable the tensor-correct lateral-viscosity memory advance.
+      if (p%l_visc_3d) then
+         block
+            real(wp), allocatable :: visc_node(:,:)
+            call load_visc_3d(p, sht, self%resp%r, visc_node)
+            call self%resp%enable_lateral_visc_from_nodes(sht, visc_node)
+         end block
+      end if
+
       ! sea-level equation knobs. Warm-start the fixed point across steps: self%rsl
       ! persists (seeded to 0 below), and between adjacent steps the coastline
       ! barely moves, so the previous solution is a near-converged seed — sharply
@@ -138,11 +151,14 @@ contains
       allocate(self%z_bed_eq,  source=z_bed_eq)
       allocate(self%h_ice_ref, source=h_ice_ref)
 
-      ! current state — at the reference, nothing has moved yet
+      ! current state — at the reference, nothing has moved yet. The ocean function
+      ! is seeded from the reference flotation (rsl=0) rather than zero, so a dt=0
+      ! seed step still yields a physical barystatic diagnostic (update_bsl needs C).
       allocate(self%h_ice(np,nl), source=h_ice_ref)
       allocate(self%rsl(np,nl),   source=0.0_wp)
       allocate(self%z_bed,        source=z_bed_eq)
-      allocate(self%C(np,nl),     source=0.0_wp)
+      allocate(self%C(np,nl))
+      call ocean_function(self%z_bed_eq, self%h_ice_ref, self%C)
    end subroutine solid_earth_init
 
    subroutine solid_earth_update(self, h_ice, dt)
@@ -201,7 +217,25 @@ contains
       ! the bed subsides under grounded ice (land) as well as in the ocean.
       self%z_bed = self%z_bed_eq - self%rsl
       self%time  = t1
+
+      ! barystatic sea level vs the reference: the eustatic equivalent of the ice
+      ! grounded out of the ocean relative to h_ice_ref (the SLE's melt source
+      ! ice_int / ocean area). bsl<0 = more ice than reference (sea level lower).
+      call update_bsl(self)
    end subroutine solid_earth_update
+
+   subroutine update_bsl(self)
+      !! Diagnose the barystatic sea level from the current state.
+      class(solid_earth), intent(inout) :: self
+      real(wp) :: c_int
+      c_int = self%sht%surface_integral(self%C)
+      if (c_int > 0.0_wp) then
+         self%bsl = -(rho_ice/rho_water) &
+              * self%sht%surface_integral((self%h_ice - self%h_ice_ref)*(1.0_wp - self%C)) / c_int
+      else
+         self%bsl = 0.0_wp
+      end if
+   end subroutine update_bsl
 
    subroutine solid_earth_finalize(self)
       class(solid_earth), intent(inout) :: self

@@ -86,12 +86,43 @@ module fe_params
       character(len=64) :: name_lon = "lon"  !! source longitude axis variable [deg]
       character(len=64) :: name_lat = "lat"  !! source latitude  axis variable [deg]
       ! --- reference / equilibration (program fastearth) ------------------------
-      ! In remap mode the reference is taken from the forcing file at the first
-      ! in-window slice: bed = name_zbed_eq, ice = name_ice (both 3D lon-lat-time).
-      integer  :: i_eq     = 1           !! 0: declare the start slice as equilibrium (memory 0);
-                                         !! 1: ice-free reference, spin up under the start load
-                                         !! (paleotopo fixed point) for dt_equil, then transient.
-      real(wp) :: dt_equil = 50.0_wp*kyr !! spin-up hold per equilibration pass [s] (i_eq=1)
+      ! The relaxed reference (z_bed_eq = SLE topo0, h_ice_ref) is set by i_eq,
+      ! mirroring CLIMBER-X i_equilibrium (src/geo/geo.f90). RSL is measured
+      ! against this reference, so i_eq=1 (present-day reference) yields rsl ~0 at
+      ! the present day. Reference fields are lon-lat and remapped online.
+      integer  :: i_eq = 1
+         !! 0: start slice is the equilibrium (z_bed_eq=bed[k0], h_ice_ref=ice[k0]);
+         !! 1: present-day reference from z_bed_ref_file / h_ice_ref_file (default);
+         !! 2: equilibrium read from z_bed_eq_file / h_ice_eq_file;
+         !! 3: z_bed_eq = present-day reference bed + rsl from rsl_restart_file.
+      character(len=512) :: z_bed_ref_file = ""   !! present-day reference bed  (i_eq=1,3)
+      character(len=512) :: h_ice_ref_file = ""   !! present-day reference ice  (i_eq=1,3)
+      character(len=512) :: z_bed_eq_file  = ""   !! equilibrium bed (i_eq=2)
+      character(len=512) :: h_ice_eq_file  = ""   !! equilibrium ice (i_eq=2)
+      character(len=512) :: rsl_restart_file = "" !! rsl field added to ref bed (i_eq=3)
+      character(len=64)  :: name_z_bed_ref = "bedrock_topography" !! bed var in the ref/eq files
+      character(len=64)  :: name_h_ice_ref = "ice_thickness"      !! ice var in the ref/eq files
+      character(len=64)  :: name_rsl       = "rsl"                !! rsl var in rsl_restart_file
+      real(wp) :: dt_equil = 0.0_wp
+         !! >0: run the ice-free paleotopo fixed-point spin-up (hold the start ice
+         !! this long per pass) BEFORE the transient. Non-default; supersedes the
+         !! i_eq-selected bed with the ice-free relaxed bed (legacy i_eq=1 behaviour).
+
+      ! --- 3D viscosity field + uncertainty sampling (fe_earth_structure) --------
+      ! Mirrors the CLIMBER-X VILMA scheme (src/geo/vilma.F90) but with a RELATIVE
+      ! 1-sigma instead of a constant floor: perturb log10(eta) by f_visc_sd*sigma,
+      ! sigma read from the file if name_visc_sd is set, else f_visc_rel*log10(eta).
+      logical  :: l_visc_3d   = .false.   !! load a lateral log10(eta) field
+      character(len=512) :: visc_3d_file  = ""       !! lon-lat-r log10(eta) field
+      character(len=64)  :: name_visc     = "eta"    !! viscosity var (log10 Pa s)
+      character(len=64)  :: name_visc_lon = "lon"
+      character(len=64)  :: name_visc_lat = "lat"
+      character(len=64)  :: name_visc_r   = "r"
+      character(len=64)  :: name_visc_sd  = ""       !! optional sigma(log10 eta) var; "" => relative
+      real(wp) :: f_visc_sd      = 0.0_wp   !! perturbation in units of sigma (0 = mean field)
+      real(wp) :: f_visc_rel     = 0.1_wp   !! relative sigma = f_visc_rel*log10(eta) when no sd var
+      real(wp) :: visc_log10_min = 19.5_wp  !! floor on log10(eta) after read + perturbation [dex]
+      real(wp) :: visc_log10_max = 30.0_wp  !! ceiling on log10(eta) after read + perturbation [dex]
    end type fe_param_class
 
 contains
@@ -191,9 +222,30 @@ contains
       call nml_read(filename, g, "name_lon",      p%name_lon,      defaults_file=df)
       call nml_read(filename, g, "name_lat",      p%name_lat,      defaults_file=df)
       call nml_read(filename, g, "i_eq",          p%i_eq,          defaults_file=df)
+      call nml_read(filename, g, "z_bed_ref_file", p%z_bed_ref_file, defaults_file=df)
+      call nml_read(filename, g, "h_ice_ref_file", p%h_ice_ref_file, defaults_file=df)
+      call nml_read(filename, g, "z_bed_eq_file",  p%z_bed_eq_file,  defaults_file=df)
+      call nml_read(filename, g, "h_ice_eq_file",  p%h_ice_eq_file,  defaults_file=df)
+      call nml_read(filename, g, "rsl_restart_file", p%rsl_restart_file, defaults_file=df)
+      call nml_read(filename, g, "name_z_bed_ref", p%name_z_bed_ref, defaults_file=df)
+      call nml_read(filename, g, "name_h_ice_ref", p%name_h_ice_ref, defaults_file=df)
+      call nml_read(filename, g, "name_rsl",       p%name_rsl,       defaults_file=df)
       dt_equil_yr = p%dt_equil/sec_per_year
       call nml_read(filename, g, "dt_equil",      dt_equil_yr,     defaults_file=df)
       p%dt_equil = dt_equil_yr*sec_per_year
+
+      ! 3D viscosity + uncertainty
+      call nml_read(filename, g, "l_visc_3d",      p%l_visc_3d,      defaults_file=df)
+      call nml_read(filename, g, "visc_3d_file",   p%visc_3d_file,   defaults_file=df)
+      call nml_read(filename, g, "name_visc",      p%name_visc,      defaults_file=df)
+      call nml_read(filename, g, "name_visc_lon",  p%name_visc_lon,  defaults_file=df)
+      call nml_read(filename, g, "name_visc_lat",  p%name_visc_lat,  defaults_file=df)
+      call nml_read(filename, g, "name_visc_r",    p%name_visc_r,    defaults_file=df)
+      call nml_read(filename, g, "name_visc_sd",   p%name_visc_sd,   defaults_file=df)
+      call nml_read(filename, g, "f_visc_sd",      p%f_visc_sd,      defaults_file=df)
+      call nml_read(filename, g, "f_visc_rel",     p%f_visc_rel,     defaults_file=df)
+      call nml_read(filename, g, "visc_log10_min", p%visc_log10_min, defaults_file=df)
+      call nml_read(filename, g, "visc_log10_max", p%visc_log10_max, defaults_file=df)
    end subroutine fe_par_load
 
    subroutine fe_par_print(p, unit)
@@ -224,6 +276,12 @@ contains
       write(u,'(a,l1)')       '   rotation: ', p%rotation
       write(u,'(a,l1,a,i0,a,es9.2)') '   forcing: remap_input=', p%remap_input, &
            '  i_eq=', p%i_eq, '  dt_equil=', p%dt_equil
+      if (p%l_visc_3d) then
+         write(u,'(a,a)')   '   visc_3d: ', trim(p%visc_3d_file)
+         write(u,'(a,f6.2,a,f6.2,a,f5.2,a,f5.2,a)') &
+              '            f_visc_sd=', p%f_visc_sd, '  f_visc_rel=', p%f_visc_rel, &
+              '  clamp=[', p%visc_log10_min, ',', p%visc_log10_max, ']'
+      end if
    end subroutine fe_par_print
 
 end module fe_params

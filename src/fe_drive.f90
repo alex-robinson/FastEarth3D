@@ -13,16 +13,17 @@ module fe_drive
    !!   remap_input=.false.: the forcing is already on the Gauss grid (host remapped,
    !!                       or produced by the offline fastearth_remap tool).
    !!
-   !! Reference / equilibration (i_eq):
-   !!   i_eq=0  declare the first in-window slice as the relaxed reference (z_bed_eq =
-   !!           bed[k0], h_ice_ref = ice[k0], memory 0); the transient load is the ice
-   !!           change relative to that slice.
-   !!   i_eq=1  (default) ice-free reference; find the ice-free relaxed bed by a
-   !!           paleotopo fixed point so the EQUILIBRIUM under the start-slice ice
-   !!           reproduces the data bed[k0], holding the load dt_equil per pass. Leaves
-   !!           the model at that equilibrium (bed AND viscous memory), then deglaciates
-   !!           with the absolute ice as load. The reported residual ‖z_bed-bed[k0]‖ is
-   !!           the consistency check vs i_eq=0.
+   !! Reference state (i_eq), mirroring CLIMBER-X i_equilibrium. RSL is measured
+   !! against the relaxed reference z_bed_eq, so i_eq=1 yields rsl ~0 at present day.
+   !!   i_eq=0  start slice is the equilibrium (z_bed_eq=bed[k0], h_ice_ref=ice[k0]).
+   !!   i_eq=1  (default) present-day reference: z_bed_eq / h_ice_ref from
+   !!           z_bed_ref_file / h_ice_ref_file (e.g. RTopo), remapped online.
+   !!   i_eq=2  equilibrium read from z_bed_eq_file / h_ice_eq_file.
+   !!   i_eq=3  z_bed_eq = present-day reference bed + rsl from rsl_restart_file.
+   !! Optional (non-default) ice-free paleotopo spin-up when dt_equil>0: find the
+   !! ice-free relaxed bed by a fixed point so the EQUILIBRIUM under the start-slice
+   !! ice reproduces z_bed_eq, holding the load dt_equil per pass; this supersedes
+   !! the i_eq-selected bed and leaves the model spun up (bed AND viscous memory).
    use fe_precision, only: wp
    use fe_constants, only: sec_per_year
    use fe_params,    only: fe_param_class, fe_par_load, fe_par_print
@@ -38,8 +39,8 @@ module fe_drive
 
    ! diagnostic surface fields written each output step (the prognostic memory is
    ! written separately via fe_restart_write when a restart is wanted)
-   character(len=8), parameter :: OUT_VARS(4) = &
-        [character(len=8) :: "h_ice", "rsl", "z_bed", "C_ocean"]
+   character(len=8), parameter :: OUT_VARS(5) = &
+        [character(len=8) :: "h_ice", "rsl", "z_bed", "C_ocean", "bsl"]
 
    integer,  parameter :: MAX_EQ  = 12       !! cap on paleotopo fixed-point passes
    real(wp), parameter :: EQ_TOL  = 1.0_wp   !! equilibration residual mean|.| [m]
@@ -94,20 +95,18 @@ contains
       write(*,'(a,i0,a,f0.1,a,f0.1,a)') ' fastearth: ', k1-k0+1, ' slices, t = ', &
            tyr(k0), ' -> ', tyr(k1), ' yr'
 
-      ! --- reference bed + start-slice ice --------------------------------------
-      call read_bed(p, rmap, sht, remap, k0, src, z_bed_eq)     ! data bed at the start slice
+      ! --- start-slice ice + reference state (z_bed_eq, h_ice_ref) per i_eq ------
       call read_ice(p, rmap, sht, remap, k0, src, ice_lgm)      ! start-slice (LGM) ice
+      call setup_reference(p, rmap, sht, remap, k0, src, ice_lgm, z_bed_eq, h_ice_ref)
 
-      ! --- reference / equilibration --------------------------------------------
-      if (p%i_eq == 0) then
-         ! declare the start slice as the relaxed reference (memory 0)
-         h_ice_ref = ice_lgm
+      ! --- initialise; optional ice-free paleotopo spin-up (dt_equil>0) ---------
+      if (p%dt_equil > 0.0_wp) then
+         ! non-default: replace z_bed_eq with the ice-free relaxed bed (paleotopo
+         ! fixed point) and leave se spun up to the start-ice equilibrium.
+         call equilibrate(p, sht, se, z_bed_eq, ice_lgm)
+      else
          call se%init(p, sht, z_bed_eq, h_ice_ref)
          call se%update(ice_lgm, 0.0_wp)                        ! seed entering ice, no integration
-      else
-         ! ice-free reference + paleotopo spin-up; leaves se at the LGM equilibrium
-         h_ice_ref = 0.0_wp
-         call equilibrate(p, sht, se, z_bed_eq, ice_lgm)        ! z_bed_eq -> ice-free relaxed bed
       end if
 
       ! --- march the transient --------------------------------------------------
@@ -227,6 +226,68 @@ contains
          call nc_read(p%file_ref, trim(p%name_zbed_eq), z_bed)
       end if
    end subroutine read_bed
+
+   subroutine setup_reference(p, rmap, sht, remap, k0, src, ice_lgm, z_bed_eq, h_ice_ref)
+      !! Fill the relaxed reference (z_bed_eq = SLE topo0, h_ice_ref) per p%i_eq,
+      !! mirroring CLIMBER-X i_equilibrium. Reference files are lon-lat and remapped
+      !! online with a per-file conservative map (their grid differs from the forcing).
+      type(fe_param_class), intent(in)    :: p
+      type(ll2gauss_map),   intent(in)    :: rmap
+      type(sht_grid),       intent(in)    :: sht
+      logical,              intent(in)    :: remap
+      integer,              intent(in)    :: k0
+      real(wp),             intent(inout) :: src(:,:)
+      real(wp),             intent(in)    :: ice_lgm(:,:)
+      real(wp),             intent(out)   :: z_bed_eq(:,:), h_ice_ref(:,:)
+      real(wp), allocatable :: rsl_r(:,:)
+      select case (p%i_eq)
+      case (0)
+         call read_bed(p, rmap, sht, remap, k0, src, z_bed_eq)   ! data bed at the start slice
+         h_ice_ref = ice_lgm
+      case (1)
+         call read_ref2d(p, sht, remap, p%z_bed_ref_file, p%name_z_bed_ref, .false., z_bed_eq)
+         call read_ref2d(p, sht, remap, p%h_ice_ref_file, p%name_h_ice_ref, .true.,  h_ice_ref)
+      case (2)
+         call read_ref2d(p, sht, remap, p%z_bed_eq_file, p%name_z_bed_ref, .false., z_bed_eq)
+         call read_ref2d(p, sht, remap, p%h_ice_eq_file, p%name_h_ice_ref, .true.,  h_ice_ref)
+      case (3)
+         allocate(rsl_r(size(z_bed_eq,1), size(z_bed_eq,2)))
+         call read_ref2d(p, sht, remap, p%z_bed_ref_file,   p%name_z_bed_ref, .false., z_bed_eq)
+         call read_ref2d(p, sht, remap, p%rsl_restart_file, p%name_rsl,       .false., rsl_r)
+         call read_ref2d(p, sht, remap, p%h_ice_ref_file,   p%name_h_ice_ref, .true.,  h_ice_ref)
+         z_bed_eq = z_bed_eq + rsl_r
+      case default
+         error stop 'fastearth_run: i_eq must be 0, 1, 2, or 3'
+      end select
+   end subroutine setup_reference
+
+   subroutine read_ref2d(p, sht, remap, file, varname, conserve, field)
+      !! Read a 2D lon-lat reference field and remap it onto the Gauss grid with a
+      !! per-file conservative map (built from the file's own axes). conserve=.true.
+      !! for mass-bearing fields (ice). In legacy (remap=.false.) mode the field is
+      !! assumed already on the Gauss grid and read directly.
+      type(fe_param_class), intent(in)  :: p
+      type(sht_grid),       intent(in)  :: sht
+      logical,              intent(in)  :: remap, conserve
+      character(len=*),     intent(in)  :: file, varname
+      real(wp),             intent(out) :: field(:,:)
+      type(ll2gauss_map)    :: m
+      real(wp), allocatable :: lon_s(:), lat_s(:), buf(:,:)
+      integer :: nlon, nls
+      if (len_trim(file) == 0) &
+         error stop 'fastearth_run: reference file not set for the chosen i_eq'
+      if (remap) then
+         nlon = nc_size(file, trim(p%name_lon));  nls = nc_size(file, trim(p%name_lat))
+         allocate(lon_s(nlon), lat_s(nls), buf(nlon, nls))
+         call nc_read(file, trim(p%name_lon), lon_s)
+         call nc_read(file, trim(p%name_lat), lat_s)
+         call nc_read(file, trim(varname),    buf)
+         call m%init(sht, lon_s, lat_s)
+         call m%apply(sht, buf, field, conserve_mass=conserve)
+      else
+         call nc_read(file, trim(varname), field)
+      end if
+   end subroutine read_ref2d
 
    ! --- grid + window ----------------------------------------------------------
 

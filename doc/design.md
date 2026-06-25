@@ -544,10 +544,32 @@ Both modes agree on the physical bed at the LGM; they differ in the initial memo
 state, which changes the deglacial rebound — the thing `i_eq=1` gets right and the
 comparison quantifies.
 
-## 14. Next plans (forced-run roadmap) — NOT yet implemented
+## 14. Forced-run roadmap — IMPLEMENTED
 
-Captured at the close of the real-forcing session (2026-06-25). Five items, in
-rough priority order.
+Captured at the close of the real-forcing session (2026-06-25); implemented on
+branch `s14-forced`. Five items, in rough priority order. As built (differences
+from the original plan noted):
+
+- **(a) years output** — `fe_io` writes the `time` axis and `dt_try` in YEARS;
+  restart read converts back to SI. Done.
+- **(b) BSL** — `solid_earth%bsl` (scalar, vs reference), surfaced through `fe_io`
+  as a per-step time series. The init ocean function is seeded from reference
+  flotation so the seed step yields a physical value (`ocean_function` made public).
+- **(c) reference frame** — adopted CLIMBER-X `i_equilibrium` semantics exactly:
+  `i_eq` 0=start-slice, 1=present-day reference (default), 2=eq-file, 3=ref+rsl.
+  `z_bed_ref_file`/`h_ice_ref_file` (RTopo) are remapped online with a per-file
+  conservative map. With `i_eq=1` rsl≈0 at PD by construction (no `rsl_anom` param
+  needed). The ice-free paleotopo fixed point is retained but non-default, gated by
+  `dt_equil>0` (default 0); it supersedes the i_eq bed when on.
+- **(d) 3D viscosity** — `l_visc_3d`/`visc_3d_file` wired through `solid_earth%init`;
+  `fe_read_visc_3d` moved fe_io→fe_earth_structure (avoids a circular dep); a
+  `visc_log10_min/max` clamp imposes the viscosity floor after read (so the base
+  Bagge field reproduces the `_min_19.5` variant). Bagge field is in `isostasy_data`
+  (`earth_structure/viscosity/bagge2021.nc`, reformatted to the Pan layout).
+- **(e) uncertainty** — `f_visc_sd` (units of σ) with a RELATIVE σ: read from
+  `name_visc_sd` if set, else `f_visc_rel·log10η` (default 0.1). Clamped as in (d).
+
+Original notes (for reference) follow.
 
 **(a) Output time units → years (all files).** The driver/`fe_io` currently write
 the `time` axis (and restart time fields) in SECONDS; `fe_params` already converts
