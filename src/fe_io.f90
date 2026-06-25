@@ -57,7 +57,7 @@ contains
       !! Write the full coupling state as a restart snapshot at `time`. With
       !! init=.true. (default) the file is created; with init=.false. the
       !! snapshot is appended at a new time index.
-      class(solid_earth), intent(in) :: self
+      type(solid_earth), intent(in) :: self
       character(len=*),   intent(in) :: filename
       real(wp),           intent(in) :: time
       logical, optional,  intent(in) :: init
@@ -69,7 +69,7 @@ contains
       !! time-varying variables) at the time index for `time`, appending along
       !! the unlimited time axis. The model time should be passed as `time` for
       !! a restart to round-trip the clock.
-      class(solid_earth), intent(in) :: self
+      type(solid_earth), intent(in) :: self
       character(len=*),   intent(in) :: filename
       real(wp),           intent(in) :: time
       character(len=*), optional, intent(in) :: nms(:)
@@ -106,7 +106,7 @@ contains
    subroutine write_init(self, filename, time)
       !! Create the file and its dimensions (lon, lat, nlam, ne, nk, time) and
       !! write the static reference fields.
-      class(solid_earth), intent(in) :: self
+      type(solid_earth), intent(in) :: self
       character(len=*),   intent(in) :: filename
       real(wp),           intent(in) :: time
       real(wp), allocatable :: lon_deg(:), lat_deg(:)
@@ -132,7 +132,7 @@ contains
 
    subroutine write_one(self, filename, name, n, ncid)
       !! Dispatch a single variable name to its array + dimensions.
-      class(solid_earth), intent(in) :: self
+      type(solid_earth), intent(in) :: self
       character(len=*),   intent(in) :: filename, name
       integer,            intent(in) :: n, ncid
       select case (name)
@@ -161,7 +161,7 @@ contains
 
    subroutine put3d(self, filename, name, dat, n, ncid)
       !! Write a (nlam,ne,nk) Maxwell-memory field at time slice n.
-      class(solid_earth), intent(in) :: self
+      type(solid_earth), intent(in) :: self
       character(len=*),   intent(in) :: filename, name
       real(wp),           intent(in) :: dat(:,:,:)
       integer,            intent(in) :: n, ncid
@@ -176,7 +176,7 @@ contains
    subroutine put_sigma(self, filename, name, want_re, n, ncid)
       !! Write the real or imaginary part of the trapezoidal start-of-step load σ_n
       !! (a spectral (nlm) vector) at time slice n; zeros if σ_n is not yet tracked.
-      class(solid_earth), intent(in) :: self
+      type(solid_earth), intent(in) :: self
       character(len=*),   intent(in) :: filename, name
       logical,            intent(in) :: want_re
       integer,            intent(in) :: n, ncid
@@ -210,7 +210,7 @@ contains
 
    subroutine put2d(self, filename, name, dat, n, ncid, static)
       !! Write a (lon,lat) field — static (no time) or at time slice n.
-      class(solid_earth), intent(in) :: self
+      type(solid_earth), intent(in) :: self
       character(len=*),   intent(in) :: filename, name
       real(wp),           intent(in) :: dat(:,:)
       integer, optional,  intent(in) :: n, ncid
@@ -238,7 +238,7 @@ contains
       !! memory + model time, and the diagnostic state if present, at the time
       !! slice matching `time` (default: the last slice). Validates that the
       !! file dimensions and reference fields match the initialised model.
-      class(solid_earth), intent(inout) :: self
+      type(solid_earth), intent(inout) :: self
       character(len=*),   intent(in)    :: filename
       real(wp), optional, intent(in)    :: time
       real(wp), allocatable :: tvals(:), ref(:,:)
@@ -307,7 +307,7 @@ contains
    subroutine restore_sigma(self, filename, n)
       !! Restore σ_n at time slice n into the response, marking it primed, if the
       !! snapshot recorded a tracked σ_n (sigma_primed flag set).
-      class(solid_earth), intent(inout) :: self
+      type(solid_earth), intent(inout) :: self
       character(len=*),   intent(in)    :: filename
       integer,            intent(in)    :: n
       real(wp), allocatable :: sre(:), sim(:)

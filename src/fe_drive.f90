@@ -28,7 +28,7 @@ module fe_drive
    use fe_constants, only: sec_per_year
    use fe_params,    only: fe_param_class, fe_par_load, fe_par_print
    use fe_sht,       only: sht_grid, sht_grid_destroy, sht_grid_surface_integral, sht_grid_init
-   use fe_coupling,  only: solid_earth
+   use fe_coupling,  only: solid_earth_finalize, solid_earth_update, solid_earth_init, solid_earth
    use fe_remap,     only: ll2gauss_map, ll2gauss_init, ll2gauss_apply
    use fe_io,        only: fe_write_step
    use ncio,         only: nc_read, nc_size
@@ -112,8 +112,8 @@ contains
          ! fixed point) and leave se spun up to the start-ice equilibrium.
          call equilibrate(p, sht, se, z_bed_eq, ice_lgm)
       else
-         call se%init(p, sht, z_bed_eq, h_ice_ref)
-         call se%update(ice_lgm, 0.0_wp)                        ! seed entering ice, no integration
+         call solid_earth_init(se, p, sht, z_bed_eq, h_ice_ref)
+         call solid_earth_update(se, ice_lgm, 0.0_wp)                        ! seed entering ice, no integration
       end if
       call system_clock(pc1)
       write(*,'(a,f8.2,a)') ' [PROFILE setup] se%init+visc3d+seed =', real(pc1-pc0,wp)/prate, ' s'
@@ -134,7 +134,7 @@ contains
          call read_ice(p, rmap, sht, remap, k+1, src, h_ice)
          call system_clock(pc1);  t_read = t_read + real(pc1-pc0,wp)/prate
          call system_clock(pc0)
-         call se%update(h_ice, dt)
+         call solid_earth_update(se, h_ice, dt)
          call system_clock(pc1);  t_upd = t_upd + real(pc1-pc0,wp)/prate
          call system_clock(pc0)
          call fe_write_step(se, p%file_out, se%time, nms=OUT_VARS, init=.false.)
@@ -156,7 +156,7 @@ contains
          '   sub-steps/interval: n_accept=', real(se%stepper%n_accept,wp)/nstep, &
          '  n_solve=', real(se%stepper%n_solve,wp)/nstep, '  (per coupling step)'
       write(*,'(a,a)') ' fastearth: wrote ', trim(p%file_out)
-      call se%finalize();  call sht_grid_destroy(sht)
+      call solid_earth_finalize(se);  call sht_grid_destroy(sht)
    end subroutine fastearth_run
 
    ! --- equilibration ----------------------------------------------------------
@@ -187,9 +187,9 @@ contains
       write(*,'(a,es9.2,a)') ' equilibration (i_eq=1): spin up under start ice, dt_equil=', &
            p%dt_equil/sec_per_year, ' yr/pass'
       do it = 1, MAX_EQ
-         call se%init(p, sht, z_bed_eq, h0)              ! ice-free reference, memory 0
-         call se%update(ice_lgm, 0.0_wp)                 ! set entering ice = start ice
-         call se%update(ice_lgm, p%dt_equil)             ! hold -> relax to equilibrium
+         call solid_earth_init(se, p, sht, z_bed_eq, h0)              ! ice-free reference, memory 0
+         call solid_earth_update(se, ice_lgm, 0.0_wp)                 ! set entering ice = start ice
+         call solid_earth_update(se, ice_lgm, p%dt_equil)             ! hold -> relax to equilibrium
          resid = se%z_bed - bed_target
          rmean = sht_grid_surface_integral(sht, abs(resid))/fourpi
          rmax  = maxval(abs(resid))

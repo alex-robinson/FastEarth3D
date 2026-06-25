@@ -37,6 +37,7 @@ module fe_coupling
    private
 
    public :: solid_earth
+   public :: solid_earth_init, solid_earth_update, solid_earth_finalize
 
    type :: solid_earth
       type(sht_grid), pointer  :: sht => null()  !! transform grid (borrowed, host-owned)
@@ -59,10 +60,6 @@ module fe_coupling
       ! diagnostics from the last update
       real(wp) :: worst_mass_resid = 0.0_wp  !! worst SLE mass residual over the last interval
       real(wp) :: bsl = 0.0_wp   !! barystatic sea level vs reference [m] (eustatic equivalent)
-   contains
-      procedure :: init     => solid_earth_init
-      procedure :: update   => solid_earth_update
-      procedure :: finalize => solid_earth_finalize
    end type solid_earth
 
 contains
@@ -74,7 +71,7 @@ contains
       !! scheme knobs are distributed from p to the sub-solvers. The grid is
       !! borrowed by pointer — the host keeps it alive for the model's lifetime and
       !! is responsible for destroying it.
-      class(solid_earth),   intent(inout)        :: self
+      type(solid_earth),   intent(inout)        :: self
       type(fe_param_class), intent(in)           :: p
       type(sht_grid),       intent(in),   target :: sht
       real(wp),             intent(in)           :: z_bed_eq(:,:)   !! (nphi,nlat) [m]
@@ -82,7 +79,7 @@ contains
       integer  :: np, nl
       real(wp) :: dt0
 
-      call self%finalize()                       ! clean slate (safe on a fresh object)
+      call solid_earth_finalize(self)                       ! clean slate (safe on a fresh object)
 
       np = sht%nphi;  nl = sht%nlat
       if (size(z_bed_eq,1) /= np .or. size(z_bed_eq,2) /= nl .or. &
@@ -169,7 +166,7 @@ contains
       !! across the interval; the adaptive stepper (fe_timestep) chooses the
       !! internal Δt, solving the SLE against the current relaxation state and
       !! advancing the Maxwell memory at each sub-step.
-      class(solid_earth), intent(inout) :: self
+      type(solid_earth), intent(inout) :: self
       real(wp),           intent(in)    :: h_ice(:,:)   !! grounded-ice thickness [m]
       real(wp),           intent(in)    :: dt           !! interval to advance [s]
       real(wp), allocatable :: load(:,:)
@@ -227,7 +224,7 @@ contains
 
    subroutine update_bsl(self)
       !! Diagnose the barystatic sea level from the current state.
-      class(solid_earth), intent(inout) :: self
+      type(solid_earth), intent(inout) :: self
       real(wp) :: c_int
       c_int = sht_grid_surface_integral(self%sht, self%C)
       if (c_int > 0.0_wp) then
@@ -239,7 +236,7 @@ contains
    end subroutine update_bsl
 
    subroutine solid_earth_finalize(self)
-      class(solid_earth), intent(inout) :: self
+      type(solid_earth), intent(inout) :: self
       call response_destroy(self%resp)
       call rotation_destroy(self%rotation)
       self%sht => null()                 ! borrowed grid — the host destroys it

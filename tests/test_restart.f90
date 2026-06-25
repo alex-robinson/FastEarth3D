@@ -15,7 +15,7 @@ program test_restart
    use fe_params,          only: fe_param_class
    use fe_radial_fe,       only: radial_fe_finalize
    use fe_sht,             only: sht_grid, sht_grid_init, sht_grid_destroy
-   use fe_coupling,        only: solid_earth
+   use fe_coupling,        only: solid_earth_finalize, solid_earth_update, solid_earth_init, solid_earth
    use fe_io,              only: fe_restart_write, fe_restart_read
    use ncio,               only: nc_size
    implicit none
@@ -41,15 +41,15 @@ program test_restart
    p%dt_couple = dt_couple
 
    ! === reference run A =======================================================
-   call a%init(p, sht, z_bed_eq, h_ice_ref)
+   call solid_earth_init(a, p, sht, z_bed_eq, h_ice_ref)
    do step = 1, K1
-      call a%update(h_ice, dt_couple)
+      call solid_earth_update(a, h_ice, dt_couple)
    end do
    t1 = a%time
    call fe_restart_write(a, FILE, t1, init=.true.)       ! snapshot 1 (memory @ K1)
 
    do step = 1, K2
-      call a%update(h_ice, dt_couple)
+      call solid_earth_update(a, h_ice, dt_couple)
    end do
    t2 = a%time
    call fe_restart_write(a, FILE, t2, init=.false.)      ! snapshot 2 (state @ K1+K2)
@@ -66,7 +66,7 @@ program test_restart
    end if
 
    ! === (1) direct state restore (default = last snapshot, t2) ================
-   call b%init(p, sht, z_bed_eq, h_ice_ref)
+   call solid_earth_init(b, p, sht, z_bed_eq, h_ice_ref)
    call fe_restart_read(b, FILE)
    d_restore = max(maxval(abs(b%z_bed - a6_zbed)), maxval(abs(b%rsl - a6_rsl)))
    write(*,'(a,es11.2)') '   (1) state restore  max|B - A|     =', d_restore
@@ -75,10 +75,10 @@ program test_restart
    end if
 
    ! === (2) bit-for-bit continuation from the earlier snapshot (t1) ===========
-   call c%init(p, sht, z_bed_eq, h_ice_ref)
+   call solid_earth_init(c, p, sht, z_bed_eq, h_ice_ref)
    call fe_restart_read(c, FILE, time=t1)                ! restore memory @ K1
    do step = 1, K2
-      call c%update(h_ice, dt_couple)                               ! same load, K2 steps
+      call solid_earth_update(c, h_ice, dt_couple)                               ! same load, K2 steps
    end do
    d_continue = max(maxval(abs(c%z_bed - a6_zbed)), maxval(abs(c%rsl - a6_rsl)))
    write(*,'(a,es11.2)') '   (2) continuation   max|C - A|     =', d_continue
@@ -87,7 +87,7 @@ program test_restart
       ok = .false.
    end if
 
-   call a%finalize();  call b%finalize();  call c%finalize()
+   call solid_earth_finalize(a);  call solid_earth_finalize(b);  call solid_earth_finalize(c)
    call sht_grid_destroy(sht)
 
    write(*,'(a)') ''

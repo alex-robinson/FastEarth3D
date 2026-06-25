@@ -14,7 +14,7 @@ program test_coupling
    use fe_params,          only: fe_param_class
    use fe_radial_fe,       only: radial_fe_finalize
    use fe_sht,             only: sht_grid, sht_grid_init, sht_grid_destroy
-   use fe_coupling,        only: solid_earth
+   use fe_coupling,        only: solid_earth_finalize, solid_earth_update, solid_earth_init, solid_earth
    implicit none
 
    integer, parameter :: LMAX = 16, NSTEP = 15
@@ -41,13 +41,13 @@ program test_coupling
 
    dt_couple    = 2.0_wp*kyr                        ! interval per se%update call
    p%dt_couple  = dt_couple                         ! default cadence (M3-L70-V01, default fe scheme)
-   call se%init(p, sht, z_bed_eq, h_ice_ref)
+   call solid_earth_init(se, p, sht, z_bed_eq, h_ice_ref)
 
    write(*,'(a,i0,a)') ' coupling: lmax=', LMAX, &
                        '  (dt_couple=2 kyr, default fe scheme)'
 
    ! --- (0) reference consistency: no ice change -> no motion -----------------
-   call se%update(h_ice_ref, dt_couple)
+   call solid_earth_update(se, h_ice_ref, dt_couple)
    write(*,'(a,es10.2,a,es10.2)') '   ref: max|rsl|=', maxval(abs(se%rsl)), &
                                   '   max|z_bed-z_bed_eq|=', maxval(abs(se%z_bed - z_bed_eq))
    if (maxval(abs(se%rsl)) > 1.0e-9_wp .or. maxval(abs(se%z_bed - z_bed_eq)) > 1.0e-9_wp) then
@@ -59,7 +59,7 @@ program test_coupling
    write(*,'(a)') '       step   z_bed under ice [m]   d(subs) [m]   worst mass resid'
    bed_prev = bed_eq_ice;  worst_mass = 0.0_wp;  monotone = .true.
    do step = 1, NSTEP
-      call se%update(h_ice, dt_couple)
+      call solid_earth_update(se, h_ice, dt_couple)
       bed_now = se%z_bed(1,jice)
       worst_mass = max(worst_mass, se%worst_mass_resid)
       if (step == 1)     d_first = bed_prev - bed_now
@@ -99,7 +99,7 @@ program test_coupling
       write(*,'(a)') '      FAIL: building land ice should draw the ocean down'; ok = .false.
    end if
 
-   call se%finalize()
+   call solid_earth_finalize(se)
 
    ! --- (3) rotational feedback through the coupling driver (off-axis load) ----
    ! An off-axis ice cap drives polar motion; rotation must run, conserve mass, and
@@ -165,16 +165,16 @@ contains
 
       pr%dt_couple = dt_couple
       pr%rotation  = .false.
-      call se_off%init(pr, sht, z_bed_eq, h_ice_ref)
-      do s = 1, NSTEP;  call se_off%update(h_off, dt_couple);  end do
+      call solid_earth_init(se_off, pr, sht, z_bed_eq, h_ice_ref)
+      do s = 1, NSTEP;  call solid_earth_update(se_off, h_off, dt_couple);  end do
       zoff = se_off%z_bed
-      call se_off%finalize()
+      call solid_earth_finalize(se_off)
 
       pr%rotation = .true.
-      call se_on%init(pr, sht, z_bed_eq, h_ice_ref)
+      call solid_earth_init(se_on, pr, sht, z_bed_eq, h_ice_ref)
       wmass = 0.0_wp
       do s = 1, NSTEP
-         call se_on%update(h_off, dt_couple)
+         call solid_earth_update(se_on, h_off, dt_couple)
          wmass = max(wmass, se_on%worst_mass_resid)
       end do
       mdeg  = abs(se_on%rotation%m)*180.0_wp/(acos(-1.0_wp))
@@ -191,7 +191,7 @@ contains
       if (dzmax < 1.0e-3_wp) then
          write(*,'(a)') '   FAIL: rotational feedback had no effect on the bed'; ok = .false.
       end if
-      call se_on%finalize()
+      call solid_earth_finalize(se_on)
    end subroutine rotation_check
 
    subroutine make_load_offaxis(h_ice)
