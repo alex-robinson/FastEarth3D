@@ -1,0 +1,29 @@
+&fe3d
+    ! ====================================================================
+    ! LGM -> present-day deglaciation, Tarasov PMIP4 ice + bed (CLIMBER-X
+    ! input geo_ice_tarasov_deglac.nc, 1 deg lon x 0.5 deg lat, -26 ka -> 0,
+    ! 100-yr slices). Sparse config -- overlay on fastearth.nml:
+    !     bin/fastearth.x examples/deglac_lgm.nml fastearth.nml
+    ! Online conservative remap onto the Gauss grid (no preprocessing).
+    ! i_eq=1: ice-free reference, spin up to LGM equilibrium (paleotopo fixed
+    ! point) under the 26 ka ice, then deglaciate.
+    ! ====================================================================
+    lmax         = 128
+    scheme       = "trap"
+
+    file_forcing = "/Users/alrobi001/models/climber-x/input/geo_ice_tarasov_deglac.nc"
+    name_ice     = "ice_thickness"
+    name_zbed_eq = "bedrock_topography"
+    name_time    = "time"
+    name_lon     = "lon"
+    name_lat     = "lat"
+    remap_input  = .true.
+
+    i_eq         = 1
+    dt_equil     = 50000.0     ! [years] spin-up hold per equilibration pass
+    dt_couple    = 100.0       ! [years] slice spacing
+
+    file_out     = "runs/deglac_lgm/out.nc"
+    time_init    = -26000.0
+    time_end     = 0.0
+/
