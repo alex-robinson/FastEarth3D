@@ -4,7 +4,7 @@ program test_remap
    !! optional global mass-rescale (SHTns surface integral == source area integral).
    use fe_precision, only: wp
    use fe_sht,       only: sht_grid
-   use fe_remap,     only: ll2gauss_map
+   use fe_remap,     only: ll2gauss_map, ll2gauss_init, ll2gauss_apply
    implicit none
 
    integer,  parameter :: LMAX = 32
@@ -25,13 +25,13 @@ program test_remap
    allocate(lon_s(NLON), lat_s(NLAT_S))
    do i = 1, NLON;   lon_s(i) = -180.0_wp + (real(i,wp)-0.5_wp)*(360.0_wp/NLON);  end do
    do j = 1, NLAT_S; lat_s(j) =  -90.0_wp + (real(j,wp)-0.5_wp)*(180.0_wp/NLAT_S); end do
-   call rmap%init(sht, lon_s, lat_s)
+   call ll2gauss_init(rmap, sht, lon_s, lat_s)
 
    allocate(fsrc(NLON,NLAT_S), fdst(sht%nphi,sht%nlat))
 
    ! (1) constant field preserved exactly
    fsrc = 7.0_wp
-   call rmap%apply(sht, fsrc, fdst)
+   call ll2gauss_apply(rmap, sht, fsrc, fdst)
    emax = maxval(abs(fdst - 7.0_wp))
    write(*,'(a,es10.2)') '   constant-field max error      = ', emax
    if (emax > 1.0e-10_wp) then; write(*,*) 'FAIL: constant not preserved'; ok = .false.; end if
@@ -40,7 +40,7 @@ program test_remap
    do j = 1, NLAT_S
       do i = 1, NLON;  fsrc(i,j) = sin(lat_s(j)*DEG);  end do
    end do
-   call rmap%apply(sht, fsrc, fdst)
+   call ll2gauss_apply(rmap, sht, fsrc, fdst)
    emax = 0.0_wp
    do j = 1, sht%nlat
       latg = 90.0_wp - sht%colat(j)*RAD2DEG
@@ -62,7 +62,7 @@ program test_remap
          fsrc(i,j) = 1.0_wp + 0.5_wp*cos(lat_s(j)*DEG)*cos(lon_s(i)*DEG)
       end do
    end do
-   call rmap%apply(sht, fsrc, fdst, conserve_mass=.true.)
+   call ll2gauss_apply(rmap, sht, fsrc, fdst, conserve_mass=.true.)
    ! source area-weighted mean and the model's gauss-weighted mean (integral/4pi)
    isrc = sum(fsrc*rmap%src%area)/sum(rmap%src%area)
    idst = sht%surface_integral(fdst)/(16.0_wp*atan(1.0_wp))

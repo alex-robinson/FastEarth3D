@@ -25,6 +25,7 @@ module fe_remap
    private
 
    public :: ll2gauss_map
+   public :: ll2gauss_init, ll2gauss_apply
 
    real(wp), parameter :: RAD2DEG = 57.295779513082323_wp
    real(wp), parameter :: FOURPI  = 12.566370614359172_wp
@@ -37,9 +38,6 @@ module fe_remap
       type(map_class)  :: map                 !! conservative weights src -> dst
       integer :: nlon = 0, nlat_src = 0       !! source dimensions
       integer :: nphi = 0, nlat = 0           !! target (SHTns) dimensions
-   contains
-      procedure :: init  => ll2gauss_init
-      procedure :: apply => ll2gauss_apply
    end type ll2gauss_map
 
 contains
@@ -49,7 +47,7 @@ contains
       !! [degrees, ascending] onto the SHTns Gauss grid. The target grid is built with
       !! ASCENDING latitude (south first), which coords expects; %apply flips back into
       !! the SHTns (north-first) row order.
-      class(ll2gauss_map), intent(out) :: self
+      type(ll2gauss_map), intent(out) :: self
       type(sht_grid),      intent(in)  :: sht
       real(wp),            intent(in)  :: lon_src(:)   !! source longitudes [deg]
       real(wp),            intent(in)  :: lat_src(:)   !! source latitudes  [deg]
@@ -80,7 +78,7 @@ contains
       !! Remap fsrc(nlon, nlat_src) onto fdst(nphi, nlat) in the SHTns spatial layout.
       !! conserve_mass (default .false.): rescale fdst so its SHTns surface integral
       !! equals the source area-integral (use for ice thickness; leave off for bed).
-      class(ll2gauss_map), intent(in)  :: self
+      type(ll2gauss_map), intent(in)  :: self
       type(sht_grid),      intent(in)  :: sht
       real(wp),            intent(in)  :: fsrc(:,:)    !! (nlon, nlat_src)
       real(wp),            intent(out) :: fdst(:,:)    !! (nphi, nlat)

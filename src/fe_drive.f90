@@ -29,7 +29,7 @@ module fe_drive
    use fe_params,    only: fe_param_class, fe_par_load, fe_par_print
    use fe_sht,       only: sht_grid
    use fe_coupling,  only: solid_earth
-   use fe_remap,     only: ll2gauss_map
+   use fe_remap,     only: ll2gauss_map, ll2gauss_init, ll2gauss_apply
    use fe_io,        only: fe_write_step
    use ncio,         only: nc_read, nc_size
    implicit none
@@ -215,7 +215,7 @@ contains
       allocate(lon_s(nlon), lat_s(nls))
       call nc_read(p%file_forcing, trim(p%name_lon), lon_s)
       call nc_read(p%file_forcing, trim(p%name_lat), lat_s)
-      call rmap%init(sht, lon_s, lat_s)
+      call ll2gauss_init(rmap, sht, lon_s, lat_s)
    end subroutine build_remap
 
    subroutine read_ice(p, rmap, sht, remap, k, src, h_ice)
@@ -231,7 +231,7 @@ contains
       if (remap) then
          call nc_read(p%file_forcing, trim(p%name_ice), src, &
                       start=[1,1,k], count=[size(src,1), size(src,2), 1])
-         call rmap%apply(sht, src, h_ice, conserve_mass=.true.)
+         call ll2gauss_apply(rmap, sht, src, h_ice, conserve_mass=.true.)
       else
          call nc_read(p%file_forcing, trim(p%name_ice), h_ice, &
                       start=[1,1,k], count=[size(h_ice,1), size(h_ice,2), 1])
@@ -252,7 +252,7 @@ contains
       if (remap) then
          call nc_read(p%file_forcing, trim(p%name_zbed_eq), src, &
                       start=[1,1,k], count=[size(src,1), size(src,2), 1])
-         call rmap%apply(sht, src, z_bed, conserve_mass=.false.)
+         call ll2gauss_apply(rmap, sht, src, z_bed, conserve_mass=.false.)
       else
          if (len_trim(p%file_ref) == 0) error stop 'fastearth_run: file_ref not set (remap_input=.false.)'
          call nc_read(p%file_ref, trim(p%name_zbed_eq), z_bed)
@@ -320,8 +320,8 @@ contains
          call nc_read(file, trim(p%name_lon), lon_s)
          call nc_read(file, trim(p%name_lat), lat_s)
          call nc_read(file, trim(varname),    buf)
-         call m%init(sht, lon_s, lat_s)
-         call m%apply(sht, buf, field, conserve_mass=conserve)
+         call ll2gauss_init(m, sht, lon_s, lat_s)
+         call ll2gauss_apply(m, sht, buf, field, conserve_mass=conserve)
       else
          call nc_read(file, trim(varname), field)
       end if

@@ -14,7 +14,7 @@ program fastearth_remap
    use fe_precision, only: wp
    use fe_params,    only: fe_param_class, fe_par_load
    use fe_sht,       only: sht_grid
-   use fe_remap,     only: ll2gauss_map
+   use fe_remap,     only: ll2gauss_map, ll2gauss_init, ll2gauss_apply
    use ncio,         only: nc_read, nc_size, nc_create, nc_write_dim, nc_write
    implicit none
 
@@ -53,7 +53,7 @@ program fastearth_remap
    allocate(lon_s(nlon), lat_s(nls))
    call nc_read(p%file_forcing, trim(p%name_lon), lon_s)
    call nc_read(p%file_forcing, trim(p%name_lat), lat_s)
-   call rmap%init(sht, lon_s, lat_s)
+   call ll2gauss_init(rmap, sht, lon_s, lat_s)
 
    nt = nc_size(p%file_forcing, trim(p%name_time))
    allocate(tyr(nt));  call nc_read(p%file_forcing, trim(p%name_time), tyr)
@@ -74,7 +74,7 @@ program fastearth_remap
    do k = 1, nt
       call nc_read(p%file_forcing, trim(p%name_ice), src, &
                    start=[1,1,k], count=[nlon, nls, 1])
-      call rmap%apply(sht, src, gauss, conserve_mass=.true.)
+      call ll2gauss_apply(rmap, sht, src, gauss, conserve_mass=.true.)
       call nc_write(p%file_out, trim(p%name_ice), gauss, dim1="lon", dim2="lat", &
                     dim3="time", start=[1,1,k], count=[np, nl, 1])
    end do
