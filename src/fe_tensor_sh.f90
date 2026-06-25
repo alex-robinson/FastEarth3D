@@ -29,7 +29,9 @@ module fe_tensor_sh
    !! the round trip and the physical ∫τ:ε double-dot vs the B13 norms (test_tensor_sh).
    use fe_precision, only: wp
    use fe_constants, only: pi
-   use fe_sht,       only: sht_grid
+   use fe_sht,       only: sht_grid, sht_free_cfg
+   use, intrinsic :: iso_c_binding, only: c_ptr
+   !$ use omp_lib
    implicit none
    private
 
@@ -47,11 +49,17 @@ module fe_tensor_sh
       real(wp), allocatable :: cott(:)   !! (nlat) cotθ at the Gauss latitudes
       real(wp), allocatable :: invsin(:) !! (nlat) 1/sinθ
       real(wp), allocatable :: n6(:)     !! (0:lmax) spin-2 channel norm S₆*S₆ (calibrated)
+      ! Per-thread SHTns config pool: one config per OpenMP thread, so the element
+      ! loop in the memory advance can run the dyadic transforms concurrently (a
+      ! single config is NOT safe for concurrent calls). Built serially at init.
+      type(c_ptr), allocatable :: pool(:)   !! (npool) independent configs
+      integer :: npool = 0
    contains
-      procedure :: init     => tensor_sh_init
-      procedure :: synth    => tensor_sh_synth      !! coeffs c(TLAM,nlm) -> dyad(nphi,nlat,6)
-      procedure :: analysis => tensor_sh_analysis   !! dyad(nphi,nlat,6) -> coeffs
-      procedure :: destroy  => tensor_sh_destroy
+      procedure :: init       => tensor_sh_init
+      procedure :: synth      => tensor_sh_synth    !! coeffs c(TLAM,nlm) -> dyad(nphi,nlat,6)
+      procedure :: analysis   => tensor_sh_analysis !! dyad(nphi,nlat,6) -> coeffs
+      procedure :: thread_cfg => tensor_sh_thread_cfg  !! this thread's config (for the advance loop)
+      procedure :: destroy    => tensor_sh_destroy
    end type tensor_sh
 
 contains
@@ -106,49 +114,71 @@ contains
          end do
       end if
       deallocate(c6, craw, tt, pp, tp)
+
+      ! Per-thread config pool (serial creation — FFTW planning is not thread-safe).
+      self%npool = 1
+      !$ self%npool = omp_get_max_threads()
+      allocate(self%pool(self%npool))
+      do i = 1, self%npool
+         self%pool(i) = sht%clone_cfg()
+      end do
    end subroutine tensor_sh_init
+
+   function tensor_sh_thread_cfg(self) result(cfg)
+      !! The calling OpenMP thread's private SHTns config (1-based pool index =
+      !! thread id + 1). Serial / non-OpenMP builds always get pool(1).
+      class(tensor_sh), intent(in) :: self
+      type(c_ptr) :: cfg
+      integer :: tid
+      tid = 0
+      !$ tid = omp_get_thread_num()
+      cfg = self%pool(tid+1)
+   end function tensor_sh_thread_cfg
 
    ! --- synthesis -------------------------------------------------------------
 
-   subroutine tensor_sh_synth(self, sht, c, dyad)
+   subroutine tensor_sh_synth(self, sht, c, dyad, cfg)
       !! Tensor-harmonic coefficients c(λ=1..4, nlm) → six dyadic grid fields.
+      !! Pass `cfg` (a thread_cfg handle) to transform on a thread-local config.
       class(tensor_sh), intent(in)  :: self
       type(sht_grid),   intent(in)  :: sht
       complex(wp),      intent(in)  :: c(:,:)        !! (TLAM, nlm)
       real(wp),         intent(out) :: dyad(:,:,:)   !! (nphi, nlat, 6)
+      type(c_ptr), intent(in), optional :: cfg
       complex(wp) :: scaled(self%nlm)
       real(wp)    :: tr(self%nphi,self%nlat), sg(self%nphi,self%nlat), sh(self%nphi,self%nlat)
       real(wp)    :: tt(self%nphi,self%nlat), pp(self%nphi,self%nlat), tp(self%nphi,self%nlat)
       ! rr (Z¹) and rθ,rφ (Z²)
-      call sht%synthesis(c(1,:), dyad(:,:,DY_RR))
-      call sht%sph_synthesis(c(2,:), dyad(:,:,DY_RT), dyad(:,:,DY_RP))
+      call sht%synthesis(c(1,:), dyad(:,:,DY_RR), cfg)
+      call sht%sph_synthesis(c(2,:), dyad(:,:,DY_RT), dyad(:,:,DY_RP), cfg)
       ! trace from Z⁵:  −l(l+1) Y
       scaled = -self%llp1*c(3,:)
-      call sht%synthesis(scaled, tr)
+      call sht%synthesis(scaled, tr, cfg)
       ! spin-2 from Z⁶
-      call spin2_synth(self, sht, c(4,:), tt, pp, tp)   ! tt=Sg, pp=−Sg, tp=4Sh
+      call spin2_synth(self, sht, c(4,:), tt, pp, tp, cfg)   ! tt=Sg, pp=−Sg, tp=4Sh
       sg = tt
       dyad(:,:,DY_TT) = tr + sg
       dyad(:,:,DY_PP) = tr - sg
       dyad(:,:,DY_TP) = tp
    end subroutine tensor_sh_synth
 
-   subroutine spin2_synth(self, sht, c6, tt, pp, tp)
+   subroutine spin2_synth(self, sht, c6, tt, pp, tp, cfg)
       !! Z⁶ contribution: tt=Sg=Σc6·G, pp=−Sg, tp=4Sh=4Σc6·H, via the exact grid
       !! identities (no recurrence, no re-analysis).
       class(tensor_sh), intent(in)  :: self
       type(sht_grid),   intent(in)  :: sht
       complex(wp),      intent(in)  :: c6(:)
       real(wp),         intent(out) :: tt(:,:), pp(:,:), tp(:,:)
+      type(c_ptr), intent(in), optional :: cfg
       complex(wp) :: imc(self%nlm)
       real(wp) :: f(self%nphi,self%nlat), gt(self%nphi,self%nlat), gp(self%nphi,self%nlat)
       real(wp) :: gtf(self%nphi,self%nlat), gpf(self%nphi,self%nlat)
       real(wp) :: lap(self%nphi,self%nlat), sg(self%nphi,self%nlat), sh(self%nphi,self%nlat)
       imc = cmplx(0.0_wp, real(self%mord,wp), wp)*c6            ! im·c6  (= ∂_φ on coeffs)
-      call sht%synthesis(c6, f)
-      call sht%sph_synthesis(c6, gt, gp)                        ! g_θ, g_φ
-      call sht%sph_synthesis(imc, gtf, gpf)                     ! ∂_φ g_θ, ∂_φ g_φ
-      call sht%synthesis(cmplx(-self%llp1,0.0_wp,wp)*c6, lap)   ! ∇₁²f = −l(l+1)f
+      call sht%synthesis(c6, f, cfg)
+      call sht%sph_synthesis(c6, gt, gp, cfg)                   ! g_θ, g_φ
+      call sht%sph_synthesis(imc, gtf, gpf, cfg)                ! ∂_φ g_θ, ∂_φ g_φ
+      call sht%synthesis(cmplx(-self%llp1,0.0_wp,wp)*c6, lap, cfg)   ! ∇₁²f = −l(l+1)f
       ! Sg = ∇₁²f − 2cotθ g_θ − 2(1/sinθ)∂_φ g_φ ;  Sh = (1/sinθ)∂_φ g_θ − cotθ g_φ
       sg = lap - 2.0_wp*byprof(gt, self%cott) - 2.0_wp*byprof(gpf, self%invsin)
       sh =        byprof(gtf, self%invsin)     -        byprof(gp,  self%cott)
@@ -157,23 +187,25 @@ contains
 
    ! --- analysis --------------------------------------------------------------
 
-   subroutine tensor_sh_analysis(self, sht, dyad, c)
+   subroutine tensor_sh_analysis(self, sht, dyad, c, cfg)
       !! Six dyadic grid fields → tensor-harmonic coefficients.
+      !! Pass `cfg` (a thread_cfg handle) to transform on a thread-local config.
       class(tensor_sh), intent(in)    :: self
       type(sht_grid),   intent(in)    :: sht
       real(wp),         intent(inout) :: dyad(:,:,:)   !! (nphi,nlat,6); SHTns overwrites
       complex(wp),      intent(out)   :: c(:,:)        !! (TLAM, nlm)
+      type(c_ptr), intent(in), optional :: cfg
       complex(wp) :: craw(self%nlm)
       real(wp)    :: vt(self%nphi,self%nlat), vp(self%nphi,self%nlat)
       integer     :: lm
       ! rr (Z¹): scalar analysis (inverse of synth)
-      call sht%analysis(dyad(:,:,DY_RR), c(1,:))
+      call sht%analysis(dyad(:,:,DY_RR), c(1,:), cfg)
       ! rθ,rφ (Z²): spheroidal vector analysis (inverse of sph_synth)
       vt = dyad(:,:,DY_RT);  vp = dyad(:,:,DY_RP)
-      call sht%sph_analysis(vt, vp, c(2,:))
+      call sht%sph_analysis(vt, vp, c(2,:), cfg)
       ! trace (Z⁵): analysis(θθ+φφ) = −2 l(l+1) T⁵
       vt = dyad(:,:,DY_TT) + dyad(:,:,DY_PP)
-      call sht%analysis(vt, craw)
+      call sht%analysis(vt, craw, cfg)
       do lm = 1, self%nlm
          if (self%llp1(lm) > 0.0_wp) then
             c(3,lm) = craw(lm)/(-2.0_wp*self%llp1(lm))
@@ -182,7 +214,7 @@ contains
          end if
       end do
       ! spin-2 (Z⁶): adjoint of spin2_synth, normalised by the calibrated per-degree n6
-      call spin2_adjoint(self, sht, dyad(:,:,DY_TT), dyad(:,:,DY_PP), dyad(:,:,DY_TP), craw)
+      call spin2_adjoint(self, sht, dyad(:,:,DY_TT), dyad(:,:,DY_PP), dyad(:,:,DY_TP), craw, cfg)
       do lm = 1, self%nlm
          if (self%n6(self%ldeg(lm)) /= 0.0_wp) then
             c(4,lm) = craw(lm)/self%n6(self%ldeg(lm))
@@ -192,7 +224,7 @@ contains
       end do
    end subroutine tensor_sh_analysis
 
-   subroutine spin2_adjoint(self, sht, dtt, dpp, dtp, craw)
+   subroutine spin2_adjoint(self, sht, dtt, dpp, dtp, craw, cfg)
       !! Unnormalised adjoint of spin2_synth: craw = S_g*(θθ−φφ) + S_h*(θφ), where the
       !! *-operators swap each forward op (synth↔analysis, grid-multiply self-adjoint,
       !! im → −im). The ∫dΩ adjoint of synth IS analysis (= Wᵀ·synth), so this returns
@@ -202,6 +234,7 @@ contains
       type(sht_grid),   intent(in)    :: sht
       real(wp),         intent(inout) :: dtt(:,:), dpp(:,:), dtp(:,:)
       complex(wp),      intent(out)   :: craw(:)
+      type(c_ptr), intent(in), optional :: cfg
       complex(wp) :: q(self%nlm), s(self%nlm)
       real(wp)    :: D(self%nphi,self%nlat), vt(self%nphi,self%nlat), vp(self%nphi,self%nlat), z(self%nphi,self%nlat)
       ! The ∫dΩ adjoint of the spheroidal vector synth (SHsph_to_spat) is l(l+1)·
@@ -211,20 +244,20 @@ contains
       D = dtt - dpp                                   ! θθ−φφ feeds S_g*
       z = 0.0_wp
       ! S_g*(D) = −l(l+1)·analysis(D) − 2·sphAnal(cotθ·D,0).S + 2 im·sphAnal(0,(1/sinθ)·D).S
-      call sht%analysis(D, q);   craw = -self%llp1*q
+      call sht%analysis(D, q, cfg);   craw = -self%llp1*q
       vt = byprof(D, self%cott);  vp = z
-      call sht%sph_analysis(vt, vp, s);   craw = craw - 2.0_wp*self%llp1*s
+      call sht%sph_analysis(vt, vp, s, cfg);   craw = craw - 2.0_wp*self%llp1*s
       vt = z;  vp = byprof(D, self%invsin)
-      call sht%sph_analysis(vt, vp, s)
+      call sht%sph_analysis(vt, vp, s, cfg)
       craw = craw + 2.0_wp*cmplx(0.0_wp, real(self%mord,wp), wp)*self%llp1*s
       ! θφ contributes ∫T:Z⁶|_θφ = a_θφ·4H·(e_θφ:e_θφ=½) = 2 a_θφ H ⇒ 2·S_h*(θφ), with
       ! S_h*(D) = −im·llp1·sphAnal((1/sinθ)D,0).S − llp1·sphAnal(0,cotθ·D).S.
       D = dtp
       vt = byprof(D, self%invsin);  vp = z
-      call sht%sph_analysis(vt, vp, s)
+      call sht%sph_analysis(vt, vp, s, cfg)
       craw = craw - 2.0_wp*cmplx(0.0_wp, real(self%mord,wp), wp)*self%llp1*s
       vt = z;  vp = byprof(D, self%cott)
-      call sht%sph_analysis(vt, vp, s)
+      call sht%sph_analysis(vt, vp, s, cfg)
       craw = craw - 2.0_wp*self%llp1*s
    end subroutine spin2_adjoint
 
@@ -242,10 +275,15 @@ contains
 
    subroutine tensor_sh_destroy(self)
       class(tensor_sh), intent(inout) :: self
+      integer :: i
       if (allocated(self%ldeg))   deallocate(self%ldeg, self%mord, self%llp1)
       if (allocated(self%cott))   deallocate(self%cott, self%invsin)
       if (allocated(self%n6))     deallocate(self%n6)
-      self%lmax = 0;  self%nlm = 0
+      if (allocated(self%pool)) then
+         do i = 1, self%npool;  call sht_free_cfg(self%pool(i));  end do
+         deallocate(self%pool)
+      end if
+      self%npool = 0;  self%lmax = 0;  self%nlm = 0
    end subroutine tensor_sh_destroy
 
 end module fe_tensor_sh

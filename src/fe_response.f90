@@ -32,6 +32,7 @@ module fe_response
                                  SCHEME_FE, SCHEME_TRAP
    use fe_sht,             only: sht_grid
    use fe_tensor_sh,       only: tensor_sh, TLAM
+   use, intrinsic :: iso_c_binding, only: c_ptr
    implicit none
    private
 
@@ -795,30 +796,39 @@ contains
       !! Gauss grid via their six dyadic components (fe_tensor_sh; Martinec 2000
       !! B10/B11), advanced pointwise with the lateral field M(θ,φ), and projected
       !! back. With a uniform M the dyadic round trip is the identity ⇒ reduces to the
-      !! 1-D advance. Serial over elements: the dyadic transforms call SHTns, which is
-      !! not safe for concurrent calls on one config (per-thread configs would restore
-      !! the element-loop parallelism — a perf follow-up).
+      !! 1-D advance.
+      !!
+      !! Parallel over elements: each element's dyadic transforms run on the calling
+      !! thread's PRIVATE SHTns config (tsh%thread_cfg) — a single config is not safe
+      !! for concurrent calls, but the per-thread pool (fe_tensor_sh) makes the element
+      !! loop embarrassingly parallel. Per-thread coeff/grid scratch is allocated
+      !! inside the region; the memory writeback touches a distinct element per
+      !! iteration, so there is no race.
       class(ve_response), intent(inout) :: self
       type(sht_grid),     intent(in)    :: sht
       complex(wp),        intent(in)    :: sigma_lm(:)
       complex(wp), allocatable :: cma(:,:), cmb(:,:), cmc(:,:)   ! memory coeffs (TLAM,nlm)
       complex(wp), allocatable :: cea(:,:), ceb(:,:), cec(:,:)   ! strain coeffs (TLAM,nlm)
       real(wp),    allocatable :: dtau(:,:,:), deps(:,:,:)        ! (nphi,nlat,6)
+      type(c_ptr) :: cfg
       integer  :: e, k, lm
 
+      !$omp parallel default(shared) &
+      !$omp   private(e, k, lm, cma, cmb, cmc, cea, ceb, cec, dtau, deps, cfg)
       allocate(cma(TLAM,sht%nlm), cmb(TLAM,sht%nlm), cmc(TLAM,sht%nlm))
       allocate(cea(TLAM,sht%nlm), ceb(TLAM,sht%nlm), cec(TLAM,sht%nlm))
       allocate(dtau(sht%nphi,sht%nlat,6), deps(sht%nphi,sht%nlat,6))
-
+      cfg = self%tsh%thread_cfg()                          ! this thread's private config
+      !$omp do schedule(dynamic)
       do e = 1, self%ne
          ! Elastic/fluid elements carry no Maxwell memory, so the advance
          ! τ⁺=(1−0)τ−0 is the identity — skip them exactly (no transforms). NB the
          ! elastic lithosphere has MkPerDt≈3e-298 (η=huge), not 0, so key off the flag.
          if (.not. self%is_maxwell(e)) cycle
          call gather_tensor_coeffs(self, sigma_lm, e, cma, cmb, cmc, cea, ceb, cec)
-         call advance_shape_tensor(self, sht, e, cma, cea, dtau, deps)
-         call advance_shape_tensor(self, sht, e, cmb, ceb, dtau, deps)
-         call advance_shape_tensor(self, sht, e, cmc, cec, dtau, deps)
+         call advance_shape_tensor(self, sht, e, cma, cea, dtau, deps, cfg)
+         call advance_shape_tensor(self, sht, e, cmb, ceb, dtau, deps, cfg)
+         call advance_shape_tensor(self, sht, e, cmc, cec, dtau, deps, cfg)
          do k = 1, self%nk                                 ! write updated memory back
             lm = self%k2lm(k)
             self%Are(:,e,k) = real(cma(:,lm), wp);  self%Aim(:,e,k) = aimag(cma(:,lm))
@@ -826,8 +836,9 @@ contains
             self%Cre(:,e,k) = real(cmc(:,lm), wp);  self%Cim(:,e,k) = aimag(cmc(:,lm))
          end do
       end do
-
+      !$omp end do
       deallocate(cma, cmb, cmc, cea, ceb, cec, dtau, deps)
+      !$omp end parallel
    end subroutine advance_memory_3d
 
    subroutine gather_tensor_coeffs(self, sigma_lm, e, cma, cmb, cmc, cea, ceb, cec)
@@ -863,26 +874,28 @@ contains
       end do
    end subroutine gather_tensor_coeffs
 
-   subroutine advance_shape_tensor(self, sht, e, c, eps, dtau, deps)
+   subroutine advance_shape_tensor(self, sht, e, c, eps, dtau, deps, cfg)
       !! One radial shape-coefficient: reconstruct the memory τ and strain ε tensors
       !! on the grid (six dyadic components), apply τ⁺=(1−M)τ−2μM·ε pointwise per
       !! component with the lateral field M(θ,φ)=Mk3(:,:,e), and project τ⁺ back. c is
-      !! updated in place; dtau/deps are caller-provided scratch (nphi,nlat,6).
+      !! updated in place; dtau/deps are caller-provided scratch (nphi,nlat,6); cfg is
+      !! the calling thread's private SHTns config (for the parallel element loop).
       class(ve_response), intent(in)    :: self
       type(sht_grid),     intent(in)    :: sht
       integer,            intent(in)    :: e
       complex(wp),        intent(inout) :: c(:,:)
       complex(wp),        intent(in)    :: eps(:,:)
       real(wp),           intent(inout) :: dtau(:,:,:), deps(:,:,:)
+      type(c_ptr),        intent(in)    :: cfg
       real(wp) :: twoMu
       integer  :: p
       twoMu = 2.0_wp*self%mu(e)
-      call self%tsh%synth(sht, c,   dtau)
-      call self%tsh%synth(sht, eps, deps)
+      call self%tsh%synth(sht, c,   dtau, cfg)
+      call self%tsh%synth(sht, eps, deps, cfg)
       do p = 1, 6
          dtau(:,:,p) = (1.0_wp - self%Mk3(:,:,e))*dtau(:,:,p) - twoMu*self%Mk3(:,:,e)*deps(:,:,p)
       end do
-      call self%tsh%analysis(sht, dtau, c)
+      call self%tsh%analysis(sht, dtau, c, cfg)
    end subroutine advance_shape_tensor
 
    subroutine snapshot_taun(self)

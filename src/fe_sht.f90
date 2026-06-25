@@ -35,6 +35,7 @@ module fe_sht
       integer :: nlat = 0              !! # latitudes (Gauss nodes)
       integer :: nphi = 0              !! # longitudes
       integer :: nlm  = 0              !! # spectral coefficients (m >= 0)
+      real(c_double) :: eps = 1.0e-10_c_double  !! polar-optimisation threshold (for clone_cfg)
       ! Physical grid geometry, cached at init. Spatial fields are (nphi, nlat).
       real(wp), allocatable :: colat(:)    !! colatitude of each latitude row [rad] (nlat)
       real(wp), allocatable :: lon(:)      !! longitude of each column [rad] (nphi)
@@ -50,7 +51,10 @@ module fe_sht
       procedure :: eval_point_horiz => sht_grid_eval_point_horiz !! ∇₁ field at (colat,lon)
       procedure :: lmidx     => sht_grid_lmidx       !! (l,m) -> coefficient index
       procedure :: surface_integral => sht_grid_surface_integral  !! ∫ f dΩ
+      procedure :: clone_cfg => sht_grid_clone_cfg   !! fresh independent SHTns config (per-thread)
    end type sht_grid
+
+   public :: sht_free_cfg   !! release a config from clone_cfg
 
 contains
 
@@ -68,7 +72,7 @@ contains
 
       type(shtns_info), pointer :: info
       real(c_double) :: eps
-      integer :: mmax_, mres_, nlat_, nphi_, norm, layout
+      integer :: mmax_, mres_, nlat_, nphi_
 
       mres_ = 1;          if (present(mres)) mres_ = mres
       mmax_ = lmax/mres_; if (present(mmax)) mmax_ = mmax
@@ -78,15 +82,12 @@ contains
       nlat_ = lmax + 2;       if (present(nlat)) nlat_ = nlat
       nphi_ = 2*(mmax_ + 1);  if (present(nphi)) nphi_ = nphi
 
-      norm   = SHT_ORTHONORMAL + SHT_NO_CS_PHASE
-      layout = SHT_GAUSS + SHT_PHI_CONTIGUOUS
-
       self%lmax = lmax
       self%mmax = mmax_
       self%mres = mres_
+      self%eps  = eps
 
-      self%cfg = shtns_create(lmax, mmax_, mres_, norm)
-      call shtns_set_grid(self%cfg, layout, eps, nlat_, nphi_)
+      self%cfg = create_cfg(lmax, mmax_, mres_, nlat_, nphi_, eps)
 
       ! Read back the realized grid sizes from the SHTns info struct.
       call c_f_pointer(self%cfg, info)
@@ -125,6 +126,38 @@ contains
       deallocate(wts_half)
    end subroutine cache_geometry
 
+   function create_cfg(lmax, mmax, mres, nlat, nphi, eps) result(cfg)
+      !! Create one SHTns config + Gauss grid with this project's fixed conventions
+      !! (orthonormal, no Condon-Shortley phase; Gauss grid, phi-contiguous). Used
+      !! both for the primary config and for the per-thread clones (clone_cfg).
+      integer,        intent(in) :: lmax, mmax, mres, nlat, nphi
+      real(c_double), intent(in) :: eps
+      type(c_ptr) :: cfg
+      integer :: norm, layout
+      norm   = SHT_ORTHONORMAL + SHT_NO_CS_PHASE
+      layout = SHT_GAUSS + SHT_PHI_CONTIGUOUS
+      cfg = shtns_create(lmax, mmax, mres, norm)
+      call shtns_set_grid(cfg, layout, eps, nlat, nphi)
+   end function create_cfg
+
+   function sht_grid_clone_cfg(self) result(cfg)
+      !! Return a fresh, independent SHTns config identical to self%cfg. Distinct
+      !! configs can run transforms concurrently (one config is NOT safe for
+      !! concurrent calls), so a thread pool of these enables OpenMP over the
+      !! element loop in the tensor-SH memory advance. Creation is NOT thread-safe
+      !! (FFTW planning) — build the pool serially before any parallel region.
+      class(sht_grid), intent(in) :: self
+      type(c_ptr) :: cfg
+      cfg = create_cfg(self%lmax, self%mmax, self%mres, self%nlat, self%nphi, self%eps)
+   end function sht_grid_clone_cfg
+
+   subroutine sht_free_cfg(cfg)
+      !! Release a config obtained from clone_cfg.
+      type(c_ptr), intent(inout) :: cfg
+      if (c_associated(cfg)) call shtns_destroy(cfg)
+      cfg = c_null_ptr
+   end subroutine sht_free_cfg
+
    subroutine sht_grid_destroy(self)
       !! Release the SHTns configuration and cached geometry.
       class(sht_grid), intent(inout) :: self
@@ -156,24 +189,31 @@ contains
       end do
    end function sht_grid_surface_integral
 
-   subroutine sht_grid_synthesis(self, slm, sh)
-      !! Spectral coefficients -> spatial field, shape (nphi, nlat).
+   subroutine sht_grid_synthesis(self, slm, sh, cfg)
+      !! Spectral coefficients -> spatial field, shape (nphi, nlat). Pass `cfg` (a
+      !! clone_cfg handle) to run on a thread-local config instead of self%cfg.
       class(sht_grid), intent(in)  :: self
       complex(wp),     intent(in)  :: slm(:)   !! length nlm
       real(wp),        intent(out) :: sh(:,:)  !! (nphi, nlat)
-      call SH_to_spat(self%cfg, slm, sh)
+      type(c_ptr), intent(in), optional :: cfg
+      type(c_ptr) :: c
+      c = self%cfg;  if (present(cfg)) c = cfg
+      call SH_to_spat(c, slm, sh)
    end subroutine sht_grid_synthesis
 
-   subroutine sht_grid_analysis(self, sh, slm)
+   subroutine sht_grid_analysis(self, sh, slm, cfg)
       !! Spatial field -> spectral coefficients.
       !! NB: SHTns overwrites the input spatial array, hence intent(inout).
       class(sht_grid), intent(in)    :: self
       real(wp),        intent(inout) :: sh(:,:)  !! (nphi, nlat)
       complex(wp),     intent(out)   :: slm(:)   !! length nlm
-      call spat_to_SH(self%cfg, sh, slm)
+      type(c_ptr), intent(in), optional :: cfg
+      type(c_ptr) :: c
+      c = self%cfg;  if (present(cfg)) c = cfg
+      call spat_to_SH(c, sh, slm)
    end subroutine sht_grid_analysis
 
-   subroutine sht_grid_sph_synthesis(self, slm, vth, vph)
+   subroutine sht_grid_sph_synthesis(self, slm, vth, vph, cfg)
       !! Spheroidal (gradient) vector synthesis: from the spectral coefficients slm
       !! of a scalar potential, return the surface-gradient field on the grid,
       !!   vth = ∂_θ(Σ slm Y_lm),   vph = (1/sinθ) ∂_φ(Σ slm Y_lm),
@@ -182,18 +222,24 @@ contains
       class(sht_grid), intent(in)  :: self
       complex(wp),     intent(in)  :: slm(:)      !! length nlm
       real(wp),        intent(out) :: vth(:,:), vph(:,:)  !! (nphi, nlat)
-      call SHsph_to_spat(self%cfg, slm, vth, vph)
+      type(c_ptr), intent(in), optional :: cfg
+      type(c_ptr) :: c
+      c = self%cfg;  if (present(cfg)) c = cfg
+      call SHsph_to_spat(c, slm, vth, vph)
    end subroutine sht_grid_sph_synthesis
 
-   subroutine sht_grid_sph_analysis(self, vth, vph, slm)
+   subroutine sht_grid_sph_analysis(self, vth, vph, slm, cfg)
       !! Spheroidal vector analysis — the inverse/adjoint of sph_synthesis: from a
       !! horizontal field (vth,vph) recover the spheroidal potential coefficients slm
       !! (the toroidal part is discarded). NB: SHTns overwrites the inputs.
       class(sht_grid), intent(in)    :: self
       real(wp),        intent(inout) :: vth(:,:), vph(:,:)  !! (nphi, nlat)
       complex(wp),     intent(out)   :: slm(:)              !! length nlm
+      type(c_ptr), intent(in), optional :: cfg
       complex(wp) :: tlm(self%nlm)
-      call spat_to_SHsphtor(self%cfg, vth, vph, slm, tlm)
+      type(c_ptr) :: c
+      c = self%cfg;  if (present(cfg)) c = cfg
+      call spat_to_SHsphtor(c, vth, vph, slm, tlm)
    end subroutine sht_grid_sph_analysis
 
    subroutine sht_grid_eval_point(self, f_lm, colat, lon, val)
