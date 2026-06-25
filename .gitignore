@@ -22,3 +22,6 @@
 *.pdf
 doc/refs/
 .claude/worktrees/
+
+# experiment run outputs (configs may be tracked under examples/)
+/runs/

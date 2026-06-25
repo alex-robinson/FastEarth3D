@@ -56,6 +56,7 @@ $(objdir)/fe_io.o:               $(objdir)/fe_coupling.o $(objdir)/fe_response.o
                                  $(objdir)/fe_constants.o
 $(objdir)/fe_drive.o:            $(objdir)/fe_params.o $(objdir)/fe_sht.o \
                                  $(objdir)/fe_coupling.o $(objdir)/fe_io.o \
+                                 $(objdir)/fe_remap.o \
                                  $(objdir)/fe_constants.o $(objdir)/fe_precision.o
 # The umbrella module re-exports every component, so it compiles last.
 $(objdir)/fastearth3d.o:         $(objdir)/fe_coupling.o $(objdir)/fe_io.o \

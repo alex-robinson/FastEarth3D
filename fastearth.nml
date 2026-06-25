@@ -71,4 +71,13 @@
     file_out      = "fastearth_out.nc" ! step output
     time_init     = -1.0e30            ! [years] (<= forcing start => full range)
     time_end      =  1.0e30            ! [years] (>= forcing end   => full range)
+
+    ! --- online remap + reference / equilibration (program fastearth) -
+    remap_input   = .true.   ! .true.: forcing is lon-lat, remap to Gauss on the fly
+                             ! .false.: forcing already on the Gauss grid (legacy)
+    name_lon      = "lon"    ! source longitude axis variable [deg] (remap mode)
+    name_lat      = "lat"    ! source latitude  axis variable [deg] (remap mode)
+    i_eq          = 1        ! 0: start slice is the relaxed reference (memory 0)
+                             ! 1: ice-free reference, spin up under start ice (dt_equil)
+    dt_equil      = 50000.0  ! [years] spin-up hold per equilibration pass (i_eq=1)
 /

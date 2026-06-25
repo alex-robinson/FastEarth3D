@@ -77,6 +77,8 @@ program test_drive
    write(u,'(a)')    '    file_ref     = "'//REF//'"'
    write(u,'(a)')    '    file_forcing = "'//FORCE//'"'
    write(u,'(a)')    '    file_out     = "'//OUT//'"'
+   write(u,'(a)')    "    remap_input  = .false."   ! input already on the Gauss grid
+   write(u,'(a)')    "    i_eq         = 0"         ! start slice (ice-free) is the reference
    write(u,'(a)')    "/"
    close(u)
 

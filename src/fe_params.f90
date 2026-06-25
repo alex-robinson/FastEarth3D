@@ -75,11 +75,23 @@ module fe_params
       character(len=64)  :: name_ice     = "h_ice"       !! ice variable in file_forcing
       character(len=64)  :: name_time    = "time"        !! time axis [years] in file_forcing
       character(len=512) :: file_ref     = ""            !! reference state (z_bed_eq, h_ice_ref)
-      character(len=64)  :: name_zbed_eq = "z_bed_eq"
-      character(len=64)  :: name_hice_ref = "h_ice_ref"
+      character(len=64)  :: name_zbed_eq = "z_bed_eq"    !! bed var (legacy 2D ref; or 3D bed in forcing)
+      character(len=64)  :: name_hice_ref = "h_ice_ref"  !! ice var (legacy 2D ref)
       character(len=512) :: file_out     = "fastearth_out.nc"  !! step output
       real(wp) :: time_init = -huge(1.0_wp)  !! start time [years] (default: first forcing slice)
       real(wp) :: time_end  =  huge(1.0_wp)  !! end time   [years] (default: last  forcing slice)
+      ! --- online lon-lat -> Gauss remap of the forcing (program fastearth) ------
+      logical  :: remap_input = .true.   !! .true.: forcing is lon-lat, remap on the fly;
+                                         !! .false.: forcing already on the Gauss grid (legacy)
+      character(len=64) :: name_lon = "lon"  !! source longitude axis variable [deg]
+      character(len=64) :: name_lat = "lat"  !! source latitude  axis variable [deg]
+      ! --- reference / equilibration (program fastearth) ------------------------
+      ! In remap mode the reference is taken from the forcing file at the first
+      ! in-window slice: bed = name_zbed_eq, ice = name_ice (both 3D lon-lat-time).
+      integer  :: i_eq     = 1           !! 0: declare the start slice as equilibrium (memory 0);
+                                         !! 1: ice-free reference, spin up under the start load
+                                         !! (paleotopo fixed point) for dt_equil, then transient.
+      real(wp) :: dt_equil = 50.0_wp*kyr !! spin-up hold per equilibration pass [s] (i_eq=1)
    end type fe_param_class
 
 contains
@@ -98,6 +110,7 @@ contains
       character(len=64)  :: g
       character(len=512) :: df
       real(wp) :: dt_couple_yr, dt_init_yr, dt_min_yr, dt_max_yr, time_init_yr, time_end_yr
+      real(wp) :: dt_equil_yr
 
       g  = "fe3d";      if (present(group))         g  = group
       df = filename;    if (present(defaults_file)) df = defaults_file
@@ -172,6 +185,15 @@ contains
       call nml_read(filename, g, "time_end",      time_end_yr,     defaults_file=df)
       p%time_init = time_init_yr*sec_per_year
       p%time_end  = time_end_yr *sec_per_year
+
+      ! remap + equilibration
+      call nml_read(filename, g, "remap_input",   p%remap_input,   defaults_file=df)
+      call nml_read(filename, g, "name_lon",      p%name_lon,      defaults_file=df)
+      call nml_read(filename, g, "name_lat",      p%name_lat,      defaults_file=df)
+      call nml_read(filename, g, "i_eq",          p%i_eq,          defaults_file=df)
+      dt_equil_yr = p%dt_equil/sec_per_year
+      call nml_read(filename, g, "dt_equil",      dt_equil_yr,     defaults_file=df)
+      p%dt_equil = dt_equil_yr*sec_per_year
    end subroutine fe_par_load
 
    subroutine fe_par_print(p, unit)
@@ -200,6 +222,8 @@ contains
            '   dt:     couple=', p%dt_couple, '  init=', p%dt_init, &
            '  rtol=', p%rtol, '  atol=', p%atol
       write(u,'(a,l1)')       '   rotation: ', p%rotation
+      write(u,'(a,l1,a,i0,a,es9.2)') '   forcing: remap_input=', p%remap_input, &
+           '  i_eq=', p%i_eq, '  dt_equil=', p%dt_equil
    end subroutine fe_par_print
 
 end module fe_params
