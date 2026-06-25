@@ -24,7 +24,6 @@ module fe_coupling
    !! ice load drive the deformation and sea-level change incrementally. The
    !! reference topography z_bed_eq doubles as the SLE's reference topo0.
    use fe_precision,       only: wp
-   use fe_constants,       only: rho_ice, rho_water
    use fe_params,          only: fe_param_class
    use fe_sht,             only: sht_grid
    use fe_earth_structure, only: earth_model, build_earth
@@ -157,6 +156,7 @@ contains
       real(wp),           intent(in)    :: h_ice(:,:)   !! grounded-ice thickness [m]
       real(wp),           intent(in)    :: dt           !! interval to advance [s]
       real(wp), allocatable :: load(:,:)
+      complex(wp), allocatable :: sigma_lm(:)
       real(wp) :: t0, t1, dt_sub
       integer  :: n_sub, k
 
@@ -172,14 +172,18 @@ contains
          ! the polar motion from the end-of-interval load and commit.
          call self%rotation%begin_step(self%sht, dt)
          call self%rotation%s_rot(self%sht, self%s_rot)
+         allocate(sigma_lm(self%sht%nlm))
          call self%stepper%advance(self%sht, self%resp, self%sle, self%z_bed_eq, &
                                    self%h_ice, h_ice, self%h_ice_ref, t0, t1, &
-                                   self%rsl, self%C, s_rot=self%s_rot)
+                                   self%rsl, self%C, s_rot=self%s_rot, sigma_out=sigma_lm)
          ! Advance the polar motion to the end of the interval under the end-of-interval
          ! load (held). The explicit-FE rotation channels are sub-stepped to respect the
          ! Maxwell stability ceiling dt_fe_max (a coupling interval far exceeds it).
-         load = rho_ice*(h_ice - self%h_ice_ref)*(1.0_wp - self%C) &
-              + rho_water*(self%C*self%rsl)            ! end-of-interval surface load
+         ! The load is the SLE's own converged end-of-interval surface load (synthesized
+         ! from its spectral form) -- the exact load the response saw, including the
+         ! subgrid sloping-coast term -- rather than a re-derivation here.
+         allocate(load(self%sht%nphi, self%sht%nlat))
+         call self%sht%synthesis(sigma_lm, load)
          n_sub  = max(1, ceiling(dt/self%rotation%dt_fe_max))
          dt_sub = dt/real(n_sub, wp)
          do k = 1, n_sub

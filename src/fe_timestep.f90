@@ -51,7 +51,7 @@ module fe_timestep
 contains
 
    subroutine stepper_advance(self, sht, resp, sle, topo0, ice0, ice1, ice_ref, &
-                              t0, t1, rsl, C, s_rot)
+                              t0, t1, rsl, C, s_rot, sigma_out)
       !! Advance the VE+SLE model from t0 to t1 with the ice load interpolated linearly
       !! ice(t) = ice0 + (t−t0)/(t1−t0)·(ice1−ice0), absolute; the SLE load is
       !! d_ice(t) = ice(t) − ice_ref (total change from the reference state). Δt is
@@ -71,16 +71,25 @@ contains
       !! held constant across this interval and added to the SLE geometry (the caller
       !! runs the rotation ↔ SLE coupling at the interval level). Absent ⇒ no rotation.
       real(wp),       optional, intent(in)    :: s_rot(:,:)
+      !! sigma_out (optional): the SLE's converged spectral surface mass load [kg m⁻²]
+      !! at t1 — the SAME load the response saw, including the subgrid sloping-coast
+      !! term. Returned so the caller drives the end-of-interval rotational feedback
+      !! from it rather than re-deriving the load (fe_coupling). The final SLE solve of
+      !! the run lands on the accepted state at t1, so its load is the t1 load.
+      complex(wp),    optional, intent(out)   :: sigma_out(:)
 
       type(sle_result)      :: res
       real(wp), allocatable :: rsl_n(:,:), ice_now(:,:), dice_now(:,:)
-      complex(wp), allocatable :: sig0(:)
+      complex(wp), allocatable :: sig0(:), sig_last(:)
       real(wp) :: t, dt, err_inf, tau_inf, errsc, fac, ricfac, expo, span
       integer  :: p, np, nl
       logical  :: at_floor, accept
 
       span = t1 - t0
       if (span <= 0.0_wp) return
+      ! Capture the converged load on every SLE solve; after the run sig_last holds
+      ! the final (t1) solve's load. Always allocated so solve_at can fill it cheaply.
+      allocate(sig_last(sht%nlm))
       self%worst_mass_resid = 0.0_wp             ! per-interval diagnostic (reset each advance)
       if (.not. scheme_is_implicit(resp%scheme)) then
          ! 1st-order / explicit response carries no step-doubling order signal here;
@@ -90,9 +99,11 @@ contains
          allocate(ice_now(np,nl), dice_now(np,nl))
          call resp%set_dt(span)
          ice_now = ice1;  dice_now = ice1 - ice_ref
-         call sle%solve(sht, resp, dice_now, ice_now, topo0, rsl, C, res, s_rot=s_rot)
+         call sle%solve(sht, resp, dice_now, ice_now, topo0, rsl, C, res, &
+                        sigma_lm=sig_last, s_rot=s_rot)
          self%worst_mass_resid = max(self%worst_mass_resid, res%mass_resid)
          self%n_accept = self%n_accept + 1
+         if (present(sigma_out)) sigma_out = sig_last
          return
       end if
 
@@ -157,6 +168,9 @@ contains
          self%dt_try = min(self%dt_max, max(self%dt_min, dt*fac))
       end do
 
+      ! sig_last now holds the final accepted step's fine sub-step at t1.
+      if (present(sigma_out)) sigma_out = sig_last
+
    contains
 
       subroutine solve_at(t_eval)
@@ -168,7 +182,8 @@ contains
          ice_now  = ice0 + frac*(ice1 - ice0)
          dice_now = ice_now - ice_ref
          self%n_solve = self%n_solve + 1
-         call sle%solve(sht, resp, dice_now, ice_now, topo0, rsl, C, res, s_rot=s_rot)
+         call sle%solve(sht, resp, dice_now, ice_now, topo0, rsl, C, res, &
+                        sigma_lm=sig_last, s_rot=s_rot)
          self%worst_mass_resid = max(self%worst_mass_resid, res%mass_resid)
       end subroutine solve_at
 
