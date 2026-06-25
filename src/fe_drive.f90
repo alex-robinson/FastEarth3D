@@ -262,10 +262,12 @@ contains
    end subroutine setup_reference
 
    subroutine read_ref2d(p, sht, remap, file, varname, conserve, field)
-      !! Read a 2D lon-lat reference field and remap it onto the Gauss grid with a
-      !! per-file conservative map (built from the file's own axes). conserve=.true.
-      !! for mass-bearing fields (ice). In legacy (remap=.false.) mode the field is
-      !! assumed already on the Gauss grid and read directly.
+      !! Read a 2D lon-lat reference field onto the Gauss grid. If the file is
+      !! already on the Gauss grid (its lon/lat dims match nphi/nlat — e.g. a
+      !! prebaked reference from fastearth_mkref) it is read directly, skipping the
+      !! expensive conservative-map build. Otherwise a per-file conservative map is
+      !! built from the file's own axes and applied (conserve=.true. for ice). In
+      !! legacy (remap=.false.) mode the field is read directly.
       type(fe_param_class), intent(in)  :: p
       type(sht_grid),       intent(in)  :: sht
       logical,              intent(in)  :: remap, conserve
@@ -278,6 +280,10 @@ contains
          error stop 'fastearth_run: reference file not set for the chosen i_eq'
       if (remap) then
          nlon = nc_size(file, trim(p%name_lon));  nls = nc_size(file, trim(p%name_lat))
+         if (nlon == sht%nphi .and. nls == sht%nlat) then
+            call nc_read(file, trim(varname), field)   ! already on the Gauss grid
+            return
+         end if
          allocate(lon_s(nlon), lat_s(nls), buf(nlon, nls))
          call nc_read(file, trim(p%name_lon), lon_s)
          call nc_read(file, trim(p%name_lat), lat_s)

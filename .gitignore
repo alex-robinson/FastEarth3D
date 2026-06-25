@@ -25,3 +25,6 @@ doc/refs/
 
 # experiment run outputs (configs may be tracked under examples/)
 /runs/
+
+# Prebake run logs (regenerable)
+data/reference/*.log

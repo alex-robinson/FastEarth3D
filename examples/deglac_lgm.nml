@@ -4,23 +4,27 @@
     ! input geo_ice_tarasov_deglac.nc, 1 deg lon x 0.5 deg lat, -26 ka -> 0,
     ! 100-yr slices). Sparse config -- overlay on fastearth.nml:
     !     bin/fastearth.x examples/deglac_lgm.nml fastearth.nml
-    ! Online conservative remap onto the Gauss grid (no preprocessing).
-    ! i_eq=1: ice-free reference, spin up to LGM equilibrium (paleotopo fixed
-    ! point) under the 26 ka ice, then deglaciate.
+    ! Forcing is remapped online; the present-day reference (RTopo) is read
+    ! from a prebaked Gauss-grid file (data/reference/, see fastearth_mkref),
+    ! so i_eq=1 measures rsl against today (rsl ~ 0 at present day).
     ! ====================================================================
-    lmax         = 128
+    lmax         = 64
     scheme       = "trap"
 
     file_forcing = "/Users/alrobi001/models/climber-x/input/geo_ice_tarasov_deglac.nc"
     name_ice     = "ice_thickness"
-    name_zbed_eq = "bedrock_topography"
     name_time    = "time"
     name_lon     = "lon"
     name_lat     = "lat"
     remap_input  = .true.
 
-    i_eq         = 1
-    dt_equil     = 50000.0     ! [years] spin-up hold per equilibration pass
+    i_eq           = 1
+    z_bed_ref_file = "data/reference/rtopo_gauss_l64.nc"
+    h_ice_ref_file = "data/reference/rtopo_gauss_l64.nc"
+    name_z_bed_ref = "bedrock_topography"
+    name_h_ice_ref = "ice_thickness"
+    dt_equil       = 0.0       ! >0 to enable the ice-free paleotopo spin-up instead
+
     dt_couple    = 100.0       ! [years] slice spacing
 
     file_out     = "runs/deglac_lgm/out.nc"

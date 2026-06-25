@@ -1,0 +1,10 @@
+&fe3d
+    lmax           = 32
+    z_bed_ref_file = "data/reference/rtopo_0.5deg.nc"
+    h_ice_ref_file = "data/reference/rtopo_0.5deg.nc"
+    name_z_bed_ref = "bedrock_topography"
+    name_h_ice_ref = "ice_thickness"
+    name_lon       = "lon"
+    name_lat       = "lat"
+    file_out       = "data/reference/rtopo_gauss_l32.nc"
+/
