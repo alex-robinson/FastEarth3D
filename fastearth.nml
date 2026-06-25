@@ -57,6 +57,7 @@
     safety     = 0.9
     grow_max   = 5.0
     shrink_min = 0.2
+    cfl        = 1.0           ! explicit (fe) sub-step Maxwell-number ceiling M=mu*dt/eta
 
     ! --- rotational feedback (fe_rotation) ----------------------------
     rotation = .false.         ! TPW feedback (off until validated)

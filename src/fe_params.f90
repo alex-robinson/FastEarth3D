@@ -66,6 +66,7 @@ module fe_params
       real(wp) :: safety    = 0.9_wp         !! step-size safety factor
       real(wp) :: grow_max  = 5.0_wp         !! max Δt growth per accepted step
       real(wp) :: shrink_min = 0.2_wp        !! min Δt shrink per step
+      real(wp) :: cfl       = 1.0_wp         !! explicit (fe) sub-step Maxwell-number ceiling M=μΔt/η
 
       ! --- rotational feedback (fe_rotation) ------------------------------------
       logical  :: rotation = .false.         !! TPW feedback (off until validated)
@@ -198,6 +199,7 @@ contains
       call nml_read(filename, g, "safety",     p%safety,     defaults_file=df)
       call nml_read(filename, g, "grow_max",   p%grow_max,   defaults_file=df)
       call nml_read(filename, g, "shrink_min", p%shrink_min, defaults_file=df)
+      call nml_read(filename, g, "cfl",        p%cfl,        defaults_file=df)
 
       ! rotation
       call nml_read(filename, g, "rotation",   p%rotation,   defaults_file=df)
@@ -270,9 +272,9 @@ contains
       write(u,'(a,i0,a,i0,a,es8.1,a,l1,a,l1)') &
            '   sle:    n_outer=', p%sle_n_outer, '  n_inner=', p%sle_n_inner, &
            '  tol=', p%sle_tol, '  fixed_ocean=', p%sle_fixed_ocean, '  subgrid=', p%sle_subgrid
-      write(u,'(a,es9.2,a,es9.2,a,es8.1,a,es8.1)') &
+      write(u,'(a,es9.2,a,es9.2,a,es8.1,a,es8.1,a,f5.2)') &
            '   dt:     couple=', p%dt_couple, '  init=', p%dt_init, &
-           '  rtol=', p%rtol, '  atol=', p%atol
+           '  rtol=', p%rtol, '  atol=', p%atol, '  cfl=', p%cfl
       write(u,'(a,l1)')       '   rotation: ', p%rotation
       write(u,'(a,l1,a,i0,a,es9.2)') '   forcing: remap_input=', p%remap_input, &
            '  i_eq=', p%i_eq, '  dt_equil=', p%dt_equil

@@ -237,6 +237,10 @@ module fe_response
       procedure :: restore_state     => ve_response_restore_state
       procedure :: stash_coarse      => ve_response_stash_coarse
       procedure :: coarse_fine_error => ve_response_coarse_fine_error
+      ! Explicit-stepper primitives (fe_timestep): the Maxwell-rate stability ceiling
+      ! and the reactive-guard memory ∞-norm.
+      procedure :: max_rate          => ve_response_max_rate
+      procedure :: memory_norm       => ve_response_memory_norm
       procedure :: destroy     => ve_response_destroy
    end type ve_response
 
@@ -1233,6 +1237,42 @@ contains
                     maxval(abs(self%Bre)), maxval(abs(self%Bim)), &
                     maxval(abs(self%Cre)), maxval(abs(self%Cim)))
    end subroutine ve_response_coarse_fine_error
+
+   real(wp) function ve_response_max_rate(self) result(rate)
+      !! Largest Maxwell rate μ/η over all memory-carrying elements (and, with
+      !! lateral viscosity, over the 3D grid). Sets the explicit forward-Euler
+      !! stability ceiling Δt ≤ cfl/rate (M = μΔt/η ≤ cfl). rate = 0 ⇒ no Maxwell
+      !! memory (purely elastic) ⇒ the caller may take a single step.
+      class(ve_response), intent(in) :: self
+      rate = 0.0_wp
+      if (allocated(self%MkPerDt)) rate = maxval(self%MkPerDt)
+      if (self%lat_visc .and. allocated(self%MkPerDt3)) &
+         rate = max(rate, maxval(self%MkPerDt3))
+   end function ve_response_max_rate
+
+   real(wp) function ve_response_memory_norm(self) result(nrm)
+      !! ∞-norm of the viscoelastic memory stress over all coefficients/elements —
+      !! the reactive-guard observable for the explicit stepper (a non-finite or
+      !! runaway value flags an unstable sub-step). Explicit loop to avoid the
+      !! abs(slice) heap temporaries maxval would create on these (NLAM,ne,nk) arrays.
+      class(ve_response), intent(in) :: self
+      integer  :: k, e, m
+      real(wp) :: v
+      nrm = 0.0_wp
+      if (.not. allocated(self%Are)) return
+      !$omp parallel do default(shared) private(k,e,m,v) reduction(max:nrm) schedule(static)
+      do k = 1, self%nk
+         do e = 1, self%ne
+            do m = 1, NLAM
+               v = max(abs(self%Are(m,e,k)), abs(self%Aim(m,e,k)), &
+                       abs(self%Bre(m,e,k)), abs(self%Bim(m,e,k)), &
+                       abs(self%Cre(m,e,k)), abs(self%Cim(m,e,k)))
+               if (v > nrm) nrm = v
+            end do
+         end do
+      end do
+      !$omp end parallel do
+   end function ve_response_memory_norm
 
    subroutine ensure_commit_scratch(self)
       !! Lazily allocate the implicit-commit scratch (the τ_n memory snapshot doubles

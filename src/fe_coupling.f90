@@ -133,6 +133,7 @@ contains
       self%stepper%shrink_min = p%shrink_min
       self%stepper%dt_min     = p%dt_min
       self%stepper%dt_max     = p%dt_max
+      self%stepper%cfl        = p%cfl           ! explicit (fe) sub-step Maxwell ceiling
       self%stepper%dt_try     = p%dt_init       ! 0 => first guess = whole interval
 
       ! rotational feedback (degree-2 Liouville polar motion → centrifugal potential

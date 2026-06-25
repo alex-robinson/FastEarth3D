@@ -4,16 +4,26 @@ module fe_timestep
    !! (fixed sub-steps, adaptive, …) behind a common driver.
    !!
    !! `adaptive_stepper` advances the VE+SLE model across a coupling interval [t0,t1]
-   !! with the ice load LINEARLY INTERPOLATED between its endpoints, choosing Δt by a
-   !! step-doubling local-error estimate on the Maxwell memory (the §3c adaptive-dt
-   !! controller). It rests on the 2nd-order trapezoidal memory rule (SCHEME_TRAP) +
-   !! the SLE↔memory co-convergence (§3c 3b): each candidate step is taken once at Δt
-   !! and once as two Δt/2 sub-steps; the coarse/fine memory difference is the local
-   !! error a controller needs (∝ Δt^{p+1}). A rejected step rolls the model state back
-   !! (resp%save_state/restore_state) and retries smaller; an accepted step keeps the
-   !! more accurate fine state and grows Δt. Δt enters the response only through
-   !! Mk = (μ/η)Δt, so changing it (resp%set_dt) is a cheap rescale — no operator
-   !! re-factorization (the band LU is Δt-independent).
+   !! with the ice load LINEARLY INTERPOLATED between its endpoints. It carries TWO
+   !! sub-stepping strategies, chosen by the memory scheme:
+   !!
+   !!  • EXPLICIT (forward-Euler, the default): the 1st-order memory has no embedded
+   !!    error signal, so Δt is set a priori by the Maxwell STABILITY ceiling
+   !!    Δt ≤ cfl/max(μ/η) and the interval is divided into equal sub-steps (this is
+   !!    how VILMA marches its explicit memory). A cheap reactive guard rolls a sub-step
+   !!    back (resp%save_state/restore_state) and halves it if the memory ∞-norm goes
+   !!    non-finite or grows past guard_growth× — a safety net for a stiffer-than-
+   !!    estimated structure that normally never fires.
+   !!
+   !!  • IMPLICIT (trapezoidal, SCHEME_TRAP): Δt is chosen by a step-doubling local-error
+   !!    estimate on the memory (the §3c adaptive-dt controller) + the SLE↔memory
+   !!    co-convergence (§3c 3b): each candidate step is taken once at Δt and once as two
+   !!    Δt/2 sub-steps; the coarse/fine difference is the local error (∝ Δt^{p+1}). A
+   !!    rejected step rolls back and retries smaller; an accepted step keeps the fine
+   !!    state and grows Δt.
+   !!
+   !! Δt enters the response only through Mk = (μ/η)Δt, so changing it (resp%set_dt) is a
+   !! cheap rescale — no operator re-factorization (the band LU is Δt-independent).
    use fe_precision,    only: wp
    use fe_sht,          only: sht_grid
    use fe_response,     only: ve_response
@@ -37,6 +47,17 @@ module fe_timestep
                                           !! accepted even if over tolerance (no infinite
                                           !! subdivision) and tallied in n_floor
       real(wp) :: dt_max    = huge(1.0_wp)!! Δt ceiling
+      !! Explicit (forward-Euler) sub-stepping. The 1st-order memory carries no
+      !! embedded local-error signal, so Δt is set a priori by the Maxwell stability
+      !! ceiling Δt ≤ cfl/max(μ/η): the interval is split into equal sub-steps with
+      !! Maxwell number M = μΔt/η ≤ cfl. cfl = 1 matches the rotation channel's
+      !! convention (M ≤ 1, a factor-2 margin below the |1−M| = 1 stability bound).
+      real(wp) :: cfl       = 1.0_wp      !! explicit sub-step Maxwell-number ceiling
+      !! Reactive instability guard (b): a sub-step is rolled back and halved when the
+      !! memory ∞-norm is non-finite OR grows by more than guard_growth× over the step
+      !! (floor atol). A generous factor ⇒ a true safety net for a stiffer-than-
+      !! estimated structure, not an accuracy controller; it normally never fires.
+      real(wp) :: guard_growth = 1.0e3_wp !! max memory-norm growth per sub-step
       real(wp) :: dt_try    = 0.0_wp      !! next-step Δt suggestion (carried across
                                           !! intervals; 0 ⇒ first guess = whole interval)
       integer  :: n_accept  = 0           !! accepted steps (cumulative)
@@ -82,7 +103,8 @@ contains
       real(wp), allocatable :: rsl_n(:,:), ice_now(:,:), dice_now(:,:)
       complex(wp), allocatable :: sig0(:), sig_last(:)
       real(wp) :: t, dt, err_inf, tau_inf, errsc, fac, ricfac, expo, span
-      integer  :: p, np, nl
+      real(wp) :: rate, dt_stab, tau0
+      integer  :: p, np, nl, n_sub
       logical  :: at_floor, accept
 
       span = t1 - t0
@@ -92,17 +114,48 @@ contains
       allocate(sig_last(sht%nlm))
       self%worst_mass_resid = 0.0_wp             ! per-interval diagnostic (reset each advance)
       if (.not. scheme_is_implicit(resp%scheme)) then
-         ! 1st-order / explicit response carries no step-doubling order signal here;
-         ! the adaptive controller is meaningful only for the trapezoidal scheme.
-         ! Fall back to a single fixed step over the interval.
+         ! --- explicit (forward-Euler) memory: a-priori stability sub-stepping -------
+         ! The 1st-order memory carries no embedded error signal, so step-doubling is
+         ! meaningless. Instead the interval is divided into equal sub-steps sized by
+         ! the Maxwell stability ceiling Δt ≤ cfl/max(μ/η) (M = μΔt/η ≤ cfl), and a
+         ! cheap reactive guard rolls back and halves a sub-step whose memory blows up
+         ! (a safety net for a stiffer-than-estimated structure that normally never
+         ! fires). VILMA advances its explicit memory the same way (small fixed Δt).
          np = sht%nphi;  nl = sht%nlat
-         allocate(ice_now(np,nl), dice_now(np,nl))
-         call resp%set_dt(span)
-         ice_now = ice1;  dice_now = ice1 - ice_ref
-         call sle%solve(sht, resp, dice_now, ice_now, topo0, rsl, C, res, &
-                        sigma_lm=sig_last, s_rot=s_rot)
-         self%worst_mass_resid = max(self%worst_mass_resid, res%mass_resid)
-         self%n_accept = self%n_accept + 1
+         allocate(rsl_n(np,nl), ice_now(np,nl), dice_now(np,nl))
+         rate = resp%max_rate()
+         if (rate > 0.0_wp) then
+            dt_stab = self%cfl/rate                  ! M = μΔt/η ≤ cfl
+         else
+            dt_stab = span                           ! purely elastic: one step suffices
+         end if
+         dt_stab = min(dt_stab, self%dt_max)
+         if (self%dt_min > 0.0_wp) dt_stab = max(dt_stab, self%dt_min)
+         n_sub = max(1, ceiling(span/dt_stab - 1.0e-9_wp))
+         dt    = span/real(n_sub, wp)                 ! nominal (equal) sub-step
+         t = t0
+         do
+            if (t >= t1 - 1.0e-9_wp*span) exit
+            dt   = min(dt, t1 - t)
+            rsl_n = rsl
+            tau0 = resp%memory_norm()                ! entering memory ∞-norm
+            call resp%save_state()
+            call resp%set_dt(dt)
+            call solve_at(t + dt)                     ! advances memory by dt
+            err_inf = resp%memory_norm()
+            accept = (err_inf <= huge(1.0_wp)) .and. &
+                     (err_inf <= self%guard_growth*(tau0 + self%atol))
+            if (accept) then
+               t = t + dt;  self%n_accept = self%n_accept + 1
+               dt = min(span/real(n_sub, wp), 2.0_wp*dt)   ! recover toward nominal
+            else
+               call resp%restore_state();  rsl = rsl_n
+               self%n_reject = self%n_reject + 1
+               dt = 0.5_wp*dt
+               if (dt <= 1.0e-12_wp*span) error stop &
+                  'fe_timestep: explicit guard sub-step collapsed (viscosity too stiff for FE)'
+            end if
+         end do
          if (present(sigma_out)) sigma_out = sig_last
          return
       end if
