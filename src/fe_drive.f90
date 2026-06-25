@@ -62,6 +62,9 @@ contains
       real(wp) :: t0, dt
       integer  :: nt, k, k0, k1, np, nl, nlon, nls
       logical  :: remap
+      integer(kind=8) :: pc0, pc1, prate          ! PROFILE: per-step phase timers
+      real(wp) :: t_read = 0.0_wp, t_upd = 0.0_wp, t_wrt = 0.0_wp
+      integer  :: nstep = 0
 
       ! --- configuration --------------------------------------------------------
       if (present(defaults_file)) then
@@ -80,12 +83,15 @@ contains
 
       ! --- build the conservative lon-lat -> Gauss map (online remap mode) -------
       remap = p%remap_input
+      call system_clock(pc0, prate)
       if (remap) then
          call build_remap(p, sht, rmap, nlon, nls)
          allocate(src(nlon, nls))
          write(*,'(a,i0,a,i0,a,i0,a,i0,a)') ' remap: lon-lat (', nlon, 'x', nls, &
               ') -> Gauss (', np, 'x', nl, ')'
       end if
+      call system_clock(pc1)
+      write(*,'(a,f8.2,a)') ' [PROFILE setup] build_remap =', real(pc1-pc0,wp)/prate, ' s'
 
       ! --- forcing time axis (years) + window -----------------------------------
       nt = nc_size(p%file_forcing, trim(p%name_time))
@@ -100,6 +106,7 @@ contains
       call setup_reference(p, rmap, sht, remap, k0, src, ice_lgm, z_bed_eq, h_ice_ref)
 
       ! --- initialise; optional ice-free paleotopo spin-up (dt_equil>0) ---------
+      call system_clock(pc0, prate)
       if (p%dt_equil > 0.0_wp) then
          ! non-default: replace z_bed_eq with the ice-free relaxed bed (paleotopo
          ! fixed point) and leave se spun up to the start-ice equilibrium.
@@ -108,6 +115,8 @@ contains
          call se%init(p, sht, z_bed_eq, h_ice_ref)
          call se%update(ice_lgm, 0.0_wp)                        ! seed entering ice, no integration
       end if
+      call system_clock(pc1)
+      write(*,'(a,f8.2,a)') ' [PROFILE setup] se%init+visc3d+seed =', real(pc1-pc0,wp)/prate, ' s'
 
       ! 1-D/3-D layer split diagnostic: how many elements are genuinely laterally 3-D
       ! (pay the pseudo-spectral tensor-SH advance) vs collapse to the cheap 1-D path.
@@ -121,13 +130,31 @@ contains
 
       do k = k0, k1-1
          dt = (tyr(k+1) - tyr(k))*sec_per_year
+         call system_clock(pc0, prate)
          call read_ice(p, rmap, sht, remap, k+1, src, h_ice)
+         call system_clock(pc1);  t_read = t_read + real(pc1-pc0,wp)/prate
+         call system_clock(pc0)
          call se%update(h_ice, dt)
+         call system_clock(pc1);  t_upd = t_upd + real(pc1-pc0,wp)/prate
+         call system_clock(pc0)
          call fe_write_step(se, p%file_out, se%time, nms=OUT_VARS, init=.false.)
+         call system_clock(pc1);  t_wrt = t_wrt + real(pc1-pc0,wp)/prate
+         nstep = nstep + 1
          write(*,'(a,f12.2,a,es10.2,a,es9.2)') '   t=', se%time/sec_per_year, &
               ' yr   max|rsl|=', maxval(abs(se%rsl)), '   mass_resid=', se%worst_mass_resid
       end do
 
+      if (nstep > 0) write(*,'(a,i0,a,/,3(a,f8.1,a,f5.1,a,/))') &
+         ' [PROFILE] per coupling step (mean over ', nstep, ' steps):', &
+         '   read_ice (remap+IO) =', 1.0e3_wp*t_read/nstep, ' ms (', &
+            100.0_wp*t_read/(t_read+t_upd+t_wrt), ' %)', &
+         '   se%update (SLE+adv) =', 1.0e3_wp*t_upd /nstep, ' ms (', &
+            100.0_wp*t_upd /(t_read+t_upd+t_wrt), ' %)', &
+         '   fe_write_step (out) =', 1.0e3_wp*t_wrt /nstep, ' ms (', &
+            100.0_wp*t_wrt /(t_read+t_upd+t_wrt), ' %)'
+      if (nstep > 0) write(*,'(a,f7.1,a,f7.1,a)') &
+         '   sub-steps/interval: n_accept=', real(se%stepper%n_accept,wp)/nstep, &
+         '  n_solve=', real(se%stepper%n_solve,wp)/nstep, '  (per coupling step)'
       write(*,'(a,a)') ' fastearth: wrote ', trim(p%file_out)
       call se%finalize();  call sht%destroy()
    end subroutine fastearth_run

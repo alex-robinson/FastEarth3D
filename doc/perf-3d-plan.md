@@ -1,86 +1,68 @@
-# 3-D viscosity performance — profile + design (next-session pickup)
+# 3-D viscosity performance — findings
 
-Status after the VILMA-parity rework (commits `506f372..1b0463d`):
+This file originally proposed a *fused batched-transform* redesign on the premise that
+the per-element spherical-harmonic transforms dominated the 3-D memory advance. That
+premise turned out to be **wrong**. This is the corrected record.
 
-- **1-D viscosity: at/beyond VILMA parity.** Default `scheme=fe` (explicit, 1 SLE solve
-  per coupling step) + a-priori stability sub-stepping. Full LGM→present Tarasov
-  deglaciation: lmax 64 ≈ 41 s (with 3-pass spin-up), lmax 128 ≈ 53 s.
-- **3-D viscosity: still slow for a genuinely-3-D field.** The 1-D/3-D layer split
-  (`feat(3d)`) only collapses *laterally uniform* layers; a field that varies at all
-  mantle depths (Pan et al. 2022) keeps nearly every element on the pseudo-spectral path.
+## TL;DR
 
-## Profile (Pan 2022, lmax 64, openmp)
+- **Batching the dyadic transforms was rejected** — implemented and verified correct, but
+  it *regressed* the advance ~1.8× (SHTns `set_many` gives little on CPU; the assembly/
+  scratch overhead dominates at lmax 64). Reverted.
+- The 3-D per-step cost is **explicit sub-stepping × the memory advance**, not a slow
+  single transform. Output and input-remap are negligible (<1 % each).
+- We were profiling the **wrong viscosity field** (Pan 2022). The intended default is
+  **Bagge 2021, floored at log10 η = 19.5** (= VILMA's CLIMBER-X default), which is ~6×
+  cheaper and physically sane (Pan's raw min ~13.7 dex is unphysical).
+- The real wall-time killer was **`se%init` auto-tuning 8 SHTns configs (~136 s)**; fixed
+  with `SHT_QUICK_INIT` (→ ~1 s), which unblocked lmax 128.
 
-Pan et al. 2022 lateral log10(η), M3-L70-V01 radial reference, lmax 64, openmp:
+## Cost structure (measured)
 
-- `ne3d / ne` = **116 / 217** elements classified laterally 3-D. The split collapsed the
-  other 101 (elastic lithosphere, fluid core, and laterally-uniform layers) to the 1-D
-  path — so the split helps (~46 % of elements skip the transform), but a Pan-type field
-  varies across most of the mantle, so 116 still pay.
-- `se%update` per step: **1-D = 62 ms**, **3-D = 4196 ms** → ~**68× slower**.
-- The whole 3-D-vs-1-D gap is the memory advance (`advance_memory_3d`): the SLE solves and
-  band back-subs are unchanged from the 1-D path, so per-step cost ≈ 1-D cost + the
-  tensor-SH advance over the 116 3-D elements (~4.1 s of the 4.2 s).
-- Compute-bound on the transforms (CPU-saturated across cores). NOTE: a full 3-D run also
-  exposes a SEPARATE bottleneck — per-step output writes the large memory-stress arrays —
-  which inflated an earlier wall estimate; track that independently of this transform work.
+A coupling step is `se%update`, which is `stepper%advance` (fe_timestep). For the explicit
+`scheme=fe`, the interval `span` is split into `n_sub = ceil(span / (cfl/max_rate))` equal
+sub-steps; each does one SLE solve + one Maxwell memory advance. `max_rate` is set by the
+**stiffest (lowest-η) Maxwell cell**, so the viscosity floor controls `n_sub`.
 
-## Root cause — transform strategy, not the layer split
+Full-step profile (`fe_drive` PROFILE timers, 8 threads, Bagge floor 19.5, `SHT_QUICK_INIT`):
 
-`advance_memory_3d` (`fe_response.f90`) advances the Maxwell memory pointwise on the Gauss
-grid, but it issues the spherical-harmonic transforms **per element, per radial shape-
-coefficient (A,B,C), per dyadic component**:
+| | lmax 64 | lmax 128 |
+|---|---|---|
+| `se%init` (one-time) | 0.1 s | 1.2 s |
+| `build_remap` (one-time) | 7.5 s | 13.9 s |
+| **`se%update` / 100-yr step** | ~0.81 s | ~4.41 s |
+| sub-steps (`n_solve`) | 8 | 8 |
+| laterally-3-D elements | 51 / 217 | 66 / 217 |
+| `read_ice` / `fe_write_step` | 9 / 11 ms | 9 / 36 ms |
 
-```
-do e in e3d:                         ! ~ne3d elements
-  gather_tensor_coeffs(...)          ! 3 shape-coeffs × 4 strain components
-  advance_shape_tensor × 3           ! A, B, C
-     -> tensor_sh%synth (memory)     ! ~ a handful of scalar/vector SHTns calls
-     -> tensor_sh%synth (strain)     !
-     -> pointwise (1-M)τ - 2μM·ε on the grid (6 dyadic components)
-     -> tensor_sh%analysis           !
-```
+≈ 8 ms/simulated-yr (lmax 64), ≈ 44 ms/yr (lmax 128). VILMA's CLIMBER-X cadence is
+`n_year_geo = 10`, so ~1 sub-step per VILMA update (~0.5 s/update at lmax 128).
 
-So per 3-D advance ≈ `ne3d × 3 × (2 synth + 1 analysis) × ~6 scalar SHTns` ≈ **O(54·ne3d)
-scalar transforms**, each O(lmax³). The transforms dominate.
+For contrast, Pan 2022 at the same floor: `se%update` ≈ 3.9 s/step at lmax 64, `n_sub` 23,
+116/217 elements 3-D — i.e. the field choice was most of the apparent slowness.
 
-VILMA (`mod_tevolauxsub.f90: taudel2m / harsye2 / harane2m`) instead:
+## What was changed
 
-- transforms **once per 3-D layer** for the *whole* stress tensor, with **hand-fused
-  multi-field FFTs** (`cdfft13` does 26 arrays in one bit-reversal pass);
-- is OpenMP-parallel **over radial layers** `k2`;
-- carries the lateral-η update as a single pointwise grid operation per layer.
+- `fe_sht`: `SHT_QUICK_INIT` instead of `SHT_GAUSS` — skips SHTns's ~17 s/config algorithm
+  benchmark (prohibitive for the 8-config per-thread tensor-SH pool). Transforms run ~20 %
+  slower than the tuned optimum; for long production runs, add `SHT_LOAD_SAVE_CFG` to
+  `SHT_GAUSS` to recover tuned transforms with a cached, one-time init.
+- `fastearth.nml`: default 3-D field → Bagge 2021 (floored 19.5 via `visc_log10_min`).
+- `fe_drive`: coarse PROFILE timers (per-step read/update/write + `n_accept`/`n_solve`,
+  one-time `build_remap` / `se%init`).
 
-That fused, per-layer, batched-FFT structure — not the k1p/k2p split alone — is what keeps
-VILMA's 3-D at "a few seconds/year at lmax 128".
+The batched primitives (`fe_sht`/`fe_tensor_sh` `clone_cfg_batched` / `synth_batch` /
+`analysis_batch`) were fully reverted — do not re-attempt batching for CPU at these lmax.
 
-## Proposed design (to implement next session)
+## Remaining levers (if more speed is needed)
 
-Replace the per-element / per-shape-coeff transform loop with a **per-3-D-layer, batched**
-transform:
+Ordered by leverage on `se%update`:
 
-1. **Batch the components into one multi-field transform.** Synthesize all dyadic
-   components (6) × shape-coeffs (3) for a layer in a single batched `SH_to_spat`
-   call (SHTns supports many-field transforms), instead of ~18 separate calls. Same for
-   analysis. Reuse one plan/config per thread.
-2. **Loop and parallelize over 3-D layers** (not elements×coeffs), mirroring VILMA's `k2`
-   loop — one synth + pointwise η-update + analysis per layer.
-3. **Pointwise η-update stays as is** (`(1-M)τ - 2μM·ε` with the lateral M-field) — it is
-   already the cheap part.
-4. **Keep the 1-D/3-D split** in front (already merged): only the 3-D layers enter this path.
-
-Expected: collapse ~`54·ne3d` transforms to ~`(synth+analysis)·n_3d_layers` batched
-transforms — the same asymptotic work VILMA does, with the constant factor cut by batching
-and plan reuse.
-
-### Verification plan
-- Reuse `test_response_3d` (uniform field must still reduce to 1-D) + `test_visc_load`
-  (Pan 2022 finite/non-trivial) for correctness.
-- Re-profile: target 3-D `se%update` within a small factor of 1-D at lmax 64/128.
-- Run the full 3-D deglaciation (`runs/deglac_fe64_3d`, `l_visc_3d=.true.`) end-to-end.
-
-### Open questions
-- Does the current `fe_tensor_sh` API expose batched/many-field SHTns transforms, or does
-  it need extending? (Likely needs a batched synth/analysis entry point.)
-- Memory-layout: store the per-layer memory `(component, shape-coeff, lm)` contiguously so a
-  batched transform sees a single strided buffer.
+1. **Reduce `n_sub`** (the explicit-CFL multiplier). It is set by the stiffest Maxwell cell;
+   the floor (19.5) already tames it. A per-element/per-layer local sub-cycling scheme
+   (only the few stiff elements sub-step, the rest take the full Δt) would cut it further
+   without changing physics. The trapezoidal/implicit scheme is *not* the answer — measured
+   catastrophically slower here (step-doubling × Picard × heavier trap advance).
+2. **Cheaper per-advance**: skip negligible-memory coefficients in the advance (like
+   `begin_step`'s `skip_tol`).
+3. **Tuned transforms for production**: `SHT_GAUSS + SHT_LOAD_SAVE_CFG` (~20 % per-step).

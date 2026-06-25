@@ -135,7 +135,13 @@ contains
       type(c_ptr) :: cfg
       integer :: norm, layout
       norm   = SHT_ORTHONORMAL + SHT_NO_CS_PHASE
-      layout = SHT_GAUSS + SHT_PHI_CONTIGUOUS
+      ! SHT_QUICK_INIT (not SHT_GAUSS): skip SHTns's per-config algorithm auto-tuning,
+      ! which costs ~17 s/config — prohibitive for the per-thread tensor-SH pool (8
+      ! identical configs ⇒ ~136 s of init). Quick-init builds the same Gauss grid with
+      ! a default (untuned) algorithm in ~0 s; transforms run ~20% slower than the tuned
+      ! optimum. For long production runs, add SHT_LOAD_SAVE_CFG to SHT_GAUSS to recover
+      ! tuned transforms with cached (one-time) init.
+      layout = SHT_QUICK_INIT + SHT_PHI_CONTIGUOUS
       cfg = shtns_create(lmax, mmax, mres, norm)
       call shtns_set_grid(cfg, layout, eps, nlat, nphi)
    end function create_cfg
