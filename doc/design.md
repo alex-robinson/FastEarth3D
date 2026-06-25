@@ -543,3 +543,53 @@ results) for workflows that prefer it. `time_init/time_end` clip the record.
 Both modes agree on the physical bed at the LGM; they differ in the initial memory
 state, which changes the deglacial rebound — the thing `i_eq=1` gets right and the
 comparison quantifies.
+
+## 14. Next plans (forced-run roadmap) — NOT yet implemented
+
+Captured at the close of the real-forcing session (2026-06-25). Five items, in
+rough priority order.
+
+**(a) Output time units → years (all files).** The driver/`fe_io` currently write
+the `time` axis (and restart time fields) in SECONDS; `fe_params` already converts
+years→s on load. Make YEARS the default OUTPUT unit too — the inverse conversion in
+`fe_write_step` / the restart writer — so step output, time series, and restarts are
+all in years (SI stays internal). Low-risk, do first.
+
+**(b) Barystatic sea level (BSL) diagnostic.** Add BSL as an output (scalar time
+series, and optionally the uniform field). It is already in hand: the SLE computes the
+eustatic offset Δφ (`res%esl`) and the melt source `ice_int`; the barystatic value is
+`bary = −(ρ_i/ρ_w)∫ΔI dΩ / ∫C dΩ` (see `test_benchmark_sle`). Surface it through
+`fe_coupling`/`fe_io` per step. Useful both as a physical diagnostic and to audit the
+eustatic budget (see (c)).
+
+**(c) PD sea level "still negative" — reference frame, not a bug (verify).** With
+`i_eq=1` the reference is the ICE-FREE relaxed state, so `rsl` is measured relative to
+an ice-free world. At PD the SH ocean is therefore negative by ≈ the sea-level
+equivalent of present-day ice still locked up (Antarctica+Greenland, ≈ −60–65 m) plus
+the local Antarctic-load depression — EXPECTED, not an error. To get "≈0 at today"
+output **sea level as an anomaly relative to a chosen epoch** (PD/final slice, or LGM):
+add an output `rsl_anom = rsl(t) − rsl(t_ref)`. Then verify the LGM→PD change matches
+the barystatic budget from (b) (~+120–130 m global rise) — that is the real
+correctness check. Decide the canonical output reference frame and document it.
+
+**(d) Run with a loaded 3D viscosity field (driver wiring).** `fe_read_visc_3d`
+(rung 6c) already loads a lon-lat-r log10(η) field onto the Gauss grid × FE nodes;
+it is NOT yet wired into `fe_params`/`fe_drive`. Add `l_visc_3d`, `visc_3d_file` (+ the
+var/axis names) to `&fe3d` and load it in `solid_earth%init`. Target two fields:
+  - the current Pan et al. (2022) field (already used in `test_visc_load`);
+  - the CLIMBER-X production field `~/models/climber-x/input/vilma/visc3d_Bagge2021*.nc`
+    (Bagge et al. 2021; var `lgvisc(radius,lat,lon)`, 512×256×164, log10 dex). Its
+    512×256 lon-lat maps cleanly onto our lmax-128 Gauss grid (512×258).
+
+**(e) Viscosity-uncertainty sampling — `f_visc_sd`, with a RELATIVE sd.** Mirror the
+CLIMBER-X VILMA scheme (`src/geo/vilma.F90`): perturb in log10 space,
+`log10 η → log10 η + f_visc_sd·σ`, clamped to `[visc_log10_min, visc_log10_max]`.
+`f_visc_sd` is in units of standard deviation (0 = mean field, +1 = +1σ). CLIMBER-X
+uses a CONSTANT `sigma_log10_visc` (default 0.5 dex) applied uniformly — the user's
+view (and ours) is that a constant floor is the wrong default. **Improvement:** define
+σ as RELATIVE to the field, spatially variable — a parameter giving σ as a fraction of
+the mean log10 field, `σ(x) = f_visc_rel · log10 η_mean(x)` (in log10 space), so the
+perturbation tracks the viscosity structure. If the dataset ships its own uncertainty
+field, prefer that; otherwise fall back to the relative `f_visc_rel`. Params:
+`f_visc_sd`, `f_visc_rel`, `visc_log10_min/max`. Enables ensemble GIA runs sampling
+viscosity uncertainty.
