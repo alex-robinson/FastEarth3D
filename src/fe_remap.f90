@@ -18,7 +18,7 @@ module fe_remap
    !! sphere is 4*pi sr, used to convert the conserved coords-area total to steradians
    !! without needing the planet radius). Geometry fields (bed) are remapped as-is.
    use fe_precision, only: wp
-   use fe_sht,       only: sht_grid
+   use fe_sht,       only: sht_grid, sht_grid_surface_integral
    use coords,       only: grid_class, grid_init, map_class, &
                            map_init_conservative, map_field
    implicit none
@@ -107,7 +107,7 @@ contains
          ! conserved source total as a steradian integral: the map preserves
          ! sum(fsrc*src_area); convert to sr via 4*pi/total_area (full-sphere grid).
          src_int_sr = sum(fsrc * self%src%area) / sum(self%src%area) * FOURPI
-         gauss_int  = sht%surface_integral(fdst)
+         gauss_int  = sht_grid_surface_integral(sht, fdst)
          if (abs(gauss_int) > tiny(1.0_wp)) fdst = fdst * (src_int_sr/gauss_int)
       end if
    end subroutine ll2gauss_apply

@@ -18,7 +18,7 @@ program test_visc_load
    use fe_earth_structure, only: earth_model, build_M3L70V01, fe_read_visc_3d
    use fe_radial_fe,       only: radial_fe_finalize
    use fe_response,        only: ve_response
-   use fe_sht,             only: sht_grid
+   use fe_sht,             only: sht_grid, sht_grid_init
    use ncio
    implicit none
 
@@ -34,7 +34,7 @@ program test_visc_load
    logical :: ok, exists
 
    ok = .true.
-   call sht%init(LMAX, nlat=NLATF*LMAX, nphi=2*LMAX+2, mmax=LMAX)
+   call sht_grid_init(sht, LMAX, nlat=NLATF*LMAX, nphi=2*LMAX+2, mmax=LMAX)
    e = build_M3L70V01()
    call ve%init(e, sht, DT)
 

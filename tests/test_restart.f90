@@ -14,7 +14,7 @@ program test_restart
    use fe_constants,       only: kyr, pi
    use fe_params,          only: fe_param_class
    use fe_radial_fe,       only: radial_fe_finalize
-   use fe_sht,             only: sht_grid
+   use fe_sht,             only: sht_grid, sht_grid_init, sht_grid_destroy
    use fe_coupling,        only: solid_earth
    use fe_io,              only: fe_restart_write, fe_restart_read
    use ncio,               only: nc_size
@@ -32,7 +32,7 @@ program test_restart
    logical  :: ok
 
    ok = .true.
-   call sht%init(LMAX, nlat=2*LMAX, nphi=4*LMAX)
+   call sht_grid_init(sht, LMAX, nlat=2*LMAX, nphi=4*LMAX)
    allocate(z_bed_eq(sht%nphi,sht%nlat), h_ice_ref(sht%nphi,sht%nlat), &
             h_ice(sht%nphi,sht%nlat))
    call make_fields(z_bed_eq, h_ice_ref, h_ice)
@@ -88,7 +88,7 @@ program test_restart
    end if
 
    call a%finalize();  call b%finalize();  call c%finalize()
-   call sht%destroy()
+   call sht_grid_destroy(sht)
 
    write(*,'(a)') ''
    if (ok) then

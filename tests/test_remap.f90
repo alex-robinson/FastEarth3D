@@ -3,7 +3,7 @@ program test_remap
    !! orientation (the ascending<->SHTns-row flip), zonal-field accuracy, and the
    !! optional global mass-rescale (SHTns surface integral == source area integral).
    use fe_precision, only: wp
-   use fe_sht,       only: sht_grid
+   use fe_sht,       only: sht_grid, sht_grid_init, sht_grid_surface_integral, sht_grid_destroy
    use fe_remap,     only: ll2gauss_map, ll2gauss_init, ll2gauss_apply
    implicit none
 
@@ -20,7 +20,7 @@ program test_remap
    logical  :: ok
 
    ok = .true.
-   call sht%init(LMAX, nlat=2*LMAX, nphi=4*LMAX)
+   call sht_grid_init(sht, LMAX, nlat=2*LMAX, nphi=4*LMAX)
 
    allocate(lon_s(NLON), lat_s(NLAT_S))
    do i = 1, NLON;   lon_s(i) = -180.0_wp + (real(i,wp)-0.5_wp)*(360.0_wp/NLON);  end do
@@ -65,14 +65,14 @@ program test_remap
    call ll2gauss_apply(rmap, sht, fsrc, fdst, conserve_mass=.true.)
    ! source area-weighted mean and the model's gauss-weighted mean (integral/4pi)
    isrc = sum(fsrc*rmap%src%area)/sum(rmap%src%area)
-   idst = sht%surface_integral(fdst)/(16.0_wp*atan(1.0_wp))
+   idst = sht_grid_surface_integral(sht, fdst)/(16.0_wp*atan(1.0_wp))
    write(*,'(a,f12.8,a,f12.8,a,es10.2)') '   src mean=', isrc, '  gauss mean=', idst, &
         '  rel=', abs(isrc-idst)/abs(isrc)
    if (abs(isrc-idst) > 1.0e-10_wp*abs(isrc)) then
       write(*,*) 'FAIL: mass not conserved with conserve_mass'; ok = .false.
    end if
 
-   call sht%destroy()
+   call sht_grid_destroy(sht)
    if (ok) then
       write(*,'(a)') ' PASS: fe_remap conservative lon-lat -> Gauss (constant, orientation, mass)'
    else

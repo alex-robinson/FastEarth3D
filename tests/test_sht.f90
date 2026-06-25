@@ -6,7 +6,7 @@ program test_sht
    !! physics is added.
    use, intrinsic :: iso_c_binding, only: c_double
    use fe_precision, only: wp
-   use fe_sht,       only: sht_grid
+   use fe_sht,       only: sht_grid, sht_grid_init, sht_grid_lmidx, sht_grid_synthesis, sht_grid_analysis, sht_grid_surface_integral, sht_grid_destroy
    implicit none
 
    type(sht_grid) :: g
@@ -17,7 +17,7 @@ program test_sht
    logical  :: ok
 
    lmax = 24
-   call g%init(lmax, nlat=48, nphi=96)
+   call sht_grid_init(g, lmax, nlat=48, nphi=96)
    print '(a,i0,a,i0,a,i0,a,i0)', ' SHTns grid: lmax=', g%lmax, &
         '  nlat=', g%nlat, '  nphi=', g%nphi, '  nlm=', g%nlm
 
@@ -28,7 +28,7 @@ program test_sht
    slm0 = (0.0_wp, 0.0_wp)
    do l = 0, lmax
       do m = 0, l
-         lm = g%lmidx(l, m)
+         lm = sht_grid_lmidx(g, l, m)
          if (m == 0) then
             slm0(lm) = cmplx(1.0_wp/real(l+1, wp), 0.0_wp, wp)
          else
@@ -39,8 +39,8 @@ program test_sht
    end do
 
    slm = slm0
-   call g%synthesis(slm, sh)    ! spectral -> spatial
-   call g%analysis(sh, slm)     ! spatial  -> spectral (round trip)
+   call sht_grid_synthesis(g, slm, sh)    ! spectral -> spatial
+   call sht_grid_analysis(g, sh, slm)     ! spatial  -> spectral (round trip)
 
    err = maxval(abs(slm - slm0))
    tol = 1.0e-11_wp
@@ -51,16 +51,16 @@ program test_sht
 
    ! --- Quadrature: surface integral of a uniform field must give 4*pi --------
    sh   = 1.0_wp
-   area = g%surface_integral(sh)
+   area = sht_grid_surface_integral(g, sh)
    print '(a,es22.14,a,es12.4)', ' area  ∫1 dΩ          = ', area, &
         '   err = ', abs(area - fourpi)
    if (abs(area - fourpi) >= 1.0e-11_wp) ok = .false.
 
    ! --- Normalization: a unit Y00 coefficient is orthonormal, ∫ Y00^2 dΩ = 1 --
    slm = (0.0_wp, 0.0_wp)
-   slm(g%lmidx(0,0)) = (1.0_wp, 0.0_wp)
-   call g%synthesis(slm, sh)
-   integ = g%surface_integral(sh*sh)
+   slm(sht_grid_lmidx(g, 0,0)) = (1.0_wp, 0.0_wp)
+   call sht_grid_synthesis(g, slm, sh)
+   integ = sht_grid_surface_integral(g, sh*sh)
    print '(a,es22.14,a,es12.4)', ' norm  ∫ Y00^2 dΩ     = ', integ, &
         '   err = ', abs(integ - 1.0_wp)
    if (abs(integ - 1.0_wp) >= 1.0e-11_wp) ok = .false.
@@ -69,8 +69,8 @@ program test_sht
    ! Confirms orthonormal norm, no Condon-Shortley phase, and that g%colat
    ! matches the spatial grid row ordering.
    slm = (0.0_wp, 0.0_wp)
-   slm(g%lmidx(1,0)) = (1.0_wp, 0.0_wp)
-   call g%synthesis(slm, sh)
+   slm(sht_grid_lmidx(g, 1,0)) = (1.0_wp, 0.0_wp)
+   call sht_grid_synthesis(g, slm, sh)
    y10err = 0.0_wp
    do j = 1, g%nlat
       y10err = max(y10err, abs(sh(1,j) - sqrt(3.0_wp/fourpi)*cos(g%colat(j))))
@@ -78,7 +78,7 @@ program test_sht
    print '(a,es12.4)', ' Y(1,0) vs sqrt(3/4pi)cosθ max err = ', y10err
    if (y10err >= 1.0e-12_wp) ok = .false.
 
-   call g%destroy()
+   call sht_grid_destroy(g)
 
    if (ok) then
       print '(a)', ' PASS: SHTns transform, quadrature, normalization, geometry'

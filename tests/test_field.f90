@@ -3,7 +3,7 @@ program test_field
    !! field generators (fe_field), the infrastructure the Martinec-2018 SLE
    !! benchmark profiles are built on.
    use fe_precision, only: wp
-   use fe_sht,       only: sht_grid
+   use fe_sht,       only: sht_grid, sht_grid_init, sht_grid_lmidx, sht_grid_eval_point, sht_grid_synthesis, sht_grid_eval_point_horiz, sht_grid_destroy, sht_grid_surface_integral
    use fe_field,     only: spherical_cap, exp_basin, angular_distance
    implicit none
    real(wp), parameter :: pi = acos(-1.0_wp)
@@ -16,13 +16,13 @@ program test_field
    complex(wp), allocatable :: flm(:)
 
    ok = .true.
-   call sht%init(LMAX, nlat=2*LMAX, nphi=4*LMAX)
+   call sht_grid_init(sht, LMAX, nlat=2*LMAX, nphi=4*LMAX)
    allocate(f(sht%nphi,sht%nlat), g(sht%nphi,sht%nlat), flm(sht%nlm))
 
    ! --- (1) eval_point normalization: pure Y00 is constant 1/sqrt(4pi) ----------
-   flm = (0.0_wp, 0.0_wp);  flm(sht%lmidx(0,0)) = (1.0_wp, 0.0_wp)
+   flm = (0.0_wp, 0.0_wp);  flm(sht_grid_lmidx(sht, 0,0)) = (1.0_wp, 0.0_wp)
    c0  = 1.0_wp/sqrt(4.0_wp*pi)
-   call sht%eval_point(flm, 0.7_wp, 1.3_wp, v)
+   call sht_grid_eval_point(sht, flm, 0.7_wp, 1.3_wp, v)
    write(*,'(a,es12.4,a,es12.4)') ' (1) Y00 eval = ', v, '  expected ', c0
    if (abs(v - c0) > 1.0e-12_wp) then
       write(*,'(a)') '     FAIL: eval_point normalization off';  ok = .false.
@@ -30,14 +30,14 @@ program test_field
 
    ! --- (2) eval_point at grid nodes reproduces the synthesized field -----------
    flm = (0.0_wp, 0.0_wp)
-   flm(sht%lmidx(2,0)) = ( 1.5_wp,  0.0_wp)
-   flm(sht%lmidx(3,1)) = (-0.7_wp,  0.4_wp)
-   flm(sht%lmidx(5,4)) = ( 0.3_wp, -0.9_wp)
-   call sht%synthesis(flm, f)
+   flm(sht_grid_lmidx(sht, 2,0)) = ( 1.5_wp,  0.0_wp)
+   flm(sht_grid_lmidx(sht, 3,1)) = (-0.7_wp,  0.4_wp)
+   flm(sht_grid_lmidx(sht, 5,4)) = ( 0.3_wp, -0.9_wp)
+   call sht_grid_synthesis(sht, flm, f)
    err = 0.0_wp
    do j = 1, sht%nlat
       do i = 1, sht%nphi
-         call sht%eval_point(flm, sht%colat(j), sht%lon(i), v)
+         call sht_grid_eval_point(sht, flm, sht%colat(j), sht%lon(i), v)
          err = max(err, abs(v - f(i,j)))
       end do
    end do
@@ -94,16 +94,16 @@ program test_field
    block
       real(wp) :: vth, vph, fp, fm, dth, dph, hstep, colat0, lon0, sgrad_t, sgrad_p, eh
       flm = (0.0_wp, 0.0_wp)
-      flm(sht%lmidx(2,0)) = ( 1.5_wp,  0.0_wp)
-      flm(sht%lmidx(3,1)) = (-0.7_wp,  0.4_wp)
-      flm(sht%lmidx(5,4)) = ( 0.3_wp, -0.9_wp)
+      flm(sht_grid_lmidx(sht, 2,0)) = ( 1.5_wp,  0.0_wp)
+      flm(sht_grid_lmidx(sht, 3,1)) = (-0.7_wp,  0.4_wp)
+      flm(sht_grid_lmidx(sht, 5,4)) = ( 0.3_wp, -0.9_wp)
       colat0 = 1.0_wp;  lon0 = 2.0_wp;  hstep = 1.0e-4_wp   ! interior point, away from poles
-      call sht%eval_point_horiz(flm, colat0, lon0, vth, vph)
-      call sht%eval_point(flm, colat0+hstep, lon0, fp)
-      call sht%eval_point(flm, colat0-hstep, lon0, fm)
+      call sht_grid_eval_point_horiz(sht, flm, colat0, lon0, vth, vph)
+      call sht_grid_eval_point(sht, flm, colat0+hstep, lon0, fp)
+      call sht_grid_eval_point(sht, flm, colat0-hstep, lon0, fm)
       sgrad_t = (fp - fm)/(2.0_wp*hstep)                    ! ∂_θ f
-      call sht%eval_point(flm, colat0, lon0+hstep, fp)
-      call sht%eval_point(flm, colat0, lon0-hstep, fm)
+      call sht_grid_eval_point(sht, flm, colat0, lon0+hstep, fp)
+      call sht_grid_eval_point(sht, flm, colat0, lon0-hstep, fm)
       sgrad_p = (fp - fm)/(2.0_wp*hstep)/sin(colat0)        ! (1/sinθ) ∂_φ f
       dth = abs(vth - sgrad_t);  dph = abs(vph - sgrad_p)
       eh  = max(dth, dph)
@@ -120,7 +120,7 @@ program test_field
       write(*,'(a)') ' FAIL: field-infrastructure validation did not all pass'
       error stop 1
    end if
-   call sht%destroy()
+   call sht_grid_destroy(sht)
 
 contains
 
@@ -142,13 +142,13 @@ contains
       type(sht_grid) :: s2
       real(wp), allocatable :: ff(:,:)
       real(wp) :: gi, an
-      call s2%init(160, nlat=320, nphi=640)
+      call sht_grid_init(s2, 160, nlat=320, nphi=640)
       allocate(ff(s2%nphi, s2%nlat))
       call spherical_cap(s2, 0.0_wp, 0.0_wp, 10.0_wp*pi/180.0_wp, 1500.0_wp, ff)
-      gi = s2%surface_integral(ff)
+      gi = sht_grid_surface_integral(s2, ff)
       an = cap_volume_over_R2(10.0_wp*pi/180.0_wp, 1500.0_wp)
       err = abs(gi - an)/an
-      call s2%destroy()
+      call sht_grid_destroy(s2)
    end subroutine cap_mass_error
 
    real(wp) function cap_volume_over_R2(alpha, h0) result(v)

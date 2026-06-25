@@ -40,21 +40,10 @@ module fe_sht
       real(wp), allocatable :: colat(:)    !! colatitude of each latitude row [rad] (nlat)
       real(wp), allocatable :: lon(:)      !! longitude of each column [rad] (nphi)
       real(wp), allocatable :: gauss_w(:)  !! Gauss quadrature weights [-] (nlat), sum = 2
-   contains
-      procedure :: init      => sht_grid_init
-      procedure :: destroy   => sht_grid_destroy
-      procedure :: synthesis => sht_grid_synthesis   !! spectral -> spatial
-      procedure :: analysis  => sht_grid_analysis    !! spatial  -> spectral
-      procedure :: sph_synthesis => sht_grid_sph_synthesis !! spheroidal (gradient) vector synth
-      procedure :: sph_analysis  => sht_grid_sph_analysis  !! spheroidal vector analysis (inverse)
-      procedure :: eval_point => sht_grid_eval_point !! scalar field at (colat,lon)
-      procedure :: eval_point_horiz => sht_grid_eval_point_horiz !! ∇₁ field at (colat,lon)
-      procedure :: lmidx     => sht_grid_lmidx       !! (l,m) -> coefficient index
-      procedure :: surface_integral => sht_grid_surface_integral  !! ∫ f dΩ
-      procedure :: clone_cfg => sht_grid_clone_cfg   !! fresh independent SHTns config (per-thread)
    end type sht_grid
 
    public :: sht_free_cfg   !! release a config from clone_cfg
+   public :: sht_grid_init, sht_grid_destroy, sht_grid_synthesis, sht_grid_analysis, sht_grid_sph_synthesis, sht_grid_sph_analysis, sht_grid_eval_point, sht_grid_eval_point_horiz, sht_grid_lmidx, sht_grid_surface_integral, sht_grid_clone_cfg
 
 contains
 
@@ -65,7 +54,7 @@ contains
       !! Gauss quadrature (nlat >= lmax+1, nphi >= 2*mmax+1). For quadratic
       !! products (the sea-level equation's ocean-function multiply) the caller
       !! should pass a de-aliased grid: nlat ~ 3*lmax/2, nphi ~ 3*lmax.
-      class(sht_grid), intent(inout) :: self
+      type(sht_grid), intent(inout) :: self
       integer,  intent(in)           :: lmax
       integer,  intent(in), optional :: nlat, nphi, mmax, mres
       real(wp), intent(in), optional :: eps_polar
@@ -100,7 +89,7 @@ contains
 
    subroutine cache_geometry(self, info)
       !! Cache the physical grid coordinates and quadrature weights from SHTns.
-      class(sht_grid),  intent(inout) :: self
+      type(sht_grid),  intent(inout) :: self
       type(shtns_info), intent(in)    :: info
       real(c_double), pointer     :: cos_theta(:)
       real(c_double), allocatable :: wts_half(:)
@@ -152,7 +141,7 @@ contains
       !! concurrent calls), so a thread pool of these enables OpenMP over the
       !! element loop in the tensor-SH memory advance. Creation is NOT thread-safe
       !! (FFTW planning) — build the pool serially before any parallel region.
-      class(sht_grid), intent(in) :: self
+      type(sht_grid), intent(in) :: self
       type(c_ptr) :: cfg
       cfg = create_cfg(self%lmax, self%mmax, self%mres, self%nlat, self%nphi, self%eps)
    end function sht_grid_clone_cfg
@@ -166,7 +155,7 @@ contains
 
    subroutine sht_grid_destroy(self)
       !! Release the SHTns configuration and cached geometry.
-      class(sht_grid), intent(inout) :: self
+      type(sht_grid), intent(inout) :: self
       if (c_associated(self%cfg)) call shtns_destroy(self%cfg)
       self%cfg = c_null_ptr
       self%lmax = 0; self%mmax = 0; self%nlat = 0; self%nphi = 0; self%nlm = 0
@@ -180,7 +169,7 @@ contains
       !! quadrature in latitude and the uniform rule in longitude. Used for the
       !! mass/area integrals the sea-level equation depends on; for f≡1 it
       !! returns 4π.
-      class(sht_grid), intent(in) :: self
+      type(sht_grid), intent(in) :: self
       real(wp),        intent(in) :: f(:,:)   !! (nphi, nlat)
       real(wp) :: dlon, row
       integer  :: i, j
@@ -198,7 +187,7 @@ contains
    subroutine sht_grid_synthesis(self, slm, sh, cfg)
       !! Spectral coefficients -> spatial field, shape (nphi, nlat). Pass `cfg` (a
       !! clone_cfg handle) to run on a thread-local config instead of self%cfg.
-      class(sht_grid), intent(in)  :: self
+      type(sht_grid), intent(in)  :: self
       complex(wp),     intent(in)  :: slm(:)   !! length nlm
       real(wp),        intent(out) :: sh(:,:)  !! (nphi, nlat)
       type(c_ptr), intent(in), optional :: cfg
@@ -210,7 +199,7 @@ contains
    subroutine sht_grid_analysis(self, sh, slm, cfg)
       !! Spatial field -> spectral coefficients.
       !! NB: SHTns overwrites the input spatial array, hence intent(inout).
-      class(sht_grid), intent(in)    :: self
+      type(sht_grid), intent(in)    :: self
       real(wp),        intent(inout) :: sh(:,:)  !! (nphi, nlat)
       complex(wp),     intent(out)   :: slm(:)   !! length nlm
       type(c_ptr), intent(in), optional :: cfg
@@ -225,7 +214,7 @@ contains
       !!   vth = ∂_θ(Σ slm Y_lm),   vph = (1/sinθ) ∂_φ(Σ slm Y_lm),
       !! i.e. the E_lm and F_lm tensor-harmonic building blocks (Martinec 2000 B11).
       !! Used to bootstrap the tensor-SH dyadic basis (fe_tensor_sh).
-      class(sht_grid), intent(in)  :: self
+      type(sht_grid), intent(in)  :: self
       complex(wp),     intent(in)  :: slm(:)      !! length nlm
       real(wp),        intent(out) :: vth(:,:), vph(:,:)  !! (nphi, nlat)
       type(c_ptr), intent(in), optional :: cfg
@@ -238,7 +227,7 @@ contains
       !! Spheroidal vector analysis — the inverse/adjoint of sph_synthesis: from a
       !! horizontal field (vth,vph) recover the spheroidal potential coefficients slm
       !! (the toroidal part is discarded). NB: SHTns overwrites the inputs.
-      class(sht_grid), intent(in)    :: self
+      type(sht_grid), intent(in)    :: self
       real(wp),        intent(inout) :: vth(:,:), vph(:,:)  !! (nphi, nlat)
       complex(wp),     intent(out)   :: slm(:)              !! length nlm
       type(c_ptr), intent(in), optional :: cfg
@@ -254,7 +243,7 @@ contains
       !! SHqst_to_point with zero spheroidal/toroidal parts, so the normalization
       !! matches analysis/synthesis exactly. Used to sample model fields along the
       !! Martinec-2018 benchmark profiles (circles of constant lon or lat).
-      class(sht_grid), intent(in) :: self
+      type(sht_grid), intent(in) :: self
       complex(wp),     intent(in) :: f_lm(:)    !! length nlm
       real(wp),        intent(in) :: colat, lon !! [rad]
       real(wp),        intent(out):: val
@@ -272,7 +261,7 @@ contains
       !! spheroidal = s_lm. Returns vth = θ-component, vph = φ-component. Used for
       !! the horizontal-displacement (u_θ, u_φ) columns of the Martinec benchmark;
       !! s_lm = response%horizontal output (the per-degree V(a) coefficients).
-      class(sht_grid), intent(in) :: self
+      type(sht_grid), intent(in) :: self
       complex(wp),     intent(in) :: s_lm(:)    !! length nlm (spheroidal V(a))
       real(wp),        intent(in) :: colat, lon !! [rad]
       real(wp),        intent(out):: vth, vph   !! θ-, φ-components
@@ -285,7 +274,7 @@ contains
 
    integer function sht_grid_lmidx(self, l, m) result(lm)
       !! 1-based index into the spectral array for harmonic (l, m).
-      class(sht_grid), intent(in) :: self
+      type(sht_grid), intent(in) :: self
       integer,         intent(in) :: l, m
       lm = shtns_lmidx(self%cfg, l, m)
    end function sht_grid_lmidx

@@ -13,7 +13,7 @@ program test_sle
    use fe_earth_structure, only: earth_model, build_M3L70V01
    use fe_radial_fe,       only: radial_fe_finalize
    use fe_response,        only: null_response, elastic_response
-   use fe_sht,             only: sht_grid
+   use fe_sht,             only: sht_grid, sht_grid_init, sht_grid_destroy, sht_grid_surface_integral
    use fe_sle,             only: sle_solver, sle_result
    implicit none
 
@@ -25,7 +25,7 @@ program test_sle
    logical :: ok
 
    ok = .true.
-   call sht%init(LMAX, nlat=2*LMAX, nphi=4*LMAX)   ! de-aliased grid
+   call sht_grid_init(sht, LMAX, nlat=2*LMAX, nphi=4*LMAX)   ! de-aliased grid
    allocate(topo0(sht%nphi,sht%nlat), d_ice(sht%nphi,sht%nlat), &
             ice(sht%nphi,sht%nlat), S(sht%nphi,sht%nlat), C(sht%nphi,sht%nlat))
 
@@ -54,7 +54,7 @@ program test_sle
       call radial_fe_finalize()
       error stop 1
    end if
-   call sht%destroy()
+   call sht_grid_destroy(sht)
    call radial_fe_finalize()
 
 contains
@@ -89,8 +89,8 @@ contains
       call sle%solve(sht, resp, d_ice, ice, topo0, S, C, res)
 
       ! predicted uniform rise = −(ρ_i/ρ_w)∫ΔI dΩ / ∫C dΩ
-      ice_int = -(rho_ice/rho_water)*sht%surface_integral(d_ice)
-      C_int   = sht%surface_integral(C)
+      ice_int = -(rho_ice/rho_water)*sht_grid_surface_integral(sht, d_ice)
+      C_int   = sht_grid_surface_integral(sht, C)
       expect  = ice_int/C_int
 
       ! min/max of S over the ocean (C=1)

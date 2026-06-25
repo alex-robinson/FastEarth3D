@@ -18,7 +18,7 @@ program test_ve_response
    use fe_radial_fe,       only: radial_mesh, radial_fe_finalize
    use fe_viscoelastic,    only: ve_degree, SCHEME_FE, SCHEME_TRAP
    use fe_response,        only: elastic_response, ve_response
-   use fe_sht,             only: sht_grid
+   use fe_sht,             only: sht_grid, sht_grid_init, sht_grid_destroy, sht_grid_lmidx
    implicit none
 
    integer, parameter :: LMAX = 8
@@ -29,7 +29,7 @@ program test_ve_response
 
    ok = .true.
    dt = 0.02_wp*kyr                 ! 20 yr explicit step (VEGA)
-   call sht%init(LMAX, nlat=2*LMAX, nphi=4*LMAX)
+   call sht_grid_init(sht, LMAX, nlat=2*LMAX, nphi=4*LMAX)
    e = build_M3L70V01()
 
    write(*,'(a)') ' (1) elastic limit: ve_response gains == elastic_response'
@@ -60,7 +60,7 @@ program test_ve_response
       call radial_fe_finalize()
       error stop 1
    end if
-   call sht%destroy()
+   call sht_grid_destroy(sht)
    call radial_fe_finalize()
 
 contains
@@ -117,7 +117,7 @@ contains
       call ve%init(e, sht, dt)
       ve%scheme = scheme;  ve%max_couple_iter = max_iter;  ve%couple_tol = TOL
       g  = ve%g
-      lm = sht%lmidx(j, 0)
+      lm = sht_grid_lmidx(sht, j, 0)
       allocate(slm(sht%nlm), ulm(sht%nlm), nlm(sht%nlm))
       slm = (0.0_wp, 0.0_wp);  slm(lm) = cmplx(sigma, 0.0_wp, wp)
 

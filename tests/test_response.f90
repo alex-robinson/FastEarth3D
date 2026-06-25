@@ -17,7 +17,7 @@ program test_response
                                  RHEOL_ELASTIC
    use fe_radial_fe,       only: radial_fe_finalize
    use fe_response,        only: elastic_response
-   use fe_sht,             only: sht_grid
+   use fe_sht,             only: sht_grid, sht_grid_init, sht_grid_lmidx, sht_grid_destroy
    implicit none
 
    real(wp), parameter :: km = 1.0e3_wp
@@ -104,12 +104,12 @@ contains
 
       e = build_M3L70V01()
       call r%init(e, lmax=8)
-      call sht%init(8)
+      call sht_grid_init(sht, 8)
       allocate(slm(sht%nlm), ulm(sht%nlm), nlm(sht%nlm))
       slm = (0.0_wp, 0.0_wp)
 
       ! unit degree-2, order-0 surface load (1 kg m^-2)
-      lm = sht%lmidx(2, 0)
+      lm = sht_grid_lmidx(sht, 2, 0)
       slm(lm) = (1.0_wp, 0.0_wp)
       call r%apply(sht, slm, ulm, nlm)
 
@@ -134,7 +134,7 @@ contains
          ok = .false.
       end if
 
-      call r%destroy();  call sht%destroy()
+      call r%destroy();  call sht_grid_destroy(sht)
    end subroutine field_check
 
 end program test_response

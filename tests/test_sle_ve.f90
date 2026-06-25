@@ -16,7 +16,7 @@ program test_sle_ve
    use fe_earth_structure, only: earth_model, build_M3L70V01
    use fe_radial_fe,       only: radial_fe_finalize
    use fe_response,        only: ve_response
-   use fe_sht,             only: sht_grid
+   use fe_sht,             only: sht_grid, sht_grid_init, sht_grid_surface_integral, sht_grid_destroy
    use fe_sle,             only: sle_solver, sle_result
    implicit none
 
@@ -33,7 +33,7 @@ program test_sle_ve
 
    ok = .true.
    dt = 0.02_wp*kyr                                ! 20 yr step
-   call sht%init(LMAX, nlat=2*LMAX, nphi=4*LMAX)
+   call sht_grid_init(sht, LMAX, nlat=2*LMAX, nphi=4*LMAX)
    e = build_M3L70V01()
    call resp%init(e, sht, dt)
 
@@ -43,8 +43,8 @@ program test_sle_ve
    call make_fields(topo0, d_ice)
    ice = d_ice                ! cap emplaced from zero, so absolute ice = change
 
-   eust = -(rho_ice/rho_water)*sht%surface_integral(d_ice) / &
-           sht%surface_integral(merge(1.0_wp,0.0_wp, topo0 < 0.0_wp))
+   eust = -(rho_ice/rho_water)*sht_grid_surface_integral(sht, d_ice) / &
+           sht_grid_surface_integral(sht, merge(1.0_wp,0.0_wp, topo0 < 0.0_wp))
 
    write(*,'(a)') '       step    mean S (ocean) [m]   mass resid    inner'
    dmax_mass = 0.0_wp
@@ -85,10 +85,10 @@ program test_sle_ve
       write(*,'(a)') '       eustatic mean, and relaxes viscoelastically'
    else
       write(*,'(a)') ' FAIL: viscoelastic SLE validation did not all pass'
-      call resp%destroy();  call sht%destroy();  call radial_fe_finalize()
+      call resp%destroy();  call sht_grid_destroy(sht);  call radial_fe_finalize()
       error stop 1
    end if
-   call resp%destroy();  call sht%destroy();  call radial_fe_finalize()
+   call resp%destroy();  call sht_grid_destroy(sht);  call radial_fe_finalize()
 
 contains
 
@@ -109,7 +109,7 @@ contains
 
    real(wp) function ocean_mean(S, C) result(m)
       real(wp), intent(in) :: S(:,:), C(:,:)
-      m = sht%surface_integral(C*S) / sht%surface_integral(C)
+      m = sht_grid_surface_integral(sht, C*S) / sht_grid_surface_integral(sht, C)
    end function ocean_mean
 
 end program test_sle_ve

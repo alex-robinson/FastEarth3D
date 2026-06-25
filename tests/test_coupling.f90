@@ -13,7 +13,7 @@ program test_coupling
    use fe_constants,       only: kyr, pi
    use fe_params,          only: fe_param_class
    use fe_radial_fe,       only: radial_fe_finalize
-   use fe_sht,             only: sht_grid
+   use fe_sht,             only: sht_grid, sht_grid_init, sht_grid_destroy
    use fe_coupling,        only: solid_earth
    implicit none
 
@@ -28,7 +28,7 @@ program test_coupling
    logical  :: ok, monotone
 
    ok = .true.
-   call sht%init(LMAX, nlat=2*LMAX, nphi=4*LMAX)
+   call sht_grid_init(sht, LMAX, nlat=2*LMAX, nphi=4*LMAX)
 
    allocate(z_bed_eq(sht%nphi,sht%nlat), h_ice_ref(sht%nphi,sht%nlat), &
             h_ice(sht%nphi,sht%nlat))
@@ -108,7 +108,7 @@ program test_coupling
    ! centred away from the pole here.
    call rotation_check()
 
-   call sht%destroy()
+   call sht_grid_destroy(sht)
 
    write(*,'(a)') ''
    if (ok) then

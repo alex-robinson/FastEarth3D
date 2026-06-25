@@ -20,7 +20,7 @@ program test_rotation_sle
    use fe_response,        only: elastic_response
    use fe_sle,             only: sle_solver, sle_result
    use fe_rotation,        only: rotation_state
-   use fe_sht,             only: sht_grid
+   use fe_sht,             only: sht_grid, sht_grid_init, sht_grid_destroy
    implicit none
 
    real(wp), parameter :: deg = acos(-1.0_wp)/180.0_wp
@@ -44,7 +44,7 @@ program test_rotation_sle
 
    ok = .true.
    earth = build_M3L70V01()
-   call sht%init(128, nlat=256, nphi=512)
+   call sht_grid_init(sht, 128, nlat=256, nphi=512)
    call resp%init(earth, 128)
    allocate(d_ice(sht%nphi,sht%nlat), ice(sht%nphi,sht%nlat), topo0(sht%nphi,sht%nlat))
    allocate(rsl(sht%nphi,sht%nlat), rsl0(sht%nphi,sht%nlat), C(sht%nphi,sht%nlat))
@@ -152,9 +152,9 @@ program test_rotation_sle
       write(*,'(a)') '       mass, fixed point, fingerprint)'
    else
       write(*,'(a)') ' FAIL: rotation-SLE coupling did not all pass'
-      call sht%destroy();  call radial_fe_finalize();  error stop 1
+      call sht_grid_destroy(sht);  call radial_fe_finalize();  error stop 1
    end if
-   call rot%destroy();  call resp%destroy();  call sht%destroy();  call radial_fe_finalize()
+   call rot%destroy();  call resp%destroy();  call sht_grid_destroy(sht);  call radial_fe_finalize()
 
 contains
 

@@ -13,7 +13,7 @@ program fastearth_remap
    !! (fe_remap), so results are identical.
    use fe_precision, only: wp
    use fe_params,    only: fe_param_class, fe_par_load
-   use fe_sht,       only: sht_grid
+   use fe_sht,       only: sht_grid, sht_grid_init, sht_grid_destroy
    use fe_remap,     only: ll2gauss_map, ll2gauss_init, ll2gauss_apply
    use ncio,         only: nc_read, nc_size, nc_create, nc_write_dim, nc_write
    implicit none
@@ -44,7 +44,7 @@ program fastearth_remap
    ! --- Gauss grid (same defaulting as the driver) ---------------------------
    nlat = p%nlat;  if (nlat <= 0) nlat = 2*p%lmax + 2
    nphi = p%nphi;  if (nphi <= 0) nphi = 4*p%lmax
-   call sht%init(p%lmax, nlat=nlat, nphi=nphi)
+   call sht_grid_init(sht, p%lmax, nlat=nlat, nphi=nphi)
    np = sht%nphi;  nl = sht%nlat
 
    ! --- conservative map from the source axes --------------------------------
@@ -79,6 +79,6 @@ program fastearth_remap
                     dim3="time", start=[1,1,k], count=[np, nl, 1])
    end do
 
-   call sht%destroy()
+   call sht_grid_destroy(sht)
    write(*,'(a,a)') ' fastearth_remap: wrote ', trim(p%file_out)
 end program fastearth_remap

@@ -15,7 +15,7 @@ program test_rotation
    use fe_earth_structure, only: earth_model, build_M3L70V01
    use fe_radial_fe,       only: radial_fe_finalize
    use fe_rotation,        only: rotation_state
-   use fe_sht,             only: sht_grid
+   use fe_sht,             only: sht_grid, sht_grid_init, sht_grid_destroy, sht_grid_surface_integral
    implicit none
 
    real(wp), parameter :: deg = acos(-1.0_wp)/180.0_wp
@@ -41,7 +41,7 @@ program test_rotation
 
    ok = .true.
    earth = build_M3L70V01()
-   call sht%init(128, nlat=256, nphi=512)
+   call sht_grid_init(sht, 128, nlat=256, nphi=512)
    allocate(load(sht%nphi, sht%nlat))
    dt = 25.0_wp*yr
 
@@ -68,9 +68,9 @@ program test_rotation
       write(*,'(a)') '       motion (rigid inertia, secular k_s, |m(t)|) for cap + disc'
    else
       write(*,'(a)') ' FAIL: rotation validation did not all pass'
-      call sht%destroy();  call radial_fe_finalize();  error stop 1
+      call sht_grid_destroy(sht);  call radial_fe_finalize();  error stop 1
    end if
-   call sht%destroy();  call radial_fe_finalize()
+   call sht_grid_destroy(sht);  call radial_fe_finalize()
 
 contains
 
@@ -157,7 +157,7 @@ contains
             w23(ip,il) = load(ip,il)*sin(sht%colat(il))*cos(sht%colat(il))*sin(sht%lon(ip))
          end do
       end do
-      I21 = cmplx(-a**4*sht%surface_integral(w13), -a**4*sht%surface_integral(w23), wp)
+      I21 = cmplx(-a**4*sht_grid_surface_integral(sht, w13), -a**4*sht_grid_surface_integral(sht, w23), wp)
    end function inertia21
 
    integer function ref_index(tk) result(idx)

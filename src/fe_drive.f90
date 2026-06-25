@@ -27,7 +27,7 @@ module fe_drive
    use fe_precision, only: wp
    use fe_constants, only: sec_per_year
    use fe_params,    only: fe_param_class, fe_par_load, fe_par_print
-   use fe_sht,       only: sht_grid
+   use fe_sht,       only: sht_grid, sht_grid_destroy, sht_grid_surface_integral, sht_grid_init
    use fe_coupling,  only: solid_earth
    use fe_remap,     only: ll2gauss_map, ll2gauss_init, ll2gauss_apply
    use fe_io,        only: fe_write_step
@@ -156,7 +156,7 @@ contains
          '   sub-steps/interval: n_accept=', real(se%stepper%n_accept,wp)/nstep, &
          '  n_solve=', real(se%stepper%n_solve,wp)/nstep, '  (per coupling step)'
       write(*,'(a,a)') ' fastearth: wrote ', trim(p%file_out)
-      call se%finalize();  call sht%destroy()
+      call se%finalize();  call sht_grid_destroy(sht)
    end subroutine fastearth_run
 
    ! --- equilibration ----------------------------------------------------------
@@ -191,7 +191,7 @@ contains
          call se%update(ice_lgm, 0.0_wp)                 ! set entering ice = start ice
          call se%update(ice_lgm, p%dt_equil)             ! hold -> relax to equilibrium
          resid = se%z_bed - bed_target
-         rmean = sht%surface_integral(abs(resid))/fourpi
+         rmean = sht_grid_surface_integral(sht, abs(resid))/fourpi
          rmax  = maxval(abs(resid))
          write(*,'(a,i2,a,f10.4,a,f10.2,a)') '   pass ', it, ':  mean|z_bed-bed_data|=', &
               rmean, ' m   max=', rmax, ' m'
@@ -339,13 +339,13 @@ contains
       nlat = p%nlat;  if (nlat <= 0) nlat = 2*p%lmax + 2
       nphi = p%nphi;  if (nphi <= 0) nphi = 4*p%lmax
       if (p%mmax >= 0 .and. p%eps_polar > 0.0_wp) then
-         call sht%init(p%lmax, nlat=nlat, nphi=nphi, mmax=p%mmax, mres=p%mres, eps_polar=p%eps_polar)
+         call sht_grid_init(sht, p%lmax, nlat=nlat, nphi=nphi, mmax=p%mmax, mres=p%mres, eps_polar=p%eps_polar)
       else if (p%mmax >= 0) then
-         call sht%init(p%lmax, nlat=nlat, nphi=nphi, mmax=p%mmax, mres=p%mres)
+         call sht_grid_init(sht, p%lmax, nlat=nlat, nphi=nphi, mmax=p%mmax, mres=p%mres)
       else if (p%eps_polar > 0.0_wp) then
-         call sht%init(p%lmax, nlat=nlat, nphi=nphi, mres=p%mres, eps_polar=p%eps_polar)
+         call sht_grid_init(sht, p%lmax, nlat=nlat, nphi=nphi, mres=p%mres, eps_polar=p%eps_polar)
       else
-         call sht%init(p%lmax, nlat=nlat, nphi=nphi, mres=p%mres)
+         call sht_grid_init(sht, p%lmax, nlat=nlat, nphi=nphi, mres=p%mres)
       end if
    end subroutine build_grid
 

@@ -19,7 +19,7 @@ program test_response_3d
    use fe_earth_structure, only: earth_model, build_M3L70V01, RHEOL_MAXWELL
    use fe_radial_fe,       only: radial_fe_finalize
    use fe_response,        only: ve_response
-   use fe_sht,             only: sht_grid
+   use fe_sht,             only: sht_grid, sht_grid_init, sht_grid_destroy, sht_grid_lmidx
    use fe_viscoelastic,    only: SCHEME_TRAP
    implicit none
 
@@ -36,7 +36,7 @@ program test_response_3d
    ! the strain/stress tensor on the grid via the general-order dyadic transforms. A
    ! uniform M still reduces to the 1-D advance per (l,m), so this exercises the full
    ! m>0 path. nlat/nphi = 3*lmax de-alias the spin-2 (G,H) dyadic channels.
-   call sht%init(LMAX, nlat=3*LMAX, nphi=3*LMAX, mmax=LMAX)
+   call sht_grid_init(sht, LMAX, nlat=3*LMAX, nphi=3*LMAX, mmax=LMAX)
    nk1 = min(1, sht%mmax) + 1        ! degree-1 orders m=0..min(1,mmax)
    e = build_M3L70V01()
 
@@ -57,10 +57,10 @@ program test_response_3d
       write(*,'(a)') '       advance for a laterally-uniform viscosity field'
    else
       write(*,'(a)') ' FAIL: rung-6a lateral-viscosity validation did not all pass'
-      call sht%destroy();  call radial_fe_finalize()
+      call sht_grid_destroy(sht);  call radial_fe_finalize()
       error stop 1
    end if
-   call sht%destroy();  call radial_fe_finalize()
+   call sht_grid_destroy(sht);  call radial_fe_finalize()
 
 contains
 
@@ -73,7 +73,7 @@ contains
       slm = (0.0_wp, 0.0_wp)
       do l = 1, LMAX
          do m = 0, l
-            lm = sht%lmidx(l, m)
+            lm = sht_grid_lmidx(sht, l, m)
             if (m == 0) then
                slm(lm) = cmplx(1000.0_wp/real(l*l, wp), 0.0_wp, wp)
             else

@@ -27,7 +27,7 @@ module fe_sle
    !! function C from the migrated topography topo0 − S (moving shorelines).
    use fe_precision, only: wp
    use fe_constants, only: rho_ice, rho_water
-   use fe_sht,       only: sht_grid
+   use fe_sht,       only: sht_grid, sht_grid_surface_integral, sht_grid_analysis, sht_grid_synthesis
    use fe_response,  only: response_operator
    implicit none
    private
@@ -201,13 +201,13 @@ contains
             ! subsided cell as land).
             call ocean_function(topo0 - rsl, ice, C)
          end if
-         C_int = sht%surface_integral(C)
+         C_int = sht_grid_surface_integral(sht, C)
          if (C_int <= 0.0_wp) exit          ! no ocean: nothing to redistribute
 
          ! water-equivalent melt source ∝ −(ρ_i/ρ_w)∫ΔI dΩ over GROUNDED ice only:
          ! floating ice (C=1) is already in the ocean, so it does not change the
          ! ocean-water budget. Recomputed per coastline pass (grounded set shifts).
-         ice_int = -rho_ratio * sht%surface_integral(d_ice*(1.0_wp - C))
+         ice_int = -rho_ratio * sht_grid_surface_integral(sht, d_ice*(1.0_wp - C))
 
          ! Subgrid sloping-coast correction (Martinec 2018 eq 17): the ocean water
          ! column change is C·rsl − ζ⁽⁰⁾·(C − C⁽⁰⁾), not C·rsl. The −ζ⁽⁰⁾(C−C⁽⁰⁾)
@@ -218,7 +218,7 @@ contains
          ! also enters the mass balance via ζ̄⁽⁰⁾ = ∫ζ⁽⁰⁾(C−C⁽⁰⁾) (eqs 19-20).
          if (self%subgrid) then
             wcorr    = -rho_water * topo0 * (C - C0)
-            zeta_int = sht%surface_integral(topo0*(C - C0))
+            zeta_int = sht_grid_surface_integral(sht, topo0*(C - C0))
          else
             wcorr = 0.0_wp;  zeta_int = 0.0_wp
          end if
@@ -231,14 +231,14 @@ contains
             ! (C=0). Without it, ice overhanging a deep basin over-loads the bed.
             ! wcorr is the subgrid sloping-coast term (zero unless self%subgrid).
             load = rho_ice*d_ice*(1.0_wp - C) + rho_water*(C*rsl) + wcorr
-            call sht%analysis(load, load_lm)            ! analysis overwrites load
+            call sht_grid_analysis(sht, load, load_lm)            ! analysis overwrites load
             call resp%apply(sht, load_lm, u_lm, N_lm)
-            call sht%synthesis(u_lm, u)
-            call sht%synthesis(N_lm, N)
+            call sht_grid_synthesis(sht, u_lm, u)
+            call sht_grid_synthesis(sht, N_lm, N)
 
             Sraw = N - u
             if (present(s_rot)) Sraw = Sraw + s_rot     ! rotational feedback (held)
-            Cs_int = sht%surface_integral(C*Sraw)
+            Cs_int = sht_grid_surface_integral(sht, C*Sraw)
             dphi   = (ice_int - Cs_int + zeta_int)/C_int ! mass-conservation offset
             rsl_new = Sraw + dphi                        ! full field, everywhere
 
@@ -260,7 +260,7 @@ contains
       ! the report drift to the new τ_{n+1}, so the next im pass's σ-convergence and
       ! coastline migration see the advanced memory.
       load = rho_ice*d_ice*(1.0_wp - C) + rho_water*(C*rsl) + wcorr
-      call sht%analysis(load, load_lm)
+      call sht_grid_analysis(sht, load, load_lm)
       if (ronly) exit                    ! report only: do NOT advance the memory/time
       call resp%advance_endpoint(sht, load_lm)
       res%n_couple_done = im
@@ -275,7 +275,7 @@ contains
       ! diagnostics. The conserved ocean-water volume is ∫s dΩ = ∫C·rsl − ζ̄⁽⁰⁾
       ! (the subgrid sloping-coast term; ζ̄⁽⁰⁾ = 0 in the binary case), which must
       ! balance the melt source ice_int.
-      Cs_int = sht%surface_integral(C*rsl) - zeta_int
+      Cs_int = sht_grid_surface_integral(sht, C*rsl) - zeta_int
       res%ocean_frac = C_int/(16.0_wp*atan(1.0_wp))      ! ∫C dΩ / 4π
       if (abs(ice_int) > 0.0_wp) then
          res%mass_resid = abs(Cs_int - ice_int)/abs(ice_int)

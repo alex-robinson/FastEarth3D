@@ -20,7 +20,7 @@ program test_flotation
    use fe_precision, only: wp
    use fe_constants, only: rho_ice, rho_water, pi
    use fe_response,  only: null_response
-   use fe_sht,       only: sht_grid
+   use fe_sht,       only: sht_grid, sht_grid_init, sht_grid_destroy
    use fe_sle,       only: sle_solver, sle_result
    implicit none
 
@@ -36,7 +36,7 @@ program test_flotation
    logical  :: ok
 
    ok = .true.
-   call sht%init(LMAX, nlat=2*LMAX, nphi=4*LMAX)
+   call sht_grid_init(sht, LMAX, nlat=2*LMAX, nphi=4*LMAX)
    allocate(topo0(sht%nphi,sht%nlat), d_ice(sht%nphi,sht%nlat), &
             ice(sht%nphi,sht%nlat), S(sht%nphi,sht%nlat), C(sht%nphi,sht%nlat), &
             Cexpect(sht%nphi,sht%nlat))
@@ -97,10 +97,10 @@ program test_flotation
       write(*,'(a)') '       criterion is depth-dependent (D grounds, E floats)'
    else
       write(*,'(a)') ' FAIL: flotation classification incorrect'
-      call sht%destroy()
+      call sht_grid_destroy(sht)
       error stop 1
    end if
-   call sht%destroy()
+   call sht_grid_destroy(sht)
 
 contains
 

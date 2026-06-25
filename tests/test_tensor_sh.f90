@@ -11,7 +11,7 @@ program test_tensor_sh
    !!       convention-blind; this ties the bases to the validated spectral norms.
    use fe_precision, only: wp
    use fe_constants, only: pi
-   use fe_sht,       only: sht_grid
+   use fe_sht,       only: sht_grid, sht_grid_init, sht_grid_lmidx, sht_grid_destroy
    use fe_tensor_sh, only: tensor_sh, TLAM, DY_RR, DY_RT, DY_RP, DY_TT, DY_TP, DY_PP
    implicit none
 
@@ -25,7 +25,7 @@ program test_tensor_sh
    logical  :: ok
 
    ok = .true.
-   call sht%init(LMAX, nlat=4*LMAX, nphi=4*LMAX, mmax=LMAX)
+   call sht_grid_init(sht, LMAX, nlat=4*LMAX, nphi=4*LMAX, mmax=LMAX)
    call tsh%init(sht)
    allocate(c(TLAM,sht%nlm), c2(TLAM,sht%nlm), dyad(sht%nphi,sht%nlat,6))
 
@@ -34,7 +34,7 @@ program test_tensor_sh
    seed = 1;  c = (0.0_wp,0.0_wp)
    do m = 0, LMAX
       do l = m, LMAX
-         lm = sht%lmidx(l,m)
+         lm = sht_grid_lmidx(sht, l,m)
          do lam = 1, TLAM
             if (lam == 2 .and. l < 1) cycle
             if (lam == 3 .and. l < 1) cycle
@@ -71,7 +71,7 @@ program test_tensor_sh
    do m = 0, LMAX
       kap = merge(1.0_wp, 2.0_wp, m == 0)       ! m>0 modes count twice (m≥0 storage)
       do l = m, LMAX
-         lm = sht%lmidx(l,m)
+         lm = sht_grid_lmidx(sht, l,m)
          jj = real(l,wp)*real(l+1,wp)
          nrm = [ 1.0_wp, 0.5_wp*jj, 2.0_wp*jj*jj, &
                  2.0_wp*real(l-1,wp)*real(l,wp)*real(l+1,wp)*real(l+2,wp) ]
@@ -93,9 +93,9 @@ program test_tensor_sh
       write(*,'(a)') ' PASS: general-order tensor-SH dyadic transforms validated'
    else
       write(*,'(a)') ' FAIL: tensor-SH dyadic transforms did not all pass'
-      call tsh%destroy();  call sht%destroy();  error stop 1
+      call tsh%destroy();  call sht_grid_destroy(sht);  error stop 1
    end if
-   call tsh%destroy();  call sht%destroy()
+   call tsh%destroy();  call sht_grid_destroy(sht)
 
 contains
 

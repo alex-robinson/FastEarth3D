@@ -30,7 +30,7 @@ module fe_response
    use fe_viscoelastic,    only: NLAM, ve_strain_constants, dissipative_rhs, &
                                  advance_memory, strain_coeffs, scheme_is_implicit, &
                                  SCHEME_FE, SCHEME_TRAP
-   use fe_sht,             only: sht_grid
+   use fe_sht,             only: sht_grid, sht_grid_lmidx
    use fe_tensor_sh,       only: tensor_sh, TLAM
    use, intrinsic :: iso_c_binding, only: c_ptr
    implicit none
@@ -373,7 +373,7 @@ contains
       lcap = min(self%lmax, sht%lmax)
       do m = 0, sht%mmax*sht%mres, sht%mres
          do l = m, lcap
-            lm = sht%lmidx(l, m)
+            lm = sht_grid_lmidx(sht, l, m)
             u_lm(lm) = self%ugain(l) * sigma_lm(lm)
             n_lm(lm) = self%ngain(l) * sigma_lm(lm)
          end do
@@ -393,7 +393,7 @@ contains
       lcap = min(self%lmax, sht%lmax)
       do m = 0, sht%mmax*sht%mres, sht%mres
          do l = m, lcap
-            lm = sht%lmidx(l, m)
+            lm = sht_grid_lmidx(sht, l, m)
             v_lm(lm) = self%vgain(l) * sigma_lm(lm)
          end do
       end do
@@ -509,7 +509,7 @@ contains
          self%kbeg(l) = k + 1                  ! first slot of degree l (contiguous)
          do m = 0, min(l, sht%mmax*sht%mres), sht%mres
             k = k + 1
-            self%k2lm(k) = sht%lmidx(l, m)
+            self%k2lm(k) = sht_grid_lmidx(sht, l, m)
             self%kdeg(k) = l
          end do
       end do
@@ -632,7 +632,7 @@ contains
 
       u_lm = (0.0_wp,0.0_wp);  n_lm = (0.0_wp,0.0_wp)
       ! degree 0: monopole geoid, no deformation, no memory
-      lm0 = sht%lmidx(0, 0)
+      lm0 = sht_grid_lmidx(sht, 0, 0)
       u_lm(lm0) = self%gu(0)*sigma_lm(lm0)
       n_lm(lm0) = self%gn(0)*sigma_lm(lm0)
       ! degrees l>=1, in degree-grouped k order (gn(1)=0 and dFa(k)=0 give N₁≡0)

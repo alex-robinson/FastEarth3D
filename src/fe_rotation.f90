@@ -46,7 +46,7 @@ module fe_rotation
                                  idx_u, idx_v, idx_f, ndof_of
    use fe_viscoelastic,    only: NLAM, ve_strain_constants, dissipative_rhs, &
                                  advance_memory, SCHEME_FE
-   use fe_sht,             only: sht_grid
+   use fe_sht,             only: sht_grid, sht_grid_surface_integral
    implicit none
    private
 
@@ -286,8 +286,8 @@ contains
             w23(ip,il) = load(ip,il)*sc2*sin(sht%lon(ip))
          end do
       end do
-      I21 = cmplx(-a**4*sht%surface_integral(w13), &
-                  -a**4*sht%surface_integral(w23), wp)
+      I21 = cmplx(-a**4*sht_grid_surface_integral(sht, w13), &
+                  -a**4*sht_grid_surface_integral(sht, w23), wp)
    end function inertia21
 
    ! === secular (fluid) tidal Love number =====================================

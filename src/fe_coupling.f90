@@ -26,7 +26,7 @@ module fe_coupling
    use fe_precision,       only: wp
    use fe_constants,       only: rho_ice, rho_water
    use fe_params,          only: fe_param_class
-   use fe_sht,             only: sht_grid
+   use fe_sht,             only: sht_grid, sht_grid_synthesis, sht_grid_surface_integral
    use fe_earth_structure, only: earth_model, build_earth, load_visc_3d
    use fe_viscoelastic,    only: scheme_from_name
    use fe_response,        only: ve_response
@@ -200,7 +200,7 @@ contains
          ! from its spectral form) -- the exact load the response saw, including the
          ! subgrid sloping-coast term -- rather than a re-derivation here.
          allocate(load(self%sht%nphi, self%sht%nlat))
-         call self%sht%synthesis(sigma_lm, load)
+         call sht_grid_synthesis(self%sht, sigma_lm, load)
          n_sub  = max(1, ceiling(dt/self%rotation%dt_fe_max))
          dt_sub = dt/real(n_sub, wp)
          do k = 1, n_sub
@@ -229,10 +229,10 @@ contains
       !! Diagnose the barystatic sea level from the current state.
       class(solid_earth), intent(inout) :: self
       real(wp) :: c_int
-      c_int = self%sht%surface_integral(self%C)
+      c_int = sht_grid_surface_integral(self%sht, self%C)
       if (c_int > 0.0_wp) then
          self%bsl = -(rho_ice/rho_water) &
-              * self%sht%surface_integral((self%h_ice - self%h_ice_ref)*(1.0_wp - self%C)) / c_int
+              * sht_grid_surface_integral(self%sht, (self%h_ice - self%h_ice_ref)*(1.0_wp - self%C)) / c_int
       else
          self%bsl = 0.0_wp
       end if

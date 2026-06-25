@@ -19,7 +19,7 @@ program test_sle_subgrid
    use fe_precision,  only: wp
    use fe_constants,  only: rho_ice, rho_water, pi
    use fe_response,   only: null_response
-   use fe_sht,        only: sht_grid
+   use fe_sht,        only: sht_grid, sht_grid_init, sht_grid_surface_integral, sht_grid_destroy
    use fe_sle,        only: sle_solver, sle_result
    use fe_field,      only: spherical_cap, exp_basin
    implicit none
@@ -35,7 +35,7 @@ program test_sle_subgrid
    logical  :: ok
 
    ok = .true.
-   call sht%init(LMAX, nlat=2*LMAX, nphi=4*LMAX)
+   call sht_grid_init(sht, LMAX, nlat=2*LMAX, nphi=4*LMAX)
    allocate(topo0(sht%nphi,sht%nlat), d_ice(sht%nphi,sht%nlat), &
             ice(sht%nphi,sht%nlat), rsl(sht%nphi,sht%nlat), C(sht%nphi,sht%nlat))
    rho_ratio = rho_ice/rho_water
@@ -54,7 +54,7 @@ program test_sle_subgrid
 
    ! melt source (negative: ice grows => water removed). Ice sits on land so the
    ! grounded mask (1-C) = 1 there; ice_int = -(rho_i/rho_w) integral d_ice.
-   ice_int = -rho_ratio*sht%surface_integral(d_ice)
+   ice_int = -rho_ratio*sht_grid_surface_integral(sht, d_ice)
 
    write(*,'(a)') ' --- subgrid sloping-coast ocean load (null response) ---'
 
@@ -97,9 +97,9 @@ program test_sle_subgrid
       write(*,'(a)') ' PASS: subgrid ocean load matches the sloping-coast volume balance'
    else
       write(*,'(a)') ' FAIL: subgrid ocean-load validation did not all pass'
-      call sht%destroy();  error stop 1
+      call sht_grid_destroy(sht);  error stop 1
    end if
-   call sht%destroy()
+   call sht_grid_destroy(sht)
 
 contains
 
@@ -112,7 +112,7 @@ contains
       real(wp), allocatable :: col(:,:)
       allocate(col(sht%nphi,sht%nlat))
       col = max(0.0_wp, h - topo0) - max(0.0_wp, -topo0)
-      e = sht%surface_integral(col) - target
+      e = sht_grid_surface_integral(sht, col) - target
    end function volume_excess
 
    real(wp) function volume_root(target) result(h)

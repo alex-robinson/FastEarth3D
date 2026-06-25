@@ -23,7 +23,7 @@ program test_rotinv
    use fe_earth_structure, only: earth_model, build_M3L70V01
    use fe_radial_fe,       only: radial_fe_finalize
    use fe_response,        only: ve_response
-   use fe_sht,             only: sht_grid
+   use fe_sht,             only: sht_grid, sht_grid_init, sht_grid_destroy, sht_grid_analysis, sht_grid_eval_point
    use fe_viscoelastic,    only: SCHEME_TRAP
    implicit none
 
@@ -49,7 +49,7 @@ program test_rotinv
    end if
    tol = max(0.01_wp, 48.0_wp/real(lmax,wp)/100.0_wp)   ! ~1.5% at lmax=32, 1% by lmax~48
 
-   call sht%init(lmax, nlat=3*lmax, nphi=3*lmax, mmax=lmax)
+   call sht_grid_init(sht, lmax, nlat=3*lmax, nphi=3*lmax, mmax=lmax)
    e = build_M3L70V01()
 
    write(*,'(a,i0,a,f5.2,a)') ' off-pole rotational-invariance (lmax=', lmax, &
@@ -64,7 +64,7 @@ program test_rotinv
    write(*,'(a,es10.2)')  '   relative difference        = ', relerr
    ok = (relerr <= tol)
 
-   call sht%destroy();  call radial_fe_finalize()
+   call sht_grid_destroy(sht);  call radial_fe_finalize()
    write(*,'(a)') ''
    if (ok) then
       write(*,'(a)') ' PASS: off-pole LVZ matches on-pole peak uplift (rotational invariance)'
@@ -97,7 +97,7 @@ contains
             cap(i,j) = taper(ang_dist(sht%colat(j), sht%lon(i), beta_c, lon_c))
          end do
       end do
-      call sht%analysis(cap, cap_lm)               ! NB: overwrites cap (unused after)
+      call sht_grid_analysis(sht, cap, cap_lm)               ! NB: overwrites cap (unused after)
 
       ! LVZ: soft column under the cap, same lateral taper, in the depth band.
       pert = 0.0_wp
@@ -124,7 +124,7 @@ contains
          call ve%apply(sht, slm, ulm, nlm)
          call ve%commit_step(sht, slm)
          if (istep == nstep) then
-            call sht%eval_point(ulm, beta_c, lon_c, uval)   ! uplift at the cap centre
+            call sht_grid_eval_point(sht, ulm, beta_c, lon_c, uval)   ! uplift at the cap centre
             u_peak = uval
          end if
       end do

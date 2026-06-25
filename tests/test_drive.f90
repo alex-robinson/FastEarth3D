@@ -7,7 +7,7 @@ program test_drive
    !!   (3) the ocean draws down (rsl < 0 in the far field).
    use fe_precision,       only: wp
    use fe_constants,       only: rad2deg, pi
-   use fe_sht,             only: sht_grid
+   use fe_sht,             only: sht_grid, sht_grid_init, sht_grid_destroy
    use fe_drive,           only: fastearth_run
    use fe_radial_fe,       only: radial_fe_finalize
    use ncio,               only: nc_create, nc_write_dim, nc_write, nc_read, nc_size
@@ -28,7 +28,7 @@ program test_drive
    logical  :: ok
 
    ok = .true.
-   call sht%init(LMAX, nlat=NLAT, nphi=NPHI)
+   call sht_grid_init(sht, LMAX, nlat=NLAT, nphi=NPHI)
 
    allocate(lon_deg(sht%nphi), lat_deg(sht%nlat))
    lon_deg = sht%lon*rad2deg
@@ -108,7 +108,7 @@ program test_drive
       write(*,'(a)') '   FAIL: building land ice should draw the ocean down'; ok = .false.
    end if
 
-   call sht%destroy()
+   call sht_grid_destroy(sht)
 
    write(*,'(a)') ''
    if (ok) then
