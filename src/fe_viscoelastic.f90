@@ -385,7 +385,7 @@ contains
    end subroutine dissipative_rhs
 
    pure subroutine advance_memory(ne, mu, Mk, Un, Vn, Jr, Am, Bm, Cm, &
-                                  scheme, Un_prev, Vn_prev, err)
+                                  scheme, Un_prev, Vn_prev, err, active)
       !! Advance the per-element memory stress one step from the new nodal strain.
       !! The Maxwell memory satisfies dτ^V/dt = −(1/τ_M)(τ^V + 2με), M = μΔt/η; the
       !! schemes differ only in how the strain ε is treated over the step:
@@ -412,6 +412,10 @@ contains
       integer,  intent(in),  optional :: scheme
       real(wp), intent(in),  optional :: Un_prev(:), Vn_prev(:)
       real(wp), intent(out), optional :: err
+      !! `active` (optional): per-element mask — elements with active(e)=.false. are
+      !! left untouched, so the 3-D field driver can advance only the laterally-uniform
+      !! elements spectrally and leave the genuinely-3-D ones to advance_memory_3d.
+      logical,  intent(in),  optional :: active(:)
       real(wp) :: a(NLAM), b(NLAM), c(NLAM), ap(NLAM), bp(NLAM), cp(NLAM)
       real(wp) :: om, two_muM, Me, phi1, phi2, w_new, w_prev, twoMu, locerr
       real(wp) :: denom, c_old, w_eps
@@ -421,6 +425,9 @@ contains
       locerr = 0.0_wp
 
       do e = 1, ne
+         if (present(active)) then
+            if (.not. active(e)) cycle      ! left to the pseudo-spectral 3-D path
+         end if
          call strain_coeffs(Un(e), Un(e+1), Vn(e), Vn(e+1), Jr, a, b, c)
          Me = Mk(e)
 

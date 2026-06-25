@@ -149,6 +149,17 @@ module fe_response
       real(wp), allocatable :: Mk3(:,:,:)               !! (nphi,nlat,ne) M=μΔt/η_eff
       real(wp), allocatable :: MkPerDt3(:,:,:)          !! (nphi,nlat,ne) μ/η_eff
       type(tensor_sh) :: tsh                            !! dyadic tensor-SH transformer
+      ! VILMA-style 1-D/3-D layer split (mod_visc3d k1p/k2p). An element is treated as
+      ! genuinely "3-D" — and pays the pseudo-spectral tensor-SH advance — only when its
+      ! lateral log10(η) spread exceeds visc3d_tol; otherwise it collapses to a scalar
+      ! effective rate (lateral mean) and advances on the cheap degree-diagonal spectral
+      ! path, exactly like 1-D viscosity. With a laterally-uniform field NO element is 3-D,
+      ! so the 3-D run costs the same as 1-D. e3d lists the 3-D elements; active1d(e) is
+      ! .true. for the spectrally-advanced (1-D-effective + elastic/fluid) elements.
+      real(wp) :: visc3d_tol = 1.0e-3_wp                !! lateral log10(η) spread → "3-D" (dex)
+      integer  :: ne3d = 0                              !! # genuinely-3-D elements
+      integer,  allocatable :: e3d(:)                   !! (ne3d) indices of the 3-D elements
+      logical,  allocatable :: active1d(:)              !! (ne) advance spectrally (skip in 3-D path)
       ! per-degree constants and unit-load response
       real(wp), allocatable :: Jr(:)                    !! (1:lmax) l(l+1)
       real(wp), allocatable :: nrmc(:,:)                !! (NLAM,1:lmax) Z:Z norms
@@ -421,6 +432,7 @@ contains
       ! degree-independent element fields: node radii, shear, Maxwell factor
       allocate(self%r(self%nr));  self%r = mesh%r
       allocate(self%mu(self%ne), self%Mk(self%ne), self%MkPerDt(self%ne))
+      allocate(self%active1d(self%ne));  self%active1d = .true.   ! all spectral until 3-D split
       do e = 1, self%ne
          lay = mesh%elem_layer(e)
          self%mu(e) = earth%layers(lay)%mu
@@ -697,8 +709,9 @@ contains
       !! Explicit forward-Euler memory advance: one Maxwell update per (l,m) from the
       !! report strain σ·(unit-load nodal) + drift(τ_n). The historical path, shared by
       !! commit_step and advance_endpoint so both stay byte-identical for FE. With
-      !! laterally-varying viscosity the per-(l,m) Maxwell factor M is a lateral field,
-      !! so the advance goes pseudo-spectral (advance_memory_3d).
+      !! laterally-varying viscosity the genuinely-3-D elements (e3d) advance pseudo-
+      !! spectrally (advance_memory_3d); the laterally-uniform + elastic/fluid elements
+      !! (active1d) advance on this cheap spectral path, masked by `active`.
       class(ve_response), intent(inout) :: self
       type(sht_grid),     intent(in)    :: sht
       complex(wp),        intent(in)    :: sigma_lm(:)
@@ -706,10 +719,8 @@ contains
       real(wp) :: sre, sim
       integer  :: k, l, lm, node
 
-      if (self%lat_visc) then
-         call advance_memory_3d(self, sht, sigma_lm)
-         return
-      end if
+      ! 3-D elements first (no-op when ne3d == 0, i.e. 1-D or laterally-uniform field).
+      if (self%lat_visc) call advance_memory_3d(self, sht, sigma_lm)
 
       !$omp parallel default(shared) private(k, l, lm, node, sre, sim, Ure, Uim, Vre, Vim)
       allocate(Ure(self%nr), Uim(self%nr), Vre(self%nr), Vim(self%nr))
@@ -725,9 +736,9 @@ contains
             Vim(node) = sim*self%xVn(node,l) + self%dVn_im(node,k)
          end do
          call advance_memory(self%ne, self%mu, self%Mk, Ure, Vre, self%Jr(l), &
-              self%Are(:,:,k), self%Bre(:,:,k), self%Cre(:,:,k))
+              self%Are(:,:,k), self%Bre(:,:,k), self%Cre(:,:,k), active=self%active1d)
          call advance_memory(self%ne, self%mu, self%Mk, Uim, Vim, self%Jr(l), &
-              self%Aim(:,:,k), self%Bim(:,:,k), self%Cim(:,:,k))
+              self%Aim(:,:,k), self%Bim(:,:,k), self%Cim(:,:,k), active=self%active1d)
       end do
       !$omp end do
       deallocate(Ure, Uim, Vre, Vim)
@@ -739,24 +750,54 @@ contains
       !! viscosity perturbation per element on the Gauss grid, (nphi,nlat,ne):
       !! η_eff(θ,φ) = η_radial · 10^pert, so the Maxwell rate scales by 10^(−pert).
       !! Elastic/fluid elements (MkPerDt = 0) stay memory-free regardless — the
-      !! lithosphere remains exactly elastic. A laterally-uniform field reduces the
-      !! pseudo-spectral advance to the 1-D advance (SHT round-trip is exact).
+      !! lithosphere remains exactly elastic.
+      !!
+      !! 1-D/3-D split (VILMA mod_visc3d): an element is flagged genuinely 3-D only
+      !! when its lateral log10(η) spread exceeds visc3d_tol; that subset (e3d) pays
+      !! the pseudo-spectral tensor-SH advance. Every other Maxwell element collapses
+      !! to a scalar effective rate (its lateral MEAN) and advances on the cheap
+      !! degree-diagonal spectral path. A laterally-uniform field therefore flags NO
+      !! element 3-D, so the cost equals the 1-D run (exactly, not just to SHT round-off).
       class(ve_response), intent(inout) :: self
       type(sht_grid),     intent(in)    :: sht
       real(wp),           intent(in)    :: pert_elem(:,:,:)   !! (nphi,nlat,ne) log10 η perturbation
-      integer :: e
+      integer :: e, ne_grid
+      real(wp) :: spread, mean_pert
       if (size(pert_elem,1) /= sht%nphi .or. size(pert_elem,2) /= sht%nlat .or. &
           size(pert_elem,3) /= self%ne) &
          error stop 'enable_lateral_visc: pert_elem must be (nphi,nlat,ne)'
       call self%tsh%init(sht)
       if (allocated(self%Mk3))      deallocate(self%Mk3)
       if (allocated(self%MkPerDt3)) deallocate(self%MkPerDt3)
+      if (allocated(self%e3d))      deallocate(self%e3d)
       allocate(self%MkPerDt3(sht%nphi, sht%nlat, self%ne))
       allocate(self%Mk3(sht%nphi, sht%nlat, self%ne))
+      ne_grid = sht%nphi*sht%nlat
+      ! Build the per-grid rate from the ORIGINAL radial MkPerDt, THEN classify and (for
+      ! 1-D-effective elements) overwrite the scalar MkPerDt with the lateral-mean rate.
       do e = 1, self%ne
          self%MkPerDt3(:,:,e) = self%MkPerDt(e) * 10.0_wp**(-pert_elem(:,:,e))
       end do
+      self%active1d = .true.;  self%ne3d = 0
+      do e = 1, self%ne
+         if (self%MkPerDt(e) == 0.0_wp) cycle             ! elastic/fluid: spectral, memory-free
+         spread = maxval(pert_elem(:,:,e)) - minval(pert_elem(:,:,e))
+         if (spread > self%visc3d_tol) then
+            self%active1d(e) = .false.;  self%ne3d = self%ne3d + 1   ! genuinely 3-D
+         else
+            mean_pert = sum(pert_elem(:,:,e))/real(ne_grid, wp)      ! collapse to scalar
+            self%MkPerDt(e) = self%MkPerDt(e) * 10.0_wp**(-mean_pert)
+         end if
+      end do
+      self%Mk  = self%MkPerDt * self%dt                   ! rescale 1-D scalar rates
       self%Mk3 = self%MkPerDt3 * self%dt
+      allocate(self%e3d(self%ne3d))
+      self%ne3d = 0
+      do e = 1, self%ne
+         if (.not. self%active1d(e)) then
+            self%ne3d = self%ne3d + 1;  self%e3d(self%ne3d) = e
+         end if
+      end do
       self%lat_visc = .true.
    end subroutine ve_response_enable_lateral_visc
 
@@ -815,19 +856,18 @@ contains
       complex(wp), allocatable :: cea(:,:), ceb(:,:), cec(:,:)   ! strain coeffs (TLAM,nlm)
       real(wp),    allocatable :: dtau(:,:,:), deps(:,:,:)        ! (nphi,nlat,6)
       type(c_ptr) :: cfg
-      integer  :: e, k, lm
+      integer  :: e, ei, k, lm
 
+      if (self%ne3d == 0) return        ! no genuinely-3-D element ⇒ all handled spectrally
       !$omp parallel default(shared) &
-      !$omp   private(e, k, lm, cma, cmb, cmc, cea, ceb, cec, dtau, deps, cfg)
+      !$omp   private(e, ei, k, lm, cma, cmb, cmc, cea, ceb, cec, dtau, deps, cfg)
       allocate(cma(TLAM,sht%nlm), cmb(TLAM,sht%nlm), cmc(TLAM,sht%nlm))
       allocate(cea(TLAM,sht%nlm), ceb(TLAM,sht%nlm), cec(TLAM,sht%nlm))
       allocate(dtau(sht%nphi,sht%nlat,6), deps(sht%nphi,sht%nlat,6))
       cfg = self%tsh%thread_cfg()                          ! this thread's private config
       !$omp do schedule(dynamic)
-      do e = 1, self%ne
-         ! Elastic/fluid elements carry no Maxwell memory (MkPerDt=0 by rheology), so
-         ! the advance τ⁺=(1−0)τ−0 is the identity — skip them exactly (no transforms).
-         if (self%MkPerDt(e) == 0.0_wp) cycle
+      do ei = 1, self%ne3d                                 ! only the genuinely-3-D elements
+         e = self%e3d(ei)
          call gather_tensor_coeffs(self, sigma_lm, e, cma, cmb, cmc, cea, ceb, cec)
          call advance_shape_tensor(self, sht, e, cma, cea, dtau, deps, cfg)
          call advance_shape_tensor(self, sht, e, cmb, ceb, dtau, deps, cfg)
@@ -918,18 +958,19 @@ contains
       complex(wp), allocatable :: c1a(:,:),  c1b(:,:),  c1c(:,:)    ! ε_{n+1} coeffs
       real(wp),    allocatable :: dt0(:,:,:), den(:,:,:), de1(:,:,:) ! (nphi,nlat,6)
       type(c_ptr) :: cfg
-      integer  :: e, k, lm
+      integer  :: e, ei, k, lm
 
+      if (self%ne3d == 0) return        ! no genuinely-3-D element ⇒ all handled spectrally
       !$omp parallel default(shared) &
-      !$omp   private(e, k, lm, cm0a, cm0b, cm0c, cna, cnb, cnc, c1a, c1b, c1c, dt0, den, de1, cfg)
+      !$omp   private(e, ei, k, lm, cm0a, cm0b, cm0c, cna, cnb, cnc, c1a, c1b, c1c, dt0, den, de1, cfg)
       allocate(cm0a(TLAM,sht%nlm), cm0b(TLAM,sht%nlm), cm0c(TLAM,sht%nlm))
       allocate(cna(TLAM,sht%nlm),  cnb(TLAM,sht%nlm),  cnc(TLAM,sht%nlm))
       allocate(c1a(TLAM,sht%nlm),  c1b(TLAM,sht%nlm),  c1c(TLAM,sht%nlm))
       allocate(dt0(sht%nphi,sht%nlat,6), den(sht%nphi,sht%nlat,6), de1(sht%nphi,sht%nlat,6))
       cfg = self%tsh%thread_cfg()
       !$omp do schedule(dynamic)
-      do e = 1, self%ne
-         if (self%MkPerDt(e) == 0.0_wp) cycle             ! elastic/fluid: no Maxwell memory
+      do ei = 1, self%ne3d                                 ! only the genuinely-3-D elements
+         e = self%e3d(ei)
          call gather_tensor_coeffs_trap(self, sigma_lm, e, cm0a, cm0b, cm0c, &
                                         cna, cnb, cnc, c1a, c1b, c1c)
          call advance_shape_tensor_trap(self, sht, e, cm0a, cna, c1a, dt0, den, de1, cfg)
@@ -1054,11 +1095,9 @@ contains
       real(wp) :: sre, sim, srn, sin
       integer  :: k, l, lm, node
 
-      if (self%lat_visc) then
-         call advance_memory_3d_trap(self, sht, sigma_lm)
-         return
-      end if
-
+      ! Spectral trapezoid over the 1-D-effective elements FIRST (masked by active1d).
+      ! The per-k reset writes τ_n to every element, including the 3-D ones, so the
+      ! genuinely-3-D path MUST run afterwards (below) to land their τ_{n+1} last.
       !$omp parallel default(shared) &
       !$omp   private(k, l, lm, node, sre, sim, srn, sin, Ure, Uim, Vre, Vim, Ure_n, Uim_n, Vre_n, Vim_n)
       allocate(Ure(self%nr), Uim(self%nr), Vre(self%nr), Vim(self%nr), &
@@ -1083,21 +1122,24 @@ contains
             Uim(node)   = sim*self%xUn(node,l) + self%edUn_im(node,k)
             Vim(node)   = sim*self%xVn(node,l) + self%edVn_im(node,k)
          end do
-         ! reset to τ_n, then trapezoid-advance with (ε_n, ε_{n+1})
+         ! reset to τ_n, then trapezoid-advance the 1-D-effective elements (ε_n, ε_{n+1})
          self%Are(:,:,k) = self%Are0(:,:,k);  self%Bre(:,:,k) = self%Bre0(:,:,k)
          self%Cre(:,:,k) = self%Cre0(:,:,k)
          call advance_memory(self%ne, self%mu, self%Mk, Ure, Vre, self%Jr(l), &
               self%Are(:,:,k), self%Bre(:,:,k), self%Cre(:,:,k), &
-              scheme=SCHEME_TRAP, Un_prev=Ure_n, Vn_prev=Vre_n)
+              scheme=SCHEME_TRAP, Un_prev=Ure_n, Vn_prev=Vre_n, active=self%active1d)
          self%Aim(:,:,k) = self%Aim0(:,:,k);  self%Bim(:,:,k) = self%Bim0(:,:,k)
          self%Cim(:,:,k) = self%Cim0(:,:,k)
          call advance_memory(self%ne, self%mu, self%Mk, Uim, Vim, self%Jr(l), &
               self%Aim(:,:,k), self%Bim(:,:,k), self%Cim(:,:,k), &
-              scheme=SCHEME_TRAP, Un_prev=Uim_n, Vn_prev=Vim_n)
+              scheme=SCHEME_TRAP, Un_prev=Uim_n, Vn_prev=Vim_n, active=self%active1d)
       end do
       !$omp end do
       deallocate(Ure, Uim, Vre, Vim, Ure_n, Uim_n, Vre_n, Vim_n)
       !$omp end parallel
+
+      ! genuinely-3-D elements last, reading the intact τ_n snapshot (Are0 …)
+      if (self%lat_visc) call advance_memory_3d_trap(self, sht, sigma_lm)
    end subroutine trapezoid_advance_all
 
    subroutine ve_response_prepare_endpoint(self, sht)
@@ -1320,6 +1362,9 @@ contains
       if (allocated(self%mu))     deallocate(self%mu)
       if (allocated(self%Mk3))      deallocate(self%Mk3)
       if (allocated(self%MkPerDt3)) deallocate(self%MkPerDt3)
+      if (allocated(self%e3d))      deallocate(self%e3d)
+      if (allocated(self%active1d)) deallocate(self%active1d)
+      self%ne3d = 0
       if (self%lat_visc) call self%tsh%destroy()
       self%lat_visc = .false.
       if (allocated(self%Mk))     deallocate(self%Mk)

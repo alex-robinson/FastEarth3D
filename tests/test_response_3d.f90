@@ -144,7 +144,8 @@ contains
       call ve1d%init(e, sht, dt)
       call ve3d%init(e, sht, dt)
       allocate(pert(sht%nphi, sht%nlat, ve3d%ne));  pert = 0.0_wp
-      call ve3d%enable_lateral_visc(sht, pert)
+      ve3d%visc3d_tol = -1.0_wp     ! force every Maxwell element through the pseudo-spectral
+      call ve3d%enable_lateral_visc(sht, pert)   ! kernel (else a uniform field collapses to 1-D)
       call drive_and_compare(ve3d, ve1d, 'pert=0 :', ok)
       deallocate(pert)
       call ve3d%destroy();  call ve1d%destroy()
@@ -167,6 +168,7 @@ contains
       ! 3-D path: base Earth + a spatially-uniform perturbation p
       call ve3d%init(e, sht, dt)
       allocate(pert(sht%nphi, sht%nlat, ve3d%ne));  pert = p
+      ve3d%visc3d_tol = -1.0_wp     ! force the pseudo-spectral kernel (validate it reduces to 1-D)
       call ve3d%enable_lateral_visc(sht, pert)
       call drive_and_compare(ve3d, ve1d, 'uniform:', ok)
       deallocate(pert)
@@ -193,6 +195,7 @@ contains
       ve1d%scheme = SCHEME_TRAP;  ve1d%max_couple_iter = 4
       ve3d%scheme = SCHEME_TRAP;  ve3d%max_couple_iter = 4
       allocate(pert(sht%nphi, sht%nlat, ve3d%ne));  pert = p
+      ve3d%visc3d_tol = -1.0_wp     ! force the pseudo-spectral kernel (validate it reduces to 1-D)
       call ve3d%enable_lateral_visc(sht, pert)
       call drive_and_compare(ve3d, ve1d, 'trap-uni:', ok)
       deallocate(pert)
