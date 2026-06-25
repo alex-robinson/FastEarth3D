@@ -269,12 +269,19 @@ displacement `u`.
    (self-gravity is solved in `fe_radial_fe`), and the rotational polar-motion update
    now uses the SLE's converged end-of-interval load (via the stepper's `sigma_out`)
    instead of a hand re-derivation that dropped the subgrid term.
-3. **Martinec et al. (2018) cases A–E** quantitative match — the REFERENCE
-   output curves are now in-repo (`data/benchmarks/sle_martinec2018/`, cases
-   A/C2/D3/E2/F1, figs 10–13: u, v_θ, v_φ, F, sea-surface, SLE). The load/topo
-   SPEC is analytic (giapy `tests/sle_test.py`: ice L1–L3 at (θ₀,φ₀,h₀), topo
-   B0–B3 exponential basins, time T1–T3) — build these inputs and compare. The
-   elastic bug (item 0) that fed the SLE response is now fixed, so this is unblocked.
+3. **Martinec et al. (2018) cases A–E quantitative match — DONE.** Case A (pure
+   VE loading) in `test_benchmark_martinec` (`make check`). The four migrating-coast
+   SLE cases C2/D3/E2/F1 in the standalone `test_benchmark_sle` (NOT in `make check`,
+   it is a multi-minute lmax-128 run; bundled in `make check-slow`). All six fields
+   (u, v_θ, v_φ, geoid, sea-surface, SLE) match the SBK reference curves (figs 10–13)
+   within the inter-code scatter: D3/E2/F1 ~1–7%, C2 to ~7% on the coupled fields
+   (~21–28% only on a small peak-normalized basin-region uplift/horizontal). The
+   load/topo spec is the analytic giapy/Table-4 construction (caps L0–L2, exponential
+   basins B0–B2, Heaviside/linear time, fixed vs migrating ocean), built in the test.
+   Checked against Adhikari et al. (2016): its three validation experiments are
+   elastic + qualitative (Farrell–Clark ocean-load fingerprint, a SELEN disc-melt run,
+   a rotational-signature plot) with no vendored quantitative reference — subsumed by
+   our Love + Martinec + Spada suite, so nothing added.
 4. **Performance — DONE.** `begin_step` does 2 real solves per (l,m) per step
    (~O(nlm) solves), the cost driver at VILMA resolution. Four changes, all exact
    (results unchanged) except the threshold-controlled skip:

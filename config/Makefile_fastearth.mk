@@ -293,8 +293,25 @@ check: $(TESTS)
 	@echo ""
 	@echo "=== All tests passed ==="
 
+# Slow quantitative benchmarks: full-resolution, multi-minute runs kept OUT of
+# `make check`. Build with `make openmp=1 check-slow` (the per-step solve is ~100x
+# faster threaded). The SLE benchmark sweeps all four Martinec migrating-coast cases;
+# test_rotinv re-runs the off-pole rotational-invariance check at full resolution
+# (lmax 128, vs lmax 16 in `make check`).
+SLOW = test_benchmark_sle test_rotinv
+check-slow: $(SLOW)
+	@echo ""
+	@echo "=== Running FastEarth3D slow benchmarks ==="
+	@for c in C2 D3 E2 F1; do \
+		echo "--- test_benchmark_sle $$c ---"; \
+		$(bindir)/test_benchmark_sle.x $$c || exit 1; \
+	done
+	@echo "--- test_rotinv (lmax 128) ---"; $(bindir)/test_rotinv.x 128 || exit 1
+	@echo ""
+	@echo "=== All slow benchmarks passed ==="
+
 # --- Housekeeping ------------------------------------------------------------
-.PHONY: usage check clean showconfig fastearth fastearth-static
+.PHONY: usage check check-slow clean showconfig fastearth fastearth-static
 
 usage:
 	@echo ""
@@ -303,6 +320,7 @@ usage:
 	@echo " make fastearth-static : build libfastearth.a"
 	@echo " make fastearth        : build the standalone driver (bin/fastearth.x)"
 	@echo " make check            : build + run the test suite"
+	@echo " make openmp=1 check-slow : build + run the slow full-res benchmarks"
 	@echo " make test_sht         : build the SHT round-trip test"
 	@echo " make clean            : remove objects and binaries"
 	@echo " make showconfig       : show the active build configuration"
