@@ -312,11 +312,13 @@ displacement `u`.
    needs a conservative regridding layer (fesm-utils `mapping_scrip`) — reusable
    for any lon-lat input, but built later. **Physics first.**
 
-**Rung 6 (3D laterally-varying viscosity) — 6a/6b DONE (§12).** Tensor-correct
+**Rung 6 (3D laterally-varying viscosity) — 6a/6b/6c DONE (§12).** Tensor-correct
 pseudo-spectral memory advance (`fe_tensor_sh`, general order `mmax≥0`), validated
 against the Weerdesteijn et al. (2023) ASPECT/Abaqus/TABOO low-viscosity-zone
-benchmark to 1–3%. Real-field (lon-lat) loading, TRAP-3D, and element-loop OpenMP are
-follow-ups. Rung 5 (rotation) is DONE — 5a/5b/5c (§11).
+benchmark to 1–3%. 6c adds real lon-lat-r viscosity loading from netCDF
+(`fe_read_visc_3d`, node→element log10-mean bridge), per-thread-config element-loop
+OpenMP, the implicit TRAP-3D advance, and an off-pole rotational-invariance test.
+Rung 5 (rotation) is DONE — 5a/5b/5c (§11).
 
 ## 11. Rotational feedback / TPW (rung 5) — working notes
 
@@ -451,14 +453,30 @@ oscillation settles by ~512): load-center uplift at 200 yr = **−0.731 m homoge
 ASPECT/Abaqus themselves differ 1–3% and ASPECT(no self-grav) vs TABOO(self-grav)
 0.28% at the load center, so self-gravity/sphericity are sub-few-% here.
 
-**Open / next.**
-- **6c** — load a real 3D (lon-lat) viscosity field from netCDF into `earth%visc_3d`
-  (node-based); bridge node→element by log10-mean of the bracketing nodes. This is
-  what the general-`mmax` advance unblocks.
-- **Element-loop OpenMP with per-thread SHTns configs** — restores the parallelism
-  reverted when the advance went SHTns-based (and would let the LVZ benchmark, ~81 s
-  serial at lmax 512, into `make check`).
-- **TRAP-3D** — extend the pointwise advance to the implicit trapezoidal rule
-  (needed before the adaptive controller runs with lateral viscosity).
-- **Non-axisymmetric physical check** — an off-pole LVZ should give the same peak
-  uplift as on-pole by rotational invariance (a strong end-to-end m>0 test).
+**6c — real-field loading, per-thread OpenMP, TRAP-3D, rotational-invariance — DONE.**
+- **Real 3D (lon-lat-r) viscosity from netCDF** — `fe_read_visc_3d` (`fe_io`) reads a
+  log10(η) field (e.g. Pan et al. 2022: `eta(r,lat,lon)`, absolute log10) and
+  interpolates onto the Gauss grid × FE nodes (bilinear-in-log10 horizontally with
+  periodic longitude; linear-in-radius, clamped) into `earth%visc_3d` as ABSOLUTE
+  log10(η). `ve%enable_lateral_visc_from_nodes` bridges node→element by the log10-mean
+  of the two bracketing nodes and forms the per-element perturbation against the
+  element's radial reference η. Only genuinely Maxwell elements receive the field
+  (`is_maxwell`): the elastic lithosphere uses η=huge ⇒ MkPerDt=μ/huge≈3e-298 (nonzero),
+  so a `MkPerDt==0` test would wrongly keep it, and the absolute field would otherwise
+  make it viscous. (`test_visc_load`: synthetic round trip ~2e-13; pan2022 loads finite.)
+- **Element-loop OpenMP with per-thread SHTns configs** — `tensor_sh` holds a config
+  pool (one clone per `omp_get_max_threads`, built serially since FFTW planning is not
+  thread-safe); each element's transforms run on the calling thread's `thread_cfg`. The
+  four `sht_grid` transforms gained an optional `cfg` override. (openmp=1 LVZ reproduces
+  the serial −0.7306/−1.2180 m exactly.)
+- **TRAP-3D** — `trapezoid_advance_all` dispatches to `advance_memory_3d_trap` when
+  `lat_visc`; per shape-coeff, τ_n/ε_n/ε_{n+1} are reconstructed on the grid and advanced
+  by `τ⁺=[(1−M/2)τ_n−μM(ε_n+ε_{n+1})]/(1+M/2)` with the lateral M-field. (`test_response_3d`
+  TRAP case reduces to the 1-D trapezoid ~1e-12.) This unblocks the adaptive controller
+  and SLE co-convergence with 3D viscosity.
+- **Off-pole rotational-invariance** — `test_rotinv`: a cap+LVZ on an off-pole axis
+  (all m) matches the on-pole (m=0) cap-centre uplift to ~3e-4 — a strong end-to-end
+  m>0 check, run through TRAP-3D. In `make check` at lmax 16; full-res standalone via arg.
+
+**Open / next.** Conservative lon-lat→Gauss SCRIP remap for ice forcing (fesm-utils
+`mapping_scrip`); wiring `visc_3d` loading into the params/driver path.
