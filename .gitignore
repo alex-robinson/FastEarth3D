@@ -28,3 +28,6 @@ doc/refs/
 
 # Prebake run logs (regenerable)
 data/reference/*.log
+
+# generated analysis figures
+/analysis/figs/
