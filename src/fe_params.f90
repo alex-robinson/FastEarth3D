@@ -105,9 +105,17 @@ module fe_params
       character(len=64)  :: name_h_ice_ref = "ice_thickness"      !! ice var in the ref/eq files
       character(len=64)  :: name_rsl       = "rsl"                !! rsl var in rsl_restart_file
       real(wp) :: dt_equil = 0.0_wp
-         !! >0: run the ice-free paleotopo fixed-point spin-up (hold the start ice
-         !! this long per pass) BEFORE the transient. Non-default; supersedes the
-         !! i_eq-selected bed with the ice-free relaxed bed (legacy i_eq=1 behaviour).
+         !! >0: spin up the LGM memory state by holding the start-slice ice this long
+         !! per pass (relaxing to isostatic equilibrium) BEFORE the transient, with the
+         !! i_eq-selected reference held as the datum. Non-default.
+      character(len=512) :: restart_in_file = ""
+         !! full-state restart (fe_restart.nc) to resume from: solid_earth_init at the
+         !! reference, then restore the saved memory/clock. Typically used with
+         !! dt_equil=0 (skip spin-up); dt_equil>0 further-equilibrates from the restart.
+         !! A lower-resolution restart is interpolated up to the model grid.
+      logical :: spinup_1d = .false.
+         !! .true.: run the dt_equil spin-up with 1-D (radial) viscosity (cheap, fast
+         !! convergence), then enable the 3-D field for the transient from that seed.
 
       ! --- 3D viscosity field + uncertainty sampling (fe_earth_structure) --------
       ! Mirrors the CLIMBER-X VILMA scheme (src/geo/vilma.F90) but with a RELATIVE
@@ -235,6 +243,8 @@ contains
       dt_equil_yr = p%dt_equil/sec_per_year
       call nml_read(filename, g, "dt_equil",      dt_equil_yr,     defaults_file=df)
       p%dt_equil = dt_equil_yr*sec_per_year
+      call nml_read(filename, g, "restart_in_file", p%restart_in_file, defaults_file=df)
+      call nml_read(filename, g, "spinup_1d",       p%spinup_1d,       defaults_file=df)
 
       ! 3D viscosity + uncertainty
       call nml_read(filename, g, "l_visc_3d",      p%l_visc_3d,      defaults_file=df)

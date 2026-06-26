@@ -90,7 +90,10 @@
     name_z_bed_ref  = "bedrock_topography"  ! bed var in the ref/eq files
     name_h_ice_ref  = "ice_thickness"       ! ice var in the ref/eq files
     name_rsl        = "rsl"                 ! rsl var in rsl_restart_file
-    dt_equil      = 0.0      ! [years] >0: non-default ice-free paleotopo spin-up
+    dt_equil      = 0.0      ! [years] >0: non-default LGM-memory spin-up (hold start ice)
+    restart_in_file = ""     ! full-state restart to resume from (skips/precedes spin-up);
+                             ! lower-res restart is interpolated up to the model grid
+    spinup_1d     = .false.  ! run the dt_equil spin-up in 1-D, then 3-D transient from it
 
     ! --- 3D viscosity field + uncertainty (fe_earth_structure) --------
     l_visc_3d      = .false. ! load a lateral log10(eta) field
