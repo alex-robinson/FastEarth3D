@@ -133,7 +133,41 @@ contains
 
       call put2d(self, filename, "z_bed_eq",  self%z_bed_eq,  static=.true.)
       call put2d(self, filename, "h_ice_ref", self%h_ice_ref, static=.true.)
+
+      call write_visc_attrs(self, filename)
    end subroutine write_init
+
+   subroutine write_visc_attrs(self, filename)
+      !! Stamp the lateral-viscosity (3-D) configuration into the file as global
+      !! attributes, so a restart/output file is self-certifying for reproducibility
+      !! (independent of the namelist): whether 3-D was active, how many radial
+      !! elements were genuinely laterally-varying, the 1-D/3-D split tolerance, and
+      !! an order-sensitive checksum of the absolute log10(eta) field that was loaded.
+      type(solid_earth), intent(in) :: self
+      character(len=*),   intent(in) :: filename
+      call nc_write_attr(filename, "l_visc_3d", merge(1, 0, self%resp%lat_visc))
+      call nc_write_attr(filename, "ne3d",       self%resp%ne3d)
+      call nc_write_attr(filename, "ne",         self%resp%ne)
+      call nc_write_attr(filename, "visc3d_tol", real(self%resp%visc3d_tol, wp))
+      if (allocated(self%earth%visc_3d)) &
+         call nc_write_attr(filename, "visc_3d_checksum", visc_3d_checksum(self%earth%visc_3d))
+   end subroutine write_visc_attrs
+
+   pure function visc_3d_checksum(v) result(chk)
+      !! Order-sensitive fingerprint of the (node, radius) absolute log10(eta) field:
+      !! sum of v weighted by linear index, so two distinct fields (or a permuted one)
+      !! give different values. A bit-identical field reproduces the value exactly.
+      real(wp), intent(in) :: v(:,:)
+      real(wp) :: chk
+      integer  :: i, j, n1
+      n1  = size(v, 1)
+      chk = 0.0_wp
+      do j = 1, size(v, 2)
+         do i = 1, n1
+            chk = chk + v(i,j) * real(i + n1*(j-1), wp)
+         end do
+      end do
+   end function visc_3d_checksum
 
    subroutine write_one(self, filename, name, n, ncid)
       !! Dispatch a single variable name to its array + dimensions.
