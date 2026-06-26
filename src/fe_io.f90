@@ -53,15 +53,20 @@ contains
 
    ! --- writing ---------------------------------------------------------------
 
-   subroutine fe_restart_write(self, filename, time, init)
-      !! Write the full coupling state as a restart snapshot at `time`. With
-      !! init=.true. (default) the file is created; with init=.false. the
-      !! snapshot is appended at a new time index.
+   subroutine fe_restart_write(self, time, filename, folder, init)
+      !! Write the full coupling state as a restart snapshot at `time` to
+      !! trim(folder)//"/"//trim(filename) (folder is created if needed). Defaults:
+      !! folder="." and filename="fe_restart.nc". With init=.true. (default) the file
+      !! is (re)created; with init=.false. the snapshot is appended at a new time index.
       type(solid_earth), intent(in) :: self
-      character(len=*),   intent(in) :: filename
       real(wp),           intent(in) :: time
+      character(len=*), optional, intent(in) :: filename, folder
       logical, optional,  intent(in) :: init
-      call fe_write_step(self, filename, time, init=init)
+      character(len=:), allocatable :: fn, fd
+      fn = "fe_restart.nc";  if (present(filename)) fn = trim(filename)
+      fd = ".";              if (present(folder))   fd = trim(folder)
+      call execute_command_line("mkdir -p '"//fd//"'")
+      call fe_write_step(self, fd//"/"//fn, time, init=init)
    end subroutine fe_restart_write
 
    subroutine fe_write_step(self, filename, time, nms, init)
@@ -235,24 +240,46 @@ contains
    subroutine fe_restart_read(self, filename, time)
       !! Restore the prognostic state into an already-initialised solid_earth
       !! (init() must have rebuilt the operators and grid). Reads the Maxwell
-      !! memory + model time, and the diagnostic state if present, at the time
-      !! slice matching `time` (default: the last slice). Validates that the
-      !! file dimensions and reference fields match the initialised model.
+      !! memory + model time at the time slice matching `time` (default: the last).
+      !!
+      !! Same-resolution (file nk == model nk): exact restore — diagnostic state and
+      !! the trapezoidal σ_n too, validated against the model reference, so the run
+      !! continues bit-for-bit.
+      !!
+      !! Cross-resolution (file nk < model nk, e.g. an l64 spin-up into an l128 run):
+      !! the memory is degree-grouped, so the shared low-degree block is contiguous —
+      !! copy it and zero-pad the higher degrees (upsampling only). σ_n and the spatial
+      !! diagnostics are NOT transferred (different grid); the caller re-seeds them with
+      !! a zero-Δt solve so the first slice is consistent with the transferred memory.
       type(solid_earth), intent(inout) :: self
       character(len=*),   intent(in)    :: filename
       real(wp), optional, intent(in)    :: time
       real(wp), allocatable :: tvals(:), ref(:,:)
-      integer :: nt, n, np, nl, ne, nk
+      integer :: nt, n, np, nl, ne, nk, nk_f, L
       real(wp) :: tol
+      logical :: cross_res, ok_block
 
       np = self%sht%nphi;  nl = self%sht%nlat
       ne = self%resp%ne;   nk = self%resp%nk
 
-      ! dimension validation
-      if (nc_size(filename, "nlam") /= NLAM .or. nc_size(filename, "ne")  /= ne  .or. &
-          nc_size(filename, "nk")   /= nk   .or. nc_size(filename, "lon") /= np  .or. &
-          nc_size(filename, "lat")  /= nl   .or. nc_size(filename, "nlm") /= self%resp%nlm) &
-         error stop 'fe_restart_read: file dimensions do not match the initialised model'
+      ! the radial mesh (ne) and tensor rank (nlam) must always match; the horizontal
+      ! resolution (nk) may differ -> cross-resolution restart.
+      if (nc_size(filename, "nlam") /= NLAM .or. nc_size(filename, "ne") /= ne) &
+         error stop 'fe_restart_read: radial mesh (ne/nlam) does not match the model'
+      nk_f      = nc_size(filename, "nk")
+      cross_res = (nk_f /= nk)
+      if (cross_res .and. nk_f > nk) &
+         error stop 'fe_restart_read: cross-resolution downsampling (file lmax > model) not supported'
+      if (cross_res) then
+         ! degree-grouped contiguity holds iff nk_f is the model's cumulative slot
+         ! count through some degree L (i.e. same mmax/mres convention).
+         ok_block = .false.
+         do L = 1, self%resp%lmax
+            if (self%resp%kbeg(L+1) - 1 == nk_f) then;  ok_block = .true.;  exit;  end if
+         end do
+         if (.not. ok_block) &
+            error stop 'fe_restart_read: cross-resolution restart incompatible (mmax/mres mismatch)'
+      end if
 
       ! select the time slice. The file stores YEARS (item §14a); convert to SI
       ! seconds immediately so the clock/comparison stay internally consistent.
@@ -267,29 +294,47 @@ contains
          n = nt
       end if
 
-      ! reference-state validation (memory must not be paired with a different ref)
-      allocate(ref(np,nl))
-      tol = 1.0e-3_wp
-      call nc_read(filename, "z_bed_eq", ref)
-      if (maxval(abs(ref - self%z_bed_eq)) > tol) &
-         error stop 'fe_restart_read: z_bed_eq does not match the initialised model'
-      call nc_read(filename, "h_ice_ref", ref)
-      if (maxval(abs(ref - self%h_ice_ref)) > tol) &
-         error stop 'fe_restart_read: h_ice_ref does not match the initialised model'
+      if (cross_res) then
+         ! prognostic Maxwell memory: copy the shared low-degree block, zero-pad above.
+         call get3d_pad(filename, "tau_a_re", self%resp%Are, ne, nk_f, n)
+         call get3d_pad(filename, "tau_a_im", self%resp%Aim, ne, nk_f, n)
+         call get3d_pad(filename, "tau_b_re", self%resp%Bre, ne, nk_f, n)
+         call get3d_pad(filename, "tau_b_im", self%resp%Bim, ne, nk_f, n)
+         call get3d_pad(filename, "tau_c_re", self%resp%Cre, ne, nk_f, n)
+         call get3d_pad(filename, "tau_c_im", self%resp%Cim, ne, nk_f, n)
+         ! σ_n is on the file grid and the trapezoidal load is cheap to re-derive; let
+         ! the first step re-prime it (O(Δt); exact for the explicit fe scheme).
+         self%resp%sigma_primed = .false.
+      else
+         ! reference-state validation (memory must not be paired with a different ref)
+         allocate(ref(np,nl))
+         tol = 1.0e-3_wp
+         call nc_read(filename, "z_bed_eq", ref)
+         if (maxval(abs(ref - self%z_bed_eq)) > tol) &
+            error stop 'fe_restart_read: z_bed_eq does not match the initialised model'
+         call nc_read(filename, "h_ice_ref", ref)
+         if (maxval(abs(ref - self%h_ice_ref)) > tol) &
+            error stop 'fe_restart_read: h_ice_ref does not match the initialised model'
 
-      ! prognostic Maxwell memory at slice n
-      call get3d(filename, "tau_a_re", self%resp%Are, ne, nk, n)
-      call get3d(filename, "tau_a_im", self%resp%Aim, ne, nk, n)
-      call get3d(filename, "tau_b_re", self%resp%Bre, ne, nk, n)
-      call get3d(filename, "tau_b_im", self%resp%Bim, ne, nk, n)
-      call get3d(filename, "tau_c_re", self%resp%Cre, ne, nk, n)
-      call get3d(filename, "tau_c_im", self%resp%Cim, ne, nk, n)
+         ! prognostic Maxwell memory at slice n
+         call get3d(filename, "tau_a_re", self%resp%Are, ne, nk, n)
+         call get3d(filename, "tau_a_im", self%resp%Aim, ne, nk, n)
+         call get3d(filename, "tau_b_re", self%resp%Bre, ne, nk, n)
+         call get3d(filename, "tau_b_im", self%resp%Bim, ne, nk, n)
+         call get3d(filename, "tau_c_re", self%resp%Cre, ne, nk, n)
+         call get3d(filename, "tau_c_im", self%resp%Cim, ne, nk, n)
 
-      ! diagnostic current state (so the restarted object reports correctly)
-      call get2d(filename, "h_ice",   self%h_ice, np, nl, n)
-      call get2d(filename, "rsl",     self%rsl,   np, nl, n)
-      call get2d(filename, "z_bed",   self%z_bed, np, nl, n)
-      call get2d(filename, "C_ocean", self%C,     np, nl, n)
+         ! diagnostic current state (so the restarted object reports correctly)
+         call get2d(filename, "h_ice",   self%h_ice, np, nl, n)
+         call get2d(filename, "rsl",     self%rsl,   np, nl, n)
+         call get2d(filename, "z_bed",   self%z_bed, np, nl, n)
+         call get2d(filename, "C_ocean", self%C,     np, nl, n)
+
+         ! restore the trapezoidal start-of-step load σ_n (the other prognostic piece
+         ! of the implicit scheme); without it the first step would re-derive σ_n to
+         ! only the SLE solver tolerance, breaking bit-for-bit continuation.
+         call restore_sigma(self, filename, n)
+      end if
 
       ! restore the clock and the adaptive controller's step-size seed (so the
       ! restarted run sub-steps the same path as the uninterrupted one)
@@ -297,11 +342,6 @@ contains
       self%time      = tvals(n)
       call nc_read(filename, "dt_try", self%stepper%dt_try, start=[n], count=[1])
       self%stepper%dt_try = self%stepper%dt_try*sec_per_year   ! file stores years
-
-      ! restore the trapezoidal start-of-step load σ_n (the other prognostic piece
-      ! of the implicit scheme); without it the first step would re-derive σ_n to
-      ! only the SLE solver tolerance, breaking bit-for-bit continuation.
-      call restore_sigma(self, filename, n)
    end subroutine fe_restart_read
 
    subroutine restore_sigma(self, filename, n)
@@ -335,5 +375,18 @@ contains
       integer,          intent(in)  :: np, nl, n
       call nc_read(filename, name, dat, start=[1,1,n], count=[np, nl, 1])
    end subroutine get2d
+
+   subroutine get3d_pad(filename, name, dat, ne, nk_f, n)
+      !! Cross-resolution memory read: the file holds nk_f degree-grouped coeff slots;
+      !! copy them into the low-degree block of dat(NLAM,ne,nk>=nk_f) and zero the rest.
+      character(len=*), intent(in)    :: filename, name
+      real(wp),         intent(inout) :: dat(:,:,:)
+      integer,          intent(in)    :: ne, nk_f, n
+      real(wp), allocatable :: buf(:,:,:)
+      allocate(buf(NLAM, ne, nk_f))
+      call nc_read(filename, name, buf, start=[1,1,1,n], count=[NLAM, ne, nk_f, 1])
+      dat = 0.0_wp
+      dat(:,:,1:nk_f) = buf
+   end subroutine get3d_pad
 
 end module fe_io

@@ -46,13 +46,13 @@ program test_restart
       call solid_earth_update(a, h_ice, dt_couple)
    end do
    t1 = a%time
-   call fe_restart_write(a, FILE, t1, init=.true.)       ! snapshot 1 (memory @ K1)
+   call fe_restart_write(a, t1, filename=FILE, init=.true.)   ! snapshot 1 (memory @ K1)
 
    do step = 1, K2
       call solid_earth_update(a, h_ice, dt_couple)
    end do
    t2 = a%time
-   call fe_restart_write(a, FILE, t2, init=.false.)      ! snapshot 2 (state @ K1+K2)
+   call fe_restart_write(a, t2, filename=FILE, init=.false.)  ! snapshot 2 (state @ K1+K2)
    a6_zbed = a%z_bed;  a6_rsl = a%rsl
 
    write(*,'(a,i0,a,f6.2,a,f6.2)') ' restart: lmax=', LMAX, &
