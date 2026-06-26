@@ -2,7 +2,7 @@ module fe_params
    !! Single configuration record for the whole solid-Earth model, loaded from one
    !! namelist group `&fe3d` (yelmo convention: a flat parameter type filled by
    !! nml_read, see fesm-utils/utils/src/nml.f90). Every runtime knob lives here;
-   !! the high-level system init (solid_earth%init) consumes the whole record and
+   !! the high-level system init (solid_earth_init) consumes the whole record and
    !! distributes the values to the sub-solvers, while the specific component inits
    !! keep their direct-argument signatures.
    !!

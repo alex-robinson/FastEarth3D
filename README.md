@@ -78,6 +78,6 @@ use fastearth3d
 type(fe_param_class) :: par
 type(solid_earth)    :: se
 call fe_par_load(par, "fastearth.nml")
-call se%init(par, sht, z_bed_eq, h_ice_ref)
-call se%update(h_ice, dt)            ! advance time -> time+dt; reads se%rsl, se%z_bed
+call solid_earth_init(se, par, sht, z_bed_eq, h_ice_ref)
+call solid_earth_update(se, h_ice, dt)   ! advance time -> time+dt; reads se%rsl, se%z_bed
 ```

@@ -32,7 +32,7 @@ module fe_remap
 
    type :: ll2gauss_map
       !! A precomputed conservative map from a lon-lat source grid onto the model's
-      !! SHTns Gauss grid. Build once with %init, then %apply to each field.
+      !! SHTns Gauss grid. Build once with ll2gauss_init, then ll2gauss_apply to each field.
       type(grid_class) :: src                 !! lon-lat source
       type(grid_class) :: dst                 !! Gauss target (matches sht), lat ascending
       type(map_class)  :: map                 !! conservative weights src -> dst
@@ -45,7 +45,7 @@ contains
    subroutine ll2gauss_init(self, sht, lon_src, lat_src)
       !! Build the conservative map for source cell-centre axes lon_src(:), lat_src(:)
       !! [degrees, ascending] onto the SHTns Gauss grid. The target grid is built with
-      !! ASCENDING latitude (south first), which coords expects; %apply flips back into
+      !! ASCENDING latitude (south first), which coords expects; ll2gauss_apply flips back into
       !! the SHTns (north-first) row order.
       type(ll2gauss_map), intent(out) :: self
       type(sht_grid),      intent(in)  :: sht

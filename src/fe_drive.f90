@@ -116,7 +116,7 @@ contains
          call solid_earth_update(se, ice_lgm, 0.0_wp)                        ! seed entering ice, no integration
       end if
       call system_clock(pc1)
-      write(*,'(a,f8.2,a)') ' [PROFILE setup] se%init+visc3d+seed =', real(pc1-pc0,wp)/prate, ' s'
+      write(*,'(a,f8.2,a)') ' [PROFILE setup] solid_earth_init+visc3d+seed =', real(pc1-pc0,wp)/prate, ' s'
 
       ! 1-D/3-D layer split diagnostic: how many elements are genuinely laterally 3-D
       ! (pay the pseudo-spectral tensor-SH advance) vs collapse to the cheap 1-D path.

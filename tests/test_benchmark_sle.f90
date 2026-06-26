@@ -35,7 +35,7 @@ program test_benchmark_sle
    !! th/ph horizontal displacement (spheroidal V via resp%horizontal + the SHTns
    !! gradient eval); col5 = -N*g (geoid); col6 sea-surface = N+esl; col7 SLE =
    !! rsl = N - u + esl. Profiles (figs 10-13): circles of constant lon (col1=colat)
-   !! or constant lat (col1=180+lon), sampled with fe_sht%eval_point[_horiz].
+   !! or constant lat (col1=180+lon), sampled with sht_grid_eval_point[_horiz].
    use fe_precision,       only: wp
    use fe_constants,       only: pi, kyr, rho_ice, rho_water
    use fe_earth_structure, only: earth_model, build_M3L70V01

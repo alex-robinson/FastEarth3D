@@ -4,11 +4,11 @@ module fe_coupling
    !! CLIMBER-X (src/geo/vilma.F90): ice thickness goes in, relative sea level
    !! and bedrock elevation come out, on the model's own Gauss-Legendre grid.
    !!
-   !!   call se%init(p, sht, z_bed_eq, h_ice_ref)   ! p = fe_param_class (one &fe3d group)
+   !!   call solid_earth_init(se, p, sht, z_bed_eq, h_ice_ref)   ! p = fe_param_class (one &fe3d group)
    !!   ...
-   !!   call se%update(h_ice, dt)   ! advance time -> time+dt; mutates se%rsl, se%z_bed
+   !!   call solid_earth_update(se, h_ice, dt)   ! advance time -> time+dt; mutates se%rsl, se%z_bed
    !!   ...
-   !!   call se%finalize()
+   !!   call solid_earth_finalize(se)
    !!
    !! The host maps between its grid and the model's Gauss grid (CLIMBER-X uses
    !! conservative/bilinear SCRIP weights); all spherical-harmonic work stays

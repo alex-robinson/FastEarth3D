@@ -188,7 +188,7 @@ Test 2/1 match are the remaining calibration items.
 ## 10. Sea-level equation (rung 4) — working notes
 
 **Response operator (`fe_response`).** The SLE is built on an abstraction:
-`response_operator%apply(σ_lm) → (u_lm, N_lm)` maps a spectral surface mass load
+`response_apply(resp, σ_lm) → (u_lm, N_lm)` maps a spectral surface mass load
 to surface uplift `u` and geoid height `N`, so the elastic and viscoelastic Earth
 responses are swappable. **Geoid mapping: `N(a) = −F(a)/g`** (Bruns' formula; the
 geopotential perturbation is `−F` since Martinec's `φ₁ = F → −φ^L` rigid). This
@@ -257,7 +257,7 @@ displacement `u`.
    (The earlier "lift the degree-1 skip in `ve_response`" item is now DONE on main
    — the geocenter degree-1 response is carried in the field driver.)
 1. **`fe_coupling` wiring — DONE.** The CLIMBER-X contract is wired: `ve_response`
-   member, `solid_earth%init(p, sht, z_bed_eq, h_ice_ref)` / `update(h_ice, dt)`
+   member, `solid_earth_init(se, p, sht, z_bed_eq, h_ice_ref)` / `solid_earth_update(se, h_ice, dt)`
    drives the adaptive stepper (SLE per Δt) across the coupling interval and returns
    `z_bed = z_bed_eq − rsl` (`test_coupling`).
 2. **Grounded-ice flotation — DONE.** `ocean_function` (`fe_sle`) is ocean only where
@@ -314,8 +314,8 @@ displacement `u`.
 6. **Parameter type + nml + standalone driver — DONE.** One `fe_param_class`
    loaded from a single `&fe3d` namelist (`fe_params`, yelmo `defaults_file`
    overlay; `fastearth.nml` is the complete defaults; time fields in years→s).
-   `build_earth(p)` (named built-in / custom layers). `solid_earth%init(p, …)` /
-   `update(h_ice, dt)` distribute the knobs and run the adaptive controller per
+   `build_earth(p)` (named built-in / custom layers). `solid_earth_init(se, p, …)` /
+   `solid_earth_update(se, h_ice, dt)` distribute the knobs and run the adaptive controller per
    interval (fixed substeps removed). Restart persists the **full** integrator
    state (`dt_try` + `σ_n`) → bit-for-bit continuation. Umbrella module renamed
    `fastearth`→`fastearth3d`; standalone `program fastearth` (`fe_drive`) runs a
@@ -510,9 +510,9 @@ the remap is always consistent with the running code.
 
 **`fe_remap` — conservative lon-lat → Gauss.** Wraps the fesm-utils `coords` library
 (`map_init_conservative` great-circle polygon clipping; `map_field` area-weighted
-mean). `ll2gauss_map%init(sht, lon, lat)` builds the map once (target = the SHTns
+mean). `ll2gauss_init(map, sht, lon, lat)` builds the map once (target = the SHTns
 Gauss grid: longitudes `sht%lon`, latitudes `90−sht%colat`, built south-first for
-coords then flipped to the SHTns north-first row order); `%apply` remaps a field per
+coords then flipped to the SHTns north-first row order); `ll2gauss_apply` remaps a field per
 slice. `coords` derives target cell boundaries from axis midpoints (not the Gauss
 weights), so `apply(conserve_mass=.true.)` rescales a mass-bearing field (ice) by one
 global factor so its SHTns quadrature integral equals the source area-integral exactly
@@ -561,7 +561,7 @@ from the original plan noted):
   conservative map. With `i_eq=1` rsl≈0 at PD by construction (no `rsl_anom` param
   needed). The ice-free paleotopo fixed point is retained but non-default, gated by
   `dt_equil>0` (default 0); it supersedes the i_eq bed when on.
-- **(d) 3D viscosity** — `l_visc_3d`/`visc_3d_file` wired through `solid_earth%init`;
+- **(d) 3D viscosity** — `l_visc_3d`/`visc_3d_file` wired through `solid_earth_init`;
   `fe_read_visc_3d` moved fe_io→fe_earth_structure (avoids a circular dep); a
   `visc_log10_min/max` clamp imposes the viscosity floor after read (so the base
   Bagge field reproduces the `_min_19.5` variant). Bagge field is in `isostasy_data`
@@ -597,7 +597,7 @@ correctness check. Decide the canonical output reference frame and document it.
 **(d) Run with a loaded 3D viscosity field (driver wiring).** `fe_read_visc_3d`
 (rung 6c) already loads a lon-lat-r log10(η) field onto the Gauss grid × FE nodes;
 it is NOT yet wired into `fe_params`/`fe_drive`. Add `l_visc_3d`, `visc_3d_file` (+ the
-var/axis names) to `&fe3d` and load it in `solid_earth%init`. Target two fields:
+var/axis names) to `&fe3d` and load it in `solid_earth_init`. Target two fields:
   - the current Pan et al. (2022) field (already used in `test_visc_load`);
   - the CLIMBER-X production field `~/models/climber-x/input/vilma/visc3d_Bagge2021*.nc`
     (Bagge et al. 2021; var `lgvisc(radius,lat,lon)`, 512×256×164, log10 dex). Its

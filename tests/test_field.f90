@@ -1,5 +1,5 @@
 program test_field
-   !! Validate the arbitrary-point evaluator (fe_sht%eval_point) and the analytic
+   !! Validate the arbitrary-point evaluator (sht_grid_eval_point) and the analytic
    !! field generators (fe_field), the infrastructure the Martinec-2018 SLE
    !! benchmark profiles are built on.
    use fe_precision, only: wp

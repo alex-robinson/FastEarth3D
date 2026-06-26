@@ -25,8 +25,10 @@ program test_benchmark_lvz
    use fe_constants,       only: kyr
    use fe_earth_structure, only: earth_model, build_M3L70V01
    use fe_radial_fe,       only: radial_fe_finalize
-   use fe_response,        only: response, response_init_elastic, response_init_ve, response_init_null
-   use fe_sht,             only: sht_grid
+   use fe_response,        only: response, response_init_elastic, response_init_ve, response_init_null, &
+                                 response_apply, response_begin_step, response_commit_step, &
+                                 response_enable_lateral_visc, response_destroy
+   use fe_sht,             only: sht_grid, sht_grid_init, sht_grid_destroy, sht_grid_eval_point, sht_grid_lmidx
    implicit none
 
    integer,  parameter :: LMAX  = 512       ! axisymmetric; ~0.7° ≈ 78 km at the edge
@@ -48,7 +50,7 @@ program test_benchmark_lvz
    logical  :: ok
 
    ok = .true.
-   call sht%init(LMAX, nlat=NLATF*LMAX, nphi=2, mmax=0)
+   call sht_grid_init(sht, LMAX, nlat=NLATF*LMAX, nphi=2, mmax=0)
    e = build_M3L70V01()
 
    write(*,'(a,i0,a,f4.1,a)') ' Weerdesteijn 2023 LVZ benchmark (lmax=', LMAX, &
@@ -80,10 +82,10 @@ program test_benchmark_lvz
       write(*,'(a)') ' PASS: lateral-viscosity deformation matches Weerdesteijn 2023'
    else
       write(*,'(a)') ' FAIL: rung-6b LVZ benchmark out of tolerance'
-      call sht%destroy();  call radial_fe_finalize()
+      call sht_grid_destroy(sht);  call radial_fe_finalize()
       error stop 1
    end if
-   call sht%destroy();  call radial_fe_finalize()
+   call sht_grid_destroy(sht);  call radial_fe_finalize()
 
 contains
 
@@ -118,7 +120,7 @@ contains
                end do
             end if
          end do
-         call ve%enable_lateral_visc(sht, pert)
+         call response_enable_lateral_visc(ve, sht, pert)
          deallocate(pert)
       end if
 
@@ -128,17 +130,17 @@ contains
          t = real(i,wp)*DT
          H = min(t/T_RAMP, 1.0_wp)*H_MAX           ! ramp then hold
          slm = RHO_ICE*H*disc_lm                   ! surface mass load [kg/m²]
-         call ve%begin_step(sht)
-         call ve%apply(sht, slm, ulm, nlm)
-         call ve%commit_step(sht, slm)
-         call sht%eval_point(ulm, 0.0_wp, 0.0_wp, uval)      ! pole = load center
+         call response_begin_step(ve, sht)
+         call response_apply(ve, sht, slm, ulm, nlm)
+         call response_commit_step(ve, sht, slm)
+         call sht_grid_eval_point(sht, ulm, 0.0_wp, 0.0_wp, uval)   ! pole = load center
          if (lvz_on .and. (mod(i,8)==0 .or. i==nstep)) &
             write(*,'(a,f7.1,a,f10.4)') '     t=', t/YR, ' yr  U_center=', uval
          if (i == nstep) u_end = uval
       end do
 
       deallocate(disc_lm, slm, ulm, nlm)
-      call ve%destroy()
+      call response_destroy(ve)
    end subroutine run_case
 
    subroutine cap_coeffs(tc, lm_coeffs)
@@ -158,9 +160,9 @@ contains
          p(l+1) = (real(2*l+1,wp)*c*p(l) - real(l,wp)*p(l-1))/real(l+1,wp)
       end do
       lm_coeffs = (0.0_wp, 0.0_wp)
-      lm_coeffs(sht%lmidx(0,0)) = cmplx(sqpi*(1.0_wp - c), 0.0_wp, wp)
+      lm_coeffs(sht_grid_lmidx(sht,0,0)) = cmplx(sqpi*(1.0_wp - c), 0.0_wp, wp)
       do l = 1, LMAX
-         lm_coeffs(sht%lmidx(l,0)) = cmplx( &
+         lm_coeffs(sht_grid_lmidx(sht,l,0)) = cmplx( &
             sqpi/sqrt(real(2*l+1,wp))*(p(l-1) - p(l+1)), 0.0_wp, wp)
       end do
    end subroutine cap_coeffs
