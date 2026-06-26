@@ -31,7 +31,8 @@ module fe_drive
    use fe_coupling,  only: solid_earth_finalize, solid_earth_update, solid_earth_init, solid_earth
    use fe_remap,     only: ll2gauss_map, ll2gauss_init, ll2gauss_apply
    use fe_io,        only: fe_write_step
-   use ncio,         only: nc_read, nc_size
+   use ncio,         only: nc_read, nc_size, nc_exists_var
+   use iso_fortran_env, only: error_unit
    implicit none
    private
 
@@ -74,12 +75,16 @@ contains
       end if
       call fe_par_print(p)
 
+      ! --- validate inputs up front (fail loudly on a config typo) --------------
+      ! ncio's nc_read stop's with exit status 0 on a missing variable, so a typo
+      ! in a name_* / file_* config would otherwise abort silently mid-run; check
+      ! every (file, var) the run will read before doing any work.
+      call validate_inputs(p)
+
       ! --- transform grid + work arrays -----------------------------------------
       call build_grid(p, sht)
       np = sht%nphi;  nl = sht%nlat
       allocate(z_bed_eq(np,nl), h_ice_ref(np,nl), h_ice(np,nl), ice_lgm(np,nl))
-
-      if (len_trim(p%file_forcing) == 0) error stop 'fastearth_run: file_forcing not set'
 
       ! --- build the conservative lon-lat -> Gauss map (online remap mode) -------
       remap = p%remap_input
@@ -201,6 +206,76 @@ contains
    end subroutine equilibrate
 
    ! --- input helpers ----------------------------------------------------------
+
+   subroutine validate_inputs(p)
+      !! Check every (file, variable) the run will actually read exists, before any
+      !! work begins. Mirrors the conditional read paths (remap_input, i_eq) so a
+      !! mistyped name_* / file_* config fails loudly with nonzero status instead of
+      !! aborting silently mid-run (ncio's nc_read stop's with exit status 0 on a
+      !! missing variable). 'what' names the offending config key in the message.
+      type(fe_param_class), intent(in) :: p
+      logical :: remap
+      remap = p%remap_input
+
+      ! forcing file: time axis + ice always; lon/lat only when remapping online.
+      call require_var(p%file_forcing, p%name_time, 'file_forcing/name_time')
+      call require_var(p%file_forcing, p%name_ice,  'file_forcing/name_ice')
+      if (remap) then
+         call require_var(p%file_forcing, p%name_lon, 'file_forcing/name_lon')
+         call require_var(p%file_forcing, p%name_lat, 'file_forcing/name_lat')
+      end if
+
+      ! relaxed reference state (z_bed_eq, h_ice_ref), per i_eq -- see read_bed /
+      ! setup_reference for which (file, var) each case reads.
+      select case (p%i_eq)
+      case (0)
+         if (remap) then
+            call require_var(p%file_forcing, p%name_zbed_eq, 'file_forcing/name_zbed_eq')
+         else
+            call require_var(p%file_ref, p%name_zbed_eq, 'file_ref/name_zbed_eq')
+         end if
+      case (1)
+         call require_var(p%z_bed_ref_file, p%name_z_bed_ref, 'z_bed_ref_file/name_z_bed_ref')
+         call require_var(p%h_ice_ref_file, p%name_h_ice_ref, 'h_ice_ref_file/name_h_ice_ref')
+      case (2)
+         call require_var(p%z_bed_eq_file, p%name_z_bed_ref, 'z_bed_eq_file/name_z_bed_ref')
+         call require_var(p%h_ice_eq_file, p%name_h_ice_ref, 'h_ice_eq_file/name_h_ice_ref')
+      case (3)
+         call require_var(p%z_bed_ref_file,   p%name_z_bed_ref, 'z_bed_ref_file/name_z_bed_ref')
+         call require_var(p%rsl_restart_file, p%name_rsl,       'rsl_restart_file/name_rsl')
+         call require_var(p%h_ice_ref_file,   p%name_h_ice_ref, 'h_ice_ref_file/name_h_ice_ref')
+      case default
+         error stop 'fastearth_run: i_eq must be 0, 1, 2, or 3'
+      end select
+   end subroutine validate_inputs
+
+   subroutine require_var(file, var, what)
+      !! error stop (nonzero, flushed) if 'file' is unset/missing or lacks netCDF
+      !! variable 'var'. 'what' is the config key(s) involved, named in the message.
+      character(len=*), intent(in) :: file, var, what
+      logical :: ok
+      if (len_trim(file) == 0) then
+         write(error_unit,'(a)') ' fastearth: input validation FAILED'
+         write(error_unit,'(a)') '   config "'//trim(what)//'": file not set for the chosen i_eq'
+         flush(error_unit)
+         error stop 'fastearth_run: required input file not set (see message above)'
+      end if
+      inquire(file=trim(file), exist=ok)
+      if (.not. ok) then
+         write(error_unit,'(a)') ' fastearth: input validation FAILED'
+         write(error_unit,'(a)') '   config "'//trim(what)//'": file not found'
+         write(error_unit,'(a)') '   file: '//trim(file)
+         flush(error_unit)
+         error stop 'fastearth_run: input file not found (see message above)'
+      end if
+      if (.not. nc_exists_var(trim(file), trim(var))) then
+         write(error_unit,'(a)') ' fastearth: input validation FAILED'
+         write(error_unit,'(a)') '   config "'//trim(what)//'": variable "'//trim(var)//'" not found'
+         write(error_unit,'(a)') '   file: '//trim(file)
+         flush(error_unit)
+         error stop 'fastearth_run: required netCDF variable not found (see message above)'
+      end if
+   end subroutine require_var
 
    subroutine build_remap(p, sht, rmap, nlon, nls)
       !! Read the source lon/lat axes from the forcing file and build the conservative
