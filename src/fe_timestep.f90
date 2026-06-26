@@ -107,11 +107,28 @@ contains
       logical  :: at_floor, accept, finite
 
       span = t1 - t0
-      if (span <= 0.0_wp) return
       ! Capture the converged load on every SLE solve; after the run sig_last holds
       ! the final (t1) solve's load. Always allocated so solve_at can fill it cheaply.
       allocate(sig_last(sht%nlm))
       self%worst_mass_resid = 0.0_wp             ! per-interval diagnostic (reset each advance)
+
+      ! Zero-length interval: no time or memory advance, but still refresh the diagnostic
+      ! fields (rsl, C) so they are consistent with the CURRENT memory + ice load. A
+      ! report-only SLE solve converges the load against the frozen entering memory and
+      ! returns without advancing it. The drive uses solid_earth_update(...,dt=0) to seed
+      ! the entering ice and populate rsl/z_bed/C from a seeded or restored memory state;
+      ! a cross-resolution restart restores only the spectral memory (not the 2-D rsl), so
+      ! without this the caller's rsl would stay zero on the first output sample.
+      if (span <= 0.0_wp) then
+         allocate(ice_now(sht%nphi, sht%nlat), dice_now(sht%nphi, sht%nlat))
+         ice_now  = ice0
+         dice_now = ice0 - ice_ref
+         call sle_solve(sle, sht, resp, dice_now, ice_now, topo0, rsl, C, res, &
+                        report_only=.true., sigma_lm=sig_last, s_rot=s_rot)
+         self%worst_mass_resid = res%mass_resid
+         if (present(sigma_out)) sigma_out = sig_last
+         return
+      end if
       if (.not. scheme_is_implicit(resp%scheme)) then
          ! --- explicit (forward-Euler) memory: a-priori stability sub-stepping -------
          ! The 1st-order memory carries no embedded error signal, so step-doubling is
