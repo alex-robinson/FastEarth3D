@@ -38,6 +38,7 @@ module fe_coupling
 
    public :: solid_earth
    public :: solid_earth_init, solid_earth_update, solid_earth_finalize
+   public :: solid_earth_enable_visc_3d
 
    type :: solid_earth
       type(sht_grid), pointer  :: sht => null()  !! transform grid (borrowed, host-owned)
@@ -64,7 +65,7 @@ module fe_coupling
 
 contains
 
-   subroutine solid_earth_init(self, p, sht, z_bed_eq, h_ice_ref)
+   subroutine solid_earth_init(self, p, sht, z_bed_eq, h_ice_ref, defer_visc_3d)
       !! Build the model from the parameter record and wire it to a (host-owned)
       !! transform grid, setting the reference state. The earth structure is built
       !! from p (named built-in or custom layers); the SLE, adaptive-Δt and memory-
@@ -76,7 +77,11 @@ contains
       type(sht_grid),       intent(in),   target :: sht
       real(wp),             intent(in)           :: z_bed_eq(:,:)   !! (nphi,nlat) [m]
       real(wp),             intent(in)           :: h_ice_ref(:,:)  !! (nphi,nlat) [m]
+      logical, optional,    intent(in)           :: defer_visc_3d
+         !! .true. => skip the lateral-viscosity (3-D) enable even when l_visc_3d is set,
+         !! leaving the model 1-D (used by spinup_1d: spin up 1-D, then enable 3-D after).
       integer  :: np, nl
+      logical  :: do_visc_3d
       real(wp) :: dt0
 
       call solid_earth_finalize(self)                       ! clean slate (safe on a fresh object)
@@ -98,16 +103,12 @@ contains
       self%resp%scheme          = scheme_from_name(p%scheme)
       self%resp%max_couple_iter = p%max_couple_iter
 
-      ! optional laterally-varying (3D) viscosity (rung 6c): read the lon-lat-r
-      ! log10(eta) field, perturb/clamp per the uncertainty knobs (load_visc_3d),
-      ! and enable the tensor-correct lateral-viscosity memory advance.
-      if (p%l_visc_3d) then
-         block
-            real(wp), allocatable :: visc_node(:,:)
-            call load_visc_3d(p, sht, self%resp%r, visc_node)
-            call response_enable_lateral_visc_from_nodes(self%resp, sht, visc_node)
-         end block
+      ! optional laterally-varying (3D) viscosity (rung 6c), unless deferred (spinup_1d).
+      do_visc_3d = p%l_visc_3d
+      if (present(defer_visc_3d)) then
+         if (defer_visc_3d) do_visc_3d = .false.
       end if
+      if (do_visc_3d) call solid_earth_enable_visc_3d(self, p, sht)
 
       ! sea-level equation knobs. Warm-start the fixed point across steps: self%rsl
       ! persists (seeded to 0 below), and between adjacent steps the coastline
@@ -158,6 +159,19 @@ contains
       allocate(self%C(np,nl))
       call ocean_function(self%z_bed_eq, self%h_ice_ref, self%C)
    end subroutine solid_earth_init
+
+   subroutine solid_earth_enable_visc_3d(self, p, sht)
+      !! Read the lon-lat-r log10(eta) field (load_visc_3d) and enable the tensor-
+      !! correct lateral-viscosity (3-D) memory advance. The Maxwell memory state is
+      !! preserved, so this can be called either at init or AFTER a 1-D spin-up
+      !! (spinup_1d) to switch the transient onto the 3-D path from the 1-D seed.
+      type(solid_earth),    intent(inout)       :: self
+      type(fe_param_class), intent(in)          :: p
+      type(sht_grid),       intent(in), target  :: sht
+      real(wp), allocatable :: visc_node(:,:)
+      call load_visc_3d(p, sht, self%resp%r, visc_node)
+      call response_enable_lateral_visc_from_nodes(self%resp, sht, visc_node)
+   end subroutine solid_earth_enable_visc_3d
 
    subroutine solid_earth_update(self, h_ice, dt)
       !! Advance the model from time to time+dt under the ice thickness h_ice and
