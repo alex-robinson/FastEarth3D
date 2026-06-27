@@ -42,7 +42,8 @@ $(objdir)/fe_modal.o:            $(objdir)/fe_radial_fe.o $(objdir)/fe_earth_str
                                  $(objdir)/fe_viscoelastic.o $(objdir)/fe_precision.o
 $(objdir)/fe_response.o:         $(objdir)/fe_radial_fe.o $(objdir)/fe_earth_structure.o \
                                  $(objdir)/fe_sht.o $(objdir)/fe_tensor_sh.o \
-                                 $(objdir)/fe_constants.o $(objdir)/fe_viscoelastic.o
+                                 $(objdir)/fe_constants.o $(objdir)/fe_viscoelastic.o \
+                                 $(objdir)/fe_modal.o
 $(objdir)/fe_sle.o:              $(objdir)/fe_sht.o $(objdir)/fe_constants.o \
                                  $(objdir)/fe_response.o
 $(objdir)/fe_timestep.o:         $(objdir)/fe_response.o $(objdir)/fe_sle.o \
@@ -309,7 +310,12 @@ test_modal: fastearth-static | $(bindir)
 		-o $(bindir)/test_modal.x $(objdir)/libfastearth.a $(LFLAGS)
 	@echo "    $(bindir)/test_modal.x is ready."
 
-TESTS = test_params test_drive test_band test_sht test_earth test_mesh test_integrals test_assembly test_love test_relax test_tidal test_rotation test_rotation_sle test_response test_sle test_flotation test_flotation_load test_ve_response test_tensor_sh test_response_3d test_sle_ve test_benchmark_love test_coupling test_restart test_benchmark_disc test_benchmark_martinec test_field test_sle_subgrid test_visc_load test_rotinv test_remap test_modal
+test_modal_resp: fastearth-static | $(bindir)
+	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(testdir)/test_modal_resp.f90 \
+		-o $(bindir)/test_modal_resp.x $(objdir)/libfastearth.a $(LFLAGS)
+	@echo "    $(bindir)/test_modal_resp.x is ready."
+
+TESTS = test_params test_drive test_band test_sht test_earth test_mesh test_integrals test_assembly test_love test_relax test_tidal test_rotation test_rotation_sle test_response test_sle test_flotation test_flotation_load test_ve_response test_tensor_sh test_response_3d test_sle_ve test_benchmark_love test_coupling test_restart test_benchmark_disc test_benchmark_martinec test_field test_sle_subgrid test_visc_load test_rotinv test_remap test_modal test_modal_resp
 
 check: $(TESTS)
 	@echo ""
