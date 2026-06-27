@@ -11,7 +11,8 @@ program test_modal
    !! t→∞) tightly and tracks the transient against ve_step.
    use fe_precision,       only: wp
    use fe_constants,       only: pi, grav_G, sec_per_year
-   use fe_earth_structure, only: earth_model, earth_layer, RHEOL_MAXWELL
+   use fe_earth_structure, only: earth_model, earth_layer, RHEOL_MAXWELL, RHEOL_FLUID, &
+                                 build_M3L70V01, earth_gravity_at
    use fe_radial_fe,       only: radial_mesh, radial_mesh_build, radial_fe_finalize, &
                                  radial_operator, radial_operator_assemble, &
                                  radial_operator_solve, radial_operator_destroy
@@ -37,6 +38,7 @@ program test_modal
 
    call part_a()
    call part_b()
+   call part_c()
 
    call radial_fe_finalize()
    write(*,'(a)') ''
@@ -169,6 +171,83 @@ contains
 
       call modal_spectrum_destroy(spec);  call modal_spectrum_destroy(spec1)
    end subroutine part_b
+
+   subroutine part_c()
+      !! Multilayer M3-L70-V01 (elastic litho + 3 Maxwell mantle layers + fluid
+      !! core): exercises the Maxwell masking and the across-layer Galerkin
+      !! reduction. Compare the modal step response to ve_step at degree 2.
+      type(earth_model)    :: em, em_fl
+      type(radial_mesh)    :: mm
+      type(modal_spectrum) :: spec
+      type(radial_operator):: op
+      type(ve_degree)      :: ref
+      real(wp) :: dt, t, ua, va, fa, u_el, u_fl, umod, uve, swing, maxrel
+      real(wp) :: gu_err, fl_err, tdom, cdom
+      integer  :: jj, istep, nstep, k
+      jj = 2
+      em = build_M3L70V01()
+      call radial_mesh_build(mm, em)
+
+      ! elastic (t=0) reference
+      call radial_operator_assemble(op, em, mm, jj)
+      call radial_operator_solve(op, 1.0_wp, ua, va, fa)
+      u_el = ua
+      call radial_operator_destroy(op)
+
+      ! fluid (t→∞) reference: same earth with Maxwell layers relaxed to fluid
+      ! (μ=0). The modal asymptote gu + Σ Cu must equal this exactly.
+      em_fl = em
+      do k = 1, size(em_fl%layers)
+         if (em_fl%layers(k)%rheology == RHEOL_MAXWELL) then
+            em_fl%layers(k)%mu = 0.0_wp
+            em_fl%layers(k)%rheology = RHEOL_FLUID
+         end if
+      end do
+      call radial_operator_assemble(op, em_fl, mm, jj)
+      call radial_operator_solve(op, 1.0_wp, ua, va, fa)
+      u_fl = ua
+      call radial_operator_destroy(op)
+
+      ! larger BE step for the slow mantle modes (conditioning only; τ exact)
+      call modal_solve(spec, em, mm, jj, n_modes=-1, dt_be=5.0e3_wp*yr)
+
+      gu_err = abs(spec%gu - u_el)/abs(u_el)
+      fl_err = abs((spec%gu + sum(spec%Cu)) - u_fl)/abs(u_fl)
+      tdom = 0.0_wp;  cdom = 0.0_wp
+      do k = 1, spec%nmode
+         if (abs(spec%Cu(k)) > cdom) then;  cdom = abs(spec%Cu(k));  tdom = spec%tau(k);  end if
+      end do
+
+      ! transient: modal reconstruction vs ve_step over a long window (dt small
+      ! enough for ve_step accuracy; covers the dominant relaxation)
+      dt = 25.0_wp*yr
+      nstep = nint(400.0e3_wp*yr/dt)
+      call ve_init(ref, em, mm, jj, dt)
+      swing = abs(u_fl - u_el);  maxrel = 0.0_wp
+      do istep = 0, nstep
+         call ve_step(ref, 1.0_wp, t, ua, va, fa)
+         uve = ua;  umod = spec%gu
+         do k = 1, spec%nmode
+            umod = umod + spec%Cu(k)*(1.0_wp - exp(-t/spec%tau(k)))
+         end do
+         maxrel = max(maxrel, abs(umod - uve)/swing)
+      end do
+      call ve_destroy(ref)
+
+      write(*,'(a)')        ''
+      write(*,'(a)')        ' Part C: modal solve step response (M3-L70-V01, degree 2)'
+      write(*,'(a,i0)')     '   modes kept (K=all)               = ', spec%nmode
+      write(*,'(a,f9.3,a)') '   dominant relaxation time tau     = ', tdom/(1000*yr), ' kyr'
+      write(*,'(a,es10.3)') '   elastic gain error               = ', gu_err
+      write(*,'(a,es10.3)') '   fluid-limit error (K=all)        = ', fl_err
+      write(*,'(a,es10.3)') '   transient max rel err vs ve_step = ', maxrel
+
+      if (gu_err > 1.0e-6_wp)  then; write(*,'(a)') '   FAIL: elastic gain /= elastic solve'; ok=.false.; end if
+      if (fl_err  > 1.0e-2_wp) then; write(*,'(a)') '   FAIL: modal sum misses fluid limit';  ok=.false.; end if
+      if (maxrel  > 3.0e-2_wp) then; write(*,'(a)') '   FAIL: transient off vs ve_step';      ok=.false.; end if
+
+      call modal_spectrum_destroy(spec)
+   end subroutine part_c
 
    pure real(wp) function norm3(A, B, C) result(nrm)
       real(wp), intent(in) :: A(:,:), B(:,:), C(:,:)
