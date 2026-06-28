@@ -50,10 +50,12 @@ program diag_modal_pblock
    real(wp),    allocatable :: uinf_ve(:)          ! (0:lmax) VE stepped fluid gain (final)
    real(wp),    allocatable :: uinf_md(:,:)        ! (0:lmax,NP) modal analytic fluid sum gu+ΣCu
    real(wp),    allocatable :: def_step(:,:)       ! (0:lmax,NP) stepped deficit uve-umd at T
+   ! geoid-N channel — the quantity rsl=N-u depends on but the u-only checks never tested
+   real(wp),    allocatable :: nve(:), nel(:), ninf_ve(:), ndef_step(:,:)
    real(wp),    allocatable :: maxtr(:), pdrms(:), pdmax(:)
    integer,     allocatable :: modes(:)
-   real(wp)                 :: umd, d, sse, cnt
-   integer                  :: ipd
+   real(wp)                 :: umd, nmd, d, sse, cnt
+   integer                  :: ipd, ip20
 
    ! ---- args ---------------------------------------------------------------
    lmax = 32;  t_total = 200.0_wp;  dt = 25.0_wp
@@ -72,6 +74,7 @@ program diag_modal_pblock
    allocate(slm(sht%nlm), ulm(sht%nlm), nlm(sht%nlm))
    allocate(uve(0:lmax), uel(0:lmax), uinf_ve(0:lmax))
    allocate(uinf_md(0:lmax,NP), def_step(0:lmax,NP))
+   allocate(nve(0:lmax), nel(0:lmax), ninf_ve(0:lmax), ndef_step(0:lmax,NP))
    allocate(maxtr(NP), pdrms(NP), pdmax(NP), modes(NP))
    maxtr = 0.0_wp;  pdrms = 0.0_wp;  pdmax = 0.0_wp
 
@@ -95,7 +98,9 @@ program diag_modal_pblock
       end do
    end do
    uel(0:lmax) = md(1)%gu(0:lmax)     ! elastic gain (same for all)
+   nel(0:lmax) = md(1)%gn(0:lmax)     ! elastic geoid gain
    npk = 3*NLAM*count(md(1)%lat_mw)   ! per-degree memory dimension = hard mode ceiling
+   ip20 = 2                           ! the default-block (p=20) candidate, for the u-vs-N table
 
    write(*,'(a)')        ' === RESP_MODAL p_block (Krylov) sweep vs RESP_VE — M3-L70-V01, radial ==='
    write(*,'(a,i0,a,f6.1,a,f6.1,a,i0,a)') '   lmax=', lmax, '   T=', t_total/kyr, ' ka   dt=', &
@@ -112,6 +117,7 @@ program diag_modal_pblock
       call response_apply(ve, sht, slm, ulm, nlm)
       do l = 1, lmax
          uve(l) = real(ulm(sht_grid_lmidx(sht,l,0)), wp)
+         nve(l) = real(nlm(sht_grid_lmidx(sht,l,0)), wp)
       end do
       call response_commit_step(ve, sht, slm)
       ! each modal candidate vs VE
@@ -121,19 +127,23 @@ program diag_modal_pblock
          sse = 0.0_wp;  cnt = 0.0_wp
          do l = 1, lmax
             umd = real(ulm(sht_grid_lmidx(sht,l,0)), wp)
+            nmd = real(nlm(sht_grid_lmidx(sht,l,0)), wp)
             d   = umd - uve(l)
             maxtr(ip) = max(maxtr(ip), abs(d))
             if (istep == ipd) then
                sse = sse + d*d;  cnt = cnt + 1.0_wp
                pdmax(ip) = max(pdmax(ip), abs(d))
             end if
-            if (istep == nstep) def_step(l,ip) = uve(l) - umd
+            if (istep == nstep) then
+               def_step(l,ip)  = uve(l) - umd
+               ndef_step(l,ip) = nve(l) - nmd
+            end if
          end do
          if (istep == ipd) pdrms(ip) = sqrt(sse/max(cnt,1.0_wp))
          call response_commit_step(md(ip), sht, slm)
       end do
       if (istep == nstep) then
-         do l = 1, lmax;  uinf_ve(l) = uve(l);  end do
+         do l = 1, lmax;  uinf_ve(l) = uve(l);  ninf_ve(l) = nve(l);  end do
       end if
    end do
 
@@ -171,6 +181,27 @@ program diag_modal_pblock
    write(*,'(a)') ' Note: positive deficit = modal under-relaxes (attenuated vs VE). If the deficit'
    write(*,'(a)') '       shrinks left-to-right, the Krylov block size (n_krylov), not mode ranking,'
    write(*,'(a)') '       is the accuracy ceiling for n_modes=all.'
+   write(*,'(a)') ''
+
+   ! ---- the decisive check: geoid N deficit alongside displacement u ----------
+   ! rsl = N - u. The u channel matches VE to ~1e-8 m; if the N channel does NOT,
+   ! the SLE-coupled rsl gap is a GEOID-response error, not a coupling error.
+   write(*,'(a,i0,a)') ' Geoid N vs displacement u — fluid-limit deficit at p_block=', pblocks(ip20), &
+        ' (VE − modal) [m], and as a fraction of each channel''s own swing:'
+   write(*,'(a)') '   l      u_swing   u_def    u_def/sw      N_swing   N_def    N_def/sw'
+   do l = 1, ntab
+      block
+         real(wp) :: usw, nsw
+         usw = uinf_ve(l) - uel(l);  nsw = ninf_ve(l) - nel(l)
+         write(*,'(i4,es12.3,es10.2,es12.2,a,es12.3,es10.2,es12.2)') l, &
+              usw, def_step(l,ip20),  def_step(l,ip20)/sign(max(abs(usw),tiny(1.0_wp)),usw), '   ', &
+              nsw, ndef_step(l,ip20), ndef_step(l,ip20)/sign(max(abs(nsw),tiny(1.0_wp)),nsw)
+      end block
+   end do
+   write(*,'(a)') ''
+   write(*,'(a)') ' Read: if N_def/sw ≫ u_def/sw, the modal GEOID response is the weak link'
+   write(*,'(a)') ' (fix in mode_residue rn / elastic_gains gn); if both are ~1e-4, the rsl gap'
+   write(*,'(a)') ' is the SLE memory<->load coupling, not the per-degree N response.'
 
    do ip = 1, NP;  call response_destroy(md(ip));  end do
    call response_destroy(ve)
