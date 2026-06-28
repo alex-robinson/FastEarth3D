@@ -1,30 +1,28 @@
 program diag_modal_sle
-   !! DIAGNOSTIC (not pass/fail): does the modal-vs-VE gap appear in the
-   !! SLE-COUPLED rsl, the quantity the ensemble actually scores? The per-degree
-   !! probes (diag_modal_pblock, diag_modal_ramp) showed the displacement response
-   !! u matches VE to ~1e-6 m, so the ensemble's ~1 m radial gap must live in the
-   !! parts those probes skip: the sea-level equation (geoid N, ocean-load fixed
-   !! point) and the LGM initial state. Note rsl = N − u + Δφ — and the earlier
-   !! probes never checked N at all.
+   !! DIAGNOSTIC (not pass/fail): localise the modal-vs-VE rsl gap. Earlier probes
+   !! showed the per-degree response (both u AND geoid N) matches VE to ~1e-4 of
+   !! swing for a HELD load, so the gap is not the response operator. This drives
+   !! the FULL SLE (fe_sle) with a deglaciation history and compares FOUR
+   !! integrations of the same load against a temporally converged truth:
    !!
-   !! This drives the FULL SLE (fe_sle) with a deglaciation history — a grounded
-   !! cap unloaded to zero — through RESP_MODAL and RESP_VE in lockstep on the same
-   !! earth (M3-L70-V01) and step cadence, and reports the area-weighted rsl gap
-   !! (the ensemble metric). It runs the deglaciation TWICE to bisect the
-   !! equilibration suspect:
-   !!   * COLD  — memory at rest at LGM (no spin-up);
-   !!   * SPUN  — the LGM cap held for n_spin steps first (relaxed initial state).
-   !! If the gap is large COLD but small SPUN (or vice-versa), the LGM equilibration
-   !! is implicated; if both are large, it is the SLE/geoid coupling itself; if both
-   !! are ~1e-6 m, the gap is temporal (VE sub-steps, modal does not) or rotational.
+   !!   (1) modal, 1 step/couple           (exact-exponential, what the model does)
+   !!   (2) VE,    1 step/couple           (FE, single step)
+   !!   (3) modal, N substeps/couple       (does sub-stepping move modal?)
+   !!   (4) VE,    N substeps/couple   ==  TRUTH (temporally converged FE)
    !!
-   !! Rotation is OFF here (s_rot absent) — that is the next bisection if this one
-   !! comes back clean.
+   !! Disambiguation:
+   !!   * modal-1 ≈ truth  and  VE-1 is the outlier  ⇒ modal's exact-exponential is
+   !!     ALREADY accurate; the ensemble "gap" is VE's own under-resolved stepping
+   !!     (VE sub-steps 1.6–8.6×, modal once), i.e. VE-1's FE truncation, not modal.
+   !!   * modal-1 lags truth and modal-N closes it ⇒ modal has a genuine temporal
+   !!     error; the fix is sub-stepping or the linear-σ (FOH) modal advance.
    !!
-   !!   usage:  diag_modal_sle.x [lmax] [n_spin] [n_degla] [dt_yr]
-   !!   default:                  16    200      260       100
+   !! Rotation OFF (s_rot absent). Earth = M3-L70-V01 (= the ensemble radial earth).
+   !!
+   !!   usage:  diag_modal_sle.x [lmax] [nsub] [n_spin] [n_degla] [dt_yr]
+   !!   default:                  16    8      60       200       100
    use fe_precision,       only: wp
-   use fe_constants,       only: kyr, pi, rho_ice, rho_water
+   use fe_constants,       only: kyr, pi
    use fe_earth_structure, only: earth_model, build_M3L70V01
    use fe_radial_fe,       only: radial_fe_finalize
    use fe_response,        only: response, response_init_ve, response_init_modal, &
@@ -34,98 +32,105 @@ program diag_modal_sle
    use fe_sle,             only: sle_solve, sle_solver, sle_result
    implicit none
 
-   integer            :: lmax, n_spin, n_degla, k
-   real(wp)           :: dt
+   integer            :: lmax, nsub, n_spin, n_degla, k
+   real(wp)           :: dt, f_a, f_b
    character(len=64)  :: arg
    type(sht_grid)     :: sht
    type(earth_model)  :: e
-   real(wp), allocatable :: topo0(:,:), ice_lgm(:,:)
-   real(wp) :: gap_pd_cold, gap_mx_cold, rlx_cold
-   real(wp) :: gap_pd_spun, gap_mx_spun, rlx_spun
+   type(sle_result)   :: res
+   real(wp), allocatable :: topo0(:,:), ice_lgm(:,:), d_ice(:,:), ice(:,:)
+   ! four trajectories: VE-1, modal-1, VE-sub(truth), modal-sub
+   type(response)   :: ve1, md1, veN, mdN
+   type(sle_solver) :: slv_ve1, slv_md1, slv_veN, slv_mdN
+   real(wp), allocatable :: Sve1(:,:), Smd1(:,:), SveN(:,:), SmdN(:,:)
+   real(wp), allocatable :: Cve1(:,:), Cmd1(:,:), CveN(:,:), CmdN(:,:)
+   real(wp), allocatable :: Struth0(:,:)
 
-   lmax = 16;  n_spin = 200;  n_degla = 260;  dt = 100.0_wp
+   lmax = 16;  nsub = 8;  n_spin = 60;  n_degla = 200;  dt = 100.0_wp
    if (command_argument_count() >= 1) then; call get_command_argument(1,arg); read(arg,*) lmax;    end if
-   if (command_argument_count() >= 2) then; call get_command_argument(2,arg); read(arg,*) n_spin;  end if
-   if (command_argument_count() >= 3) then; call get_command_argument(3,arg); read(arg,*) n_degla; end if
-   if (command_argument_count() >= 4) then; call get_command_argument(4,arg); read(arg,*) dt;      end if
+   if (command_argument_count() >= 2) then; call get_command_argument(2,arg); read(arg,*) nsub;    end if
+   if (command_argument_count() >= 3) then; call get_command_argument(3,arg); read(arg,*) n_spin;  end if
+   if (command_argument_count() >= 4) then; call get_command_argument(4,arg); read(arg,*) n_degla; end if
+   if (command_argument_count() >= 5) then; call get_command_argument(5,arg); read(arg,*) dt;      end if
    dt = dt*1.0e-3_wp*kyr
 
    call sht_grid_init(sht, lmax, nlat=2*lmax, nphi=4*lmax)
    e = build_M3L70V01()
    allocate(topo0(sht%nphi,sht%nlat), ice_lgm(sht%nphi,sht%nlat))
+   allocate(d_ice(sht%nphi,sht%nlat), ice(sht%nphi,sht%nlat))
+   allocate(Sve1(sht%nphi,sht%nlat), Smd1(sht%nphi,sht%nlat), &
+            SveN(sht%nphi,sht%nlat), SmdN(sht%nphi,sht%nlat), Struth0(sht%nphi,sht%nlat))
+   allocate(Cve1(sht%nphi,sht%nlat), Cmd1(sht%nphi,sht%nlat), &
+            CveN(sht%nphi,sht%nlat), CmdN(sht%nphi,sht%nlat))
    call make_fields(topo0, ice_lgm)
 
-   write(*,'(a)') ' === modal vs VE through the SLE — M3-L70-V01, deglaciation rsl ==='
-   write(*,'(a,i0,a,i0,a,i0,a,f6.1,a)') '   lmax=', lmax, '   n_spin=', n_spin, &
-        '   n_degla=', n_degla, '   dt=', dt/kyr*1.0e3_wp, ' yr   (rotation off)'
+   call response_init_ve(ve1, e, sht, dt)
+   call response_init_ve(veN, e, sht, dt)
+   call response_init_modal(md1, e, sht, n_modes=-1, mode_rank=1, dt_be=5.0_wp*kyr)
+   call response_init_modal(mdN, e, sht, n_modes=-1, mode_rank=1, dt_be=5.0_wp*kyr)
+
+   write(*,'(a)') ' === modal vs VE through the SLE: temporal attribution — M3-L70-V01, deglaciation ==='
+   write(*,'(a,i0,a,i0,a,i0,a,i0,a,f6.1,a)') '   lmax=', lmax, '  nsub=', nsub, &
+        '  n_spin=', n_spin, '  n_degla=', n_degla, '  dt=', dt/kyr*1.0e3_wp, ' yr  (rotation off)'
    write(*,'(a)') ''
 
-   call run_case(.false., gap_pd_cold, gap_mx_cold, rlx_cold)
-   call run_case(.true.,  gap_pd_spun, gap_mx_spun, rlx_spun)
+   ! ---- LGM spin-up: hold the cap so each trajectory relaxes toward equilibrium --
+   do k = 1, n_spin
+      call step_couple(ve1, slv_ve1, Sve1, Cve1, 1,    1.0_wp, 1.0_wp)
+      call step_couple(md1, slv_md1, Smd1, Cmd1, 1,    1.0_wp, 1.0_wp)
+      call step_couple(veN, slv_veN, SveN, CveN, nsub, 1.0_wp, 1.0_wp)
+      call step_couple(mdN, slv_mdN, SmdN, CmdN, nsub, 1.0_wp, 1.0_wp)
+   end do
+   Struth0 = SveN                         ! truth rsl entering the deglaciation
 
-   write(*,'(a)') ' Area-weighted rsl gap  |modal - VE|  [m]  (ensemble metric):'
-   write(*,'(a)') '   case            VE relax span   gap rms @PD    gap max @PD'
-   write(*,'(a,es14.3,es15.3,es15.3)') '   COLD (no spin)', rlx_cold, gap_pd_cold, gap_mx_cold
-   write(*,'(a,es14.3,es15.3,es15.3)') '   SPUN (relaxed)', rlx_spun, gap_pd_spun, gap_mx_spun
+   ! ---- deglaciation: unload the cap linearly to zero -----------------------
+   do k = 1, n_degla
+      f_a = 1.0_wp - real(k-1,wp)/real(n_degla,wp)
+      f_b = 1.0_wp - real(k,  wp)/real(n_degla,wp)
+      call step_couple(ve1, slv_ve1, Sve1, Cve1, 1,    f_a, f_b)
+      call step_couple(md1, slv_md1, Smd1, Cmd1, 1,    f_a, f_b)
+      call step_couple(veN, slv_veN, SveN, CveN, nsub, f_a, f_b)
+      call step_couple(mdN, slv_mdN, SmdN, CmdN, nsub, f_a, f_b)
+   end do
+
+   ! ---- report: each trajectory vs truth (VE, nsub substeps) ----------------
+   write(*,'(a)') ' Area-weighted rsl gap vs TRUTH (VE, N substeps/couple) at present day [m]:'
+   write(*,'(a)') '   trajectory                       gap rms        gap max'
+   write(*,'(a,es15.3,es15.3)') '   modal, 1 step/couple   (model) ', warea_rms(Smd1-SveN), maxval(abs(Smd1-SveN))
+   write(*,'(a,es15.3,es15.3)') '   VE,    1 step/couple           ', warea_rms(Sve1-SveN), maxval(abs(Sve1-SveN))
+   write(*,'(a,es15.3,es15.3)') '   modal, N substeps/couple       ', warea_rms(SmdN-SveN), maxval(abs(SmdN-SveN))
+   write(*,'(a,es15.3,a)')      '   (truth relax span over run     ', warea_rms(SveN-Struth0), ' m)'
    write(*,'(a)') ''
-   write(*,'(a)') ' Read: "VE relax span" is how far the VE rsl moves over the run (the signal'
-   write(*,'(a)') ' scale). If a gap rms is a sizeable fraction of it, the SLE-coupled rsl is'
-   write(*,'(a)') ' where modal departs from VE — and COLD vs SPUN says whether LGM'
-   write(*,'(a)') ' equilibration drives it. ~1e-6 m in both => not SLE/equilibration (temporal/rotation).'
+   write(*,'(a)') ' Read: if modal-1 ≈ small and VE-1 is the large outlier, modal''s exact-exponential'
+   write(*,'(a)') ' is accurate and the ensemble gap is VE''s own under-resolved stepping. If modal-1'
+   write(*,'(a)') ' is large and modal-N is small, modal has a temporal error a linear-σ/FOH advance fixes.'
 
+   call response_destroy(ve1);  call response_destroy(md1)
+   call response_destroy(veN);  call response_destroy(mdN)
    call sht_grid_destroy(sht);  call radial_fe_finalize()
 
 contains
 
-   subroutine run_case(do_spin, gap_pd_rms, gap_pd_max, vrelax)
-      !! Fresh modal + VE responses; optional LGM spin-up; deglaciate to ice-free in
-      !! lockstep. Returns the area-weighted rsl gap at present day and the VE relax span.
-      logical,  intent(in)  :: do_spin
-      real(wp), intent(out) :: gap_pd_rms, gap_pd_max, vrelax
-      type(response)   :: md, ve
-      type(sle_solver) :: sle_md, sle_ve
-      type(sle_result) :: res
-      real(wp), allocatable :: d_ice(:,:), ice(:,:), Smd(:,:), Sve(:,:), Cmd(:,:), Cve(:,:)
-      real(wp), allocatable :: Sve0(:,:)
+   subroutine step_couple(resp, sle, S, C, nss, f_a, f_b)
+      !! Advance one coupling interval in nss substeps, the ice load ramping
+      !! linearly from f_a·cap to f_b·cap (sampled at each substep endpoint).
+      type(response),   intent(inout) :: resp
+      type(sle_solver), intent(inout) :: sle
+      real(wp),         intent(inout) :: S(:,:), C(:,:)
+      integer,          intent(in)    :: nss
+      real(wp),         intent(in)    :: f_a, f_b
+      integer  :: iss
       real(wp) :: f
-      integer  :: j
-
-      call response_init_ve(ve, e, sht, dt);  call response_set_dt(ve, dt)
-      call response_init_modal(md, e, sht, n_modes=-1, mode_rank=1, dt_be=5.0_wp*kyr)
-      call response_set_dt(md, dt)
-
-      allocate(d_ice(sht%nphi,sht%nlat), ice(sht%nphi,sht%nlat))
-      allocate(Smd(sht%nphi,sht%nlat), Sve(sht%nphi,sht%nlat))
-      allocate(Cmd(sht%nphi,sht%nlat), Cve(sht%nphi,sht%nlat), Sve0(sht%nphi,sht%nlat))
-
-      ! LGM spin-up: hold the full cap so the memory relaxes toward equilibrium.
-      if (do_spin) then
-         d_ice = ice_lgm;  ice = ice_lgm
-         do j = 1, n_spin
-            call sle_solve(sle_ve, sht, ve, d_ice, ice, topo0, Sve, Cve, res)
-            call sle_solve(sle_md, sht, md, d_ice, ice, topo0, Smd, Cmd, res)
-         end do
-      end if
-      Sve0 = Sve                       ! VE rsl entering the deglaciation
-
-      ! Deglaciation: unload the cap linearly to zero.
-      gap_pd_rms = 0.0_wp;  gap_pd_max = 0.0_wp
-      do k = 1, n_degla
-         f = 1.0_wp - real(k,wp)/real(n_degla,wp)
+      call response_set_dt(resp, dt/real(nss,wp))
+      do iss = 1, nss
+         f = f_a + (f_b - f_a)*real(iss,wp)/real(nss,wp)
          d_ice = f*ice_lgm;  ice = d_ice
-         call sle_solve(sle_ve, sht, ve, d_ice, ice, topo0, Sve, Cve, res)
-         call sle_solve(sle_md, sht, md, d_ice, ice, topo0, Smd, Cmd, res)
+         call sle_solve(sle, sht, resp, d_ice, ice, topo0, S, C, res)
       end do
-
-      gap_pd_rms = warea_rms(Smd - Sve)
-      gap_pd_max = maxval(abs(Smd - Sve))
-      vrelax     = warea_rms(Sve - Sve0)
-
-      call response_destroy(md);  call response_destroy(ve)
-   end subroutine run_case
+   end subroutine step_couple
 
    real(wp) function warea_rms(d) result(r)
-      !! Area-weighted (cos lat, via the SHT surface integral) RMS of a grid field.
+      !! Area-weighted (cos lat) RMS of a grid field.
       real(wp), intent(in) :: d(:,:)
       r = sqrt(sht_grid_surface_integral(sht, d*d) / (4.0_wp*pi))
    end function warea_rms
