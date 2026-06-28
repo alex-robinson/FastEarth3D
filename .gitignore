@@ -8,6 +8,9 @@
 *.x
 *.dSYM/
 
+# runme related machine-specific config file
+.runme/config.toml
+
 # fesm-utils is symlinked in per-machine, not committed
 /fesm-utils
 
