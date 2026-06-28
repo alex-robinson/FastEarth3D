@@ -30,7 +30,7 @@ module fe_response
    use fe_viscoelastic,    only: NLAM, ve_strain_constants, dissipative_rhs, &
                                  advance_memory, strain_coeffs, scheme_is_implicit, &
                                  SCHEME_FE, SCHEME_TRAP
-   use fe_sht,             only: sht_grid, sht_grid_lmidx
+   use fe_sht,             only: sht_grid, sht_grid_lmidx, sht_grid_synthesis, sht_grid_analysis
    use fe_tensor_sh,       only: tensor_sh, TLAM, tensor_sh_init, tensor_sh_thread_cfg, tensor_sh_synth, tensor_sh_analysis, tensor_sh_destroy
    use fe_modal,           only: modal_solve, modal_spectrum, modal_spectrum_destroy
    use, intrinsic :: iso_c_binding, only: c_ptr
@@ -47,6 +47,7 @@ module fe_response
    public :: response_save_state, response_restore_state, response_stash_coarse
    public :: response_coarse_fine_error, response_max_rate, response_memory_norm
    public :: response_enable_lateral_visc, response_enable_lateral_visc_from_nodes
+   public :: response_enable_lateral_visc_modal, response_enable_lateral_visc_modal_from_nodes
 
    integer, parameter :: RESP_NULL = 0, RESP_ELASTIC = 1, RESP_VE = 2, RESP_MODAL = 3
 
@@ -207,6 +208,23 @@ module fe_response
       ! memory, used to depth-weight laterally-varying viscosity into a per-mode lateral
       ! rate factor (design-modal.md §4). Unused by the 1-D (radial-η) response.
       real(wp),    allocatable :: mwgt(:,:)      !! (ne, tot)
+      ! --- RESP_MODAL lateral viscosity (split-operator rate modulation, §4) ---
+      ! Reference per-element log10(η) and a Maxwell (memory-bearing) mask, kept so the
+      ! lateral enable can form the per-element log10 perturbation against the model's
+      ! own radial reference without re-deriving the earth structure.
+      real(wp),    allocatable :: logeta_ref(:)  !! (ne) log10 η_radial(e)
+      logical,     allocatable :: lat_mw(:)      !! (ne) element carries Maxwell memory
+      ! Lie split of φ̇ = R(θ,φ)·(σ−φ)/τ into a degree-exact MEAN modulation (spectral)
+      ! and a zero-mean spatial ANOMALY (real-space, grouped by within-degree mode rank):
+      !   mrbar(g)  — per-mode mean rate factor R̄_{l,i} = Σ_e mwgt(e,g)·ρ̄(e), ρ̄ the
+      !               grid-mean local rate ratio η_ref/η_local. Rescales exp(−Δt·R̄/τ_i(l)),
+      !               so a uniform (even scaled) field reduces to the 1-D advance exactly.
+      !   mlatRate(:,:,i) — per-RANK Δt-invariant zero-mean rate anomaly [1/s] = A_i(θ,φ)/τ̂_i,
+      !               applied in real space via K scalar SHTs (active ranks only, rank3d).
+      real(wp),    allocatable :: mrbar(:)       !! (tot) mean modulation factor (default 1)
+      real(wp),    allocatable :: mlatRate(:,:,:)!! (nphi,nlat,maxmode) rank rate anomaly
+      integer,     allocatable :: rank3d(:)      !! (nrank3d) ranks with non-trivial anomaly
+      integer :: maxmode = 0, nrank3d = 0
    end type response
 
 contains
@@ -496,6 +514,19 @@ contains
       self%kind = RESP_MODAL
       call radial_mesh_build(mesh, earth)
       self%ne = mesh%ne                       ! radial elements (for the depth weights / lateral η)
+      self%nr = mesh%nr
+      ! reference radial profile, kept for the lateral-viscosity enable: node radii (the
+      ! 3-D η field is sampled at these) and per-element log10 η with a Maxwell mask.
+      allocate(self%r(self%nr));  self%r = mesh%r
+      allocate(self%logeta_ref(self%ne), self%lat_mw(self%ne))
+      do i = 1, self%ne
+         self%lat_mw(i) = (earth%layers(mesh%elem_layer(i))%rheology == RHEOL_MAXWELL)
+         if (self%lat_mw(i)) then
+            self%logeta_ref(i) = log10(earth%layers(mesh%elem_layer(i))%eta)
+         else
+            self%logeta_ref(i) = 0.0_wp
+         end if
+      end do
       self%lmax = sht%lmax;  self%nlm = sht%nlm
       self%a = earth%r_earth;  self%g = earth_gravity_at(earth, earth%r_earth)
       self%dt = 0.0_wp;  self%time = 0.0_wp
@@ -632,20 +663,30 @@ contains
       end do
    end subroutine modal_response_horizontal
 
-   subroutine modal_advance(self, from_n, sigma_lm)
+   subroutine modal_advance(self, sht, from_n, sigma_lm)
       !! Advance the modal amplitudes one step under load σ (held constant over the
       !! step): φ_{k,i} ← e^{−Δt/τ_i}·φ⁰_{k,i} + (1−e^{−Δt/τ_i})·σ_lm, exact. The
       !! base φ⁰ is the entering snapshot phi_n when from_n, else the current φ.
+      !!
+      !! With laterally-varying viscosity (lat_visc, §4) this is the split-operator step:
+      !! (1) the MEAN modulation rescales the rate by the degree-exact per-mode factor
+      !! mrbar (spectral, here); (2) the zero-mean spatial ANOMALY is applied in real
+      !! space by modal_lateral_anomaly. A uniform field has mrbar const, no active
+      !! anomaly ranks → this reduces to the 1-D advance above exactly.
       type(response), intent(inout) :: self
+      type(sht_grid), intent(in)    :: sht
       logical,        intent(in)    :: from_n
       complex(wp),    intent(in)    :: sigma_lm(:)
-      real(wp) :: ex
+      real(wp) :: ex, rfac
       integer  :: k, l, lm, base, poff, i
+      logical  :: lateral
+      lateral = self%lat_visc
       do k = 1, self%nk
          l = self%kdeg(k);  lm = self%k2lm(k)
          base = self%spec_off(l);  poff = self%phi_off(k)
          do i = 1, self%nmode_deg(l)
-            ex = exp(-self%dt/self%mtau(base+i))
+            rfac = 1.0_wp;  if (lateral) rfac = self%mrbar(base+i)   ! mean rate modulation
+            ex = exp(-self%dt*rfac/self%mtau(base+i))
             if (from_n) then
                self%phi(poff+i) = ex*self%phi_n(poff+i) + (1.0_wp-ex)*sigma_lm(lm)
             else
@@ -653,7 +694,46 @@ contains
             end if
          end do
       end do
+      if (lateral .and. self%nrank3d > 0) call modal_lateral_anomaly(self, sht, sigma_lm)
    end subroutine modal_advance
+
+   subroutine modal_lateral_anomaly(self, sht, sigma_lm)
+      !! Real-space spatial-anomaly substep of the modal lateral-viscosity split-operator.
+      !! For each active within-degree rank i, gather the rank-i amplitudes φ_{·,i} as an
+      !! (l,m) field, synthesize to the Gauss grid, relax toward the (l≥1) load by the
+      !! zero-mean rate anomaly E2 = exp(−Δt·mlatRate_i), and analyse + scatter back. Cost
+      !! is 2·nrank3d (+1) scalar SHTs — the K scalar transforms of design-modal.md §4.
+      type(response), intent(inout) :: self
+      type(sht_grid), intent(in)    :: sht
+      complex(wp),    intent(in)    :: sigma_lm(:)
+      complex(wp), allocatable :: pvec(:), svec(:)
+      real(wp),    allocatable :: gphi(:,:), gsig(:,:), E2(:,:)
+      integer :: r, i, k, l, poff, lm0
+      allocate(pvec(self%nlm), svec(self%nlm))
+      allocate(gphi(sht%nphi,sht%nlat), gsig(sht%nphi,sht%nlat), E2(sht%nphi,sht%nlat))
+      ! load field on the grid, degree-0 (uniform) removed: the deforming modes relax
+      ! only toward the l≥1 load, matching the spectral substep's per-(l,m) target.
+      svec = sigma_lm;  lm0 = sht_grid_lmidx(sht, 0, 0);  svec(lm0) = (0.0_wp, 0.0_wp)
+      call sht_grid_synthesis(sht, svec, gsig)
+      do r = 1, self%nrank3d
+         i  = self%rank3d(r)
+         E2 = exp(-self%dt*self%mlatRate(:,:,i))
+         pvec = (0.0_wp, 0.0_wp)
+         do k = 1, self%nk
+            if (self%nmode_deg(self%kdeg(k)) < i) cycle
+            pvec(self%k2lm(k)) = self%phi(self%phi_off(k)+i)
+         end do
+         call sht_grid_synthesis(sht, pvec, gphi)
+         gphi = E2*gphi + (1.0_wp - E2)*gsig
+         call sht_grid_analysis(sht, gphi, pvec)          ! NB: analysis overwrites gphi
+         do k = 1, self%nk
+            if (self%nmode_deg(self%kdeg(k)) < i) cycle
+            poff = self%phi_off(k)
+            self%phi(poff+i) = pvec(self%k2lm(k))
+         end do
+      end do
+      deallocate(pvec, svec, gphi, gsig, E2)
+   end subroutine modal_lateral_anomaly
 
    subroutine modal_response_commit(self, sht, sigma_lm)
       !! Non-SLE (forced/1-D) path: advance φ from the current state with the held
@@ -661,7 +741,7 @@ contains
       type(response), intent(inout) :: self
       type(sht_grid), intent(in)    :: sht
       complex(wp),    intent(in)    :: sigma_lm(:)
-      call modal_advance(self, .false., sigma_lm)
+      call modal_advance(self, sht, .false., sigma_lm)
       call modal_drift(self)
       self%time = self%time + self%dt
    end subroutine modal_response_commit
@@ -683,7 +763,7 @@ contains
       type(response), intent(inout) :: self
       type(sht_grid), intent(in)    :: sht
       complex(wp),    intent(in)    :: sigma_lm(:)
-      call modal_advance(self, .true., sigma_lm)
+      call modal_advance(self, sht, .true., sigma_lm)
       call modal_drift(self)
       self%couple_pass = self%couple_pass + 1
       self%couple_done = .true.
@@ -713,6 +793,12 @@ contains
       if (allocated(self%mdrN))      deallocate(self%mdrN)
       if (allocated(self%mdrV))      deallocate(self%mdrV)
       if (allocated(self%mwgt))      deallocate(self%mwgt)
+      if (allocated(self%logeta_ref)) deallocate(self%logeta_ref)
+      if (allocated(self%lat_mw))    deallocate(self%lat_mw)
+      if (allocated(self%mrbar))     deallocate(self%mrbar)
+      if (allocated(self%mlatRate))  deallocate(self%mlatRate)
+      if (allocated(self%rank3d))    deallocate(self%rank3d)
+      self%maxmode = 0;  self%nrank3d = 0;  self%lat_visc = .false.
    end subroutine modal_response_destroy
 
    ! --- viscoelastic field driver ---------------------------------------------
@@ -1141,6 +1227,118 @@ contains
       call response_enable_lateral_visc(self, sht, pert)
       deallocate(pert)
    end subroutine response_enable_lateral_visc_from_nodes
+
+   subroutine response_enable_lateral_visc_modal(self, sht, pert_elem)
+      !! RESP_MODAL lateral viscosity (design-modal.md §4): depth-weighted split-operator
+      !! rate modulation. `pert_elem` is the per-element log10 viscosity perturbation on
+      !! the Gauss grid (nphi,nlat,ne): η_local = η_radial·10^pert, so the local relaxation
+      !! rate scales by ρ = 10^(−pert). Builds the Lie split of φ̇ = R(θ,φ)·(σ−φ)/τ:
+      !!   (i) a degree-EXACT per-mode MEAN factor mrbar(g) = Σ_e mwgt(e,g)·ρ̄(e) folded
+      !!       into the spectral exp(−Δt·R̄/τ_i(l)); and
+      !!  (ii) a per-RANK zero-mean spatial ANOMALY rate mlatRate(:,:,i) = A_i(θ,φ)/τ̂_i,
+      !!       with characteristic depth weight ŵ_i and rate τ̂_i taken as the mode-strength
+      !!       (|C^u|)-weighted average over the degrees carrying a rank-i mode.
+      !! A laterally-uniform (even uniformly-scaled) field gives ρ̄ const and A_i ≡ 0, so
+      !! the advance reduces to the 1-D modal step exactly. A rank whose anomaly stays
+      !! below visc3d_tol (in rate-ratio units) is left inactive (no per-step SHT).
+      type(response), intent(inout) :: self
+      type(sht_grid), intent(in)    :: sht
+      real(wp),       intent(in)    :: pert_elem(:,:,:)   !! (nphi,nlat,ne)
+      real(wp), allocatable :: rho(:,:,:), rhobar(:), what(:), Ri(:,:)
+      real(wp) :: wt, wsum, tauhat, Rbar, anom
+      integer  :: e, g, l, i, tot, ngrid
+      if (size(pert_elem,1) /= sht%nphi .or. size(pert_elem,2) /= sht%nlat .or. &
+          size(pert_elem,3) /= self%ne) &
+         error stop 'enable_lateral_visc_modal: pert_elem must be (nphi,nlat,ne)'
+      ngrid = sht%nphi*sht%nlat
+      tot   = size(self%mtau)
+      self%maxmode = maxval(self%nmode_deg(1:self%lmax))
+
+      ! local rate ratio ρ = η_ref/η_local = 10^(−pert) and its grid mean per element
+      allocate(rho(sht%nphi, sht%nlat, self%ne), rhobar(self%ne))
+      do e = 1, self%ne
+         if (self%lat_mw(e)) then
+            rho(:,:,e) = 10.0_wp**(-pert_elem(:,:,e))
+         else
+            rho(:,:,e) = 1.0_wp                       ! memory-free element: no modulation
+         end if
+         rhobar(e) = sum(rho(:,:,e))/real(ngrid, wp)
+      end do
+
+      ! (i) degree-exact per-mode MEAN factor R̄_{l,i} = Σ_e mwgt(e,g)·ρ̄(e)
+      if (allocated(self%mrbar)) deallocate(self%mrbar)
+      allocate(self%mrbar(tot))
+      do g = 1, tot
+         self%mrbar(g) = dot_product(self%mwgt(:,g), rhobar)
+      end do
+
+      ! (ii) per-rank zero-mean spatial anomaly grids (characteristic weight + rate)
+      if (allocated(self%mlatRate)) deallocate(self%mlatRate)
+      if (allocated(self%rank3d))   deallocate(self%rank3d)
+      allocate(self%mlatRate(sht%nphi, sht%nlat, self%maxmode));  self%mlatRate = 0.0_wp
+      allocate(what(self%ne), Ri(sht%nphi, sht%nlat))
+      block
+         integer :: active(self%maxmode), na
+         na = 0
+         do i = 1, self%maxmode
+            ! characteristic depth weight ŵ_i and rate τ̂_i: |C^u|-weighted average over
+            ! the degrees l carrying a rank-i mode (Σ_e ŵ_i = 1, so the mean stays consistent).
+            what = 0.0_wp;  tauhat = 0.0_wp;  wsum = 0.0_wp
+            do l = 1, self%lmax
+               if (self%nmode_deg(l) < i) cycle
+               g  = self%spec_off(l) + i;  wt = abs(self%mCu(g))
+               what   = what   + wt*self%mwgt(:,g)
+               tauhat = tauhat + wt*self%mtau(g)
+               wsum   = wsum   + wt
+            end do
+            if (wsum <= 0.0_wp) cycle
+            what = what/wsum;  tauhat = tauhat/wsum
+            ! R_i(θ,φ) = Σ_e ŵ_i(e)·ρ(e,θ,φ); zero-mean anomaly A_i = R_i − mean(R_i)
+            Ri = 0.0_wp
+            do e = 1, self%ne
+               if (what(e) /= 0.0_wp) Ri = Ri + what(e)*rho(:,:,e)
+            end do
+            Rbar = sum(Ri)/real(ngrid, wp)
+            anom = maxval(abs(Ri - Rbar))
+            if (anom > self%visc3d_tol) then
+               self%mlatRate(:,:,i) = (Ri - Rbar)/tauhat
+               na = na + 1;  active(na) = i
+            end if
+         end do
+         if (allocated(self%rank3d)) deallocate(self%rank3d)
+         allocate(self%rank3d(na));  self%rank3d = active(1:na)
+         self%nrank3d = na
+      end block
+      self%lat_visc = .true.
+      deallocate(rho, rhobar, what, Ri)
+   end subroutine response_enable_lateral_visc_modal
+
+   subroutine response_enable_lateral_visc_modal_from_nodes(self, sht, visc_node)
+      !! RESP_MODAL analogue of response_enable_lateral_visc_from_nodes: bridge the
+      !! node-based absolute log10(η) field (nphi*nlat, nr) to per-element perturbations
+      !! against the modal radial reference (logeta_ref) and enable the lateral modulation.
+      type(response), intent(inout) :: self
+      type(sht_grid), intent(in)    :: sht
+      real(wp),       intent(in)    :: visc_node(:,:)   !! (nphi*nlat, nr) log10(η)
+      real(wp), allocatable :: pert(:,:,:)
+      real(wp) :: elem_abs
+      integer  :: e, i, j, sp
+      if (size(visc_node,1) /= sht%nphi*sht%nlat .or. size(visc_node,2) /= self%nr) &
+         error stop 'enable_lateral_visc_modal_from_nodes: visc_node must be (nphi*nlat, nr)'
+      allocate(pert(sht%nphi, sht%nlat, self%ne));  pert = 0.0_wp
+      do e = 1, self%ne
+         if (.not. self%lat_mw(e)) cycle              ! elastic/fluid: memory-free, no modulation
+         do j = 1, sht%nlat
+            do i = 1, sht%nphi
+               sp = i + (j-1)*sht%nphi
+               elem_abs = 0.5_wp*(visc_node(sp,e) + visc_node(sp,e+1))   ! log10-mean of bracketing nodes
+               pert(i,j,e) = elem_abs - self%logeta_ref(e)
+            end do
+         end do
+      end do
+      call response_enable_lateral_visc_modal(self, sht, pert)
+      deallocate(pert)
+   end subroutine response_enable_lateral_visc_modal_from_nodes
 
    subroutine advance_memory_3d(self, sht, sigma_lm)
       !! Tensor-correct pseudo-spectral FE memory advance for laterally-varying

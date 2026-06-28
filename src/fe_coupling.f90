@@ -30,7 +30,8 @@ module fe_coupling
    use fe_earth_structure, only: earth_model, build_earth, load_visc_3d
    use fe_viscoelastic,    only: scheme_from_name
    use fe_response,        only: response_destroy, response_enable_lateral_visc_from_nodes, response, &
-                                 response_init_elastic, response_init_ve, response_init_null, response_init_modal
+                                 response_init_elastic, response_init_ve, response_init_null, response_init_modal, &
+                                 response_enable_lateral_visc_modal_from_nodes, RESP_VE, RESP_MODAL
    use fe_modal,           only: rank_from_name
    use fe_sle,             only: sle_solver, sle_result, ocean_function
    use fe_timestep,        only: stepper_advance, adaptive_stepper
@@ -125,9 +126,6 @@ contains
       if (present(defer_visc_3d)) then
          if (defer_visc_3d) do_visc_3d = .false.
       end if
-      if (do_visc_3d .and. trim(p%earth_response) /= "ve") &
-         error stop "solid_earth_init: l_visc_3d is only supported with earth_response='ve' &
-                    &(modal lateral viscosity is a later task)"
       if (do_visc_3d) call solid_earth_enable_visc_3d(self, p, sht)
 
       ! sea-level equation knobs. Warm-start the fixed point across steps: self%rsl
@@ -190,7 +188,11 @@ contains
       type(sht_grid),       intent(in), target  :: sht
       real(wp), allocatable :: visc_node(:,:)
       call load_visc_3d(p, sht, self%resp%r, visc_node)
-      call response_enable_lateral_visc_from_nodes(self%resp, sht, visc_node)
+      select case (self%resp%kind)
+      case (RESP_VE);    call response_enable_lateral_visc_from_nodes(self%resp, sht, visc_node)
+      case (RESP_MODAL); call response_enable_lateral_visc_modal_from_nodes(self%resp, sht, visc_node)
+      case default;      error stop 'solid_earth_enable_visc_3d: lateral viscosity needs earth_response=ve|modal'
+      end select
    end subroutine solid_earth_enable_visc_3d
 
    subroutine solid_earth_update(self, h_ice, dt)

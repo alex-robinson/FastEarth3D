@@ -315,7 +315,12 @@ test_modal_resp: fastearth-static | $(bindir)
 		-o $(bindir)/test_modal_resp.x $(objdir)/libfastearth.a $(LFLAGS)
 	@echo "    $(bindir)/test_modal_resp.x is ready."
 
-TESTS = test_params test_drive test_band test_sht test_earth test_mesh test_integrals test_assembly test_love test_relax test_tidal test_rotation test_rotation_sle test_response test_sle test_flotation test_flotation_load test_ve_response test_tensor_sh test_response_3d test_sle_ve test_benchmark_love test_coupling test_restart test_benchmark_disc test_benchmark_martinec test_field test_sle_subgrid test_visc_load test_rotinv test_remap test_modal test_modal_resp
+test_modal_visc3d: fastearth-static | $(bindir)
+	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(testdir)/test_modal_visc3d.f90 \
+		-o $(bindir)/test_modal_visc3d.x $(objdir)/libfastearth.a $(LFLAGS)
+	@echo "    $(bindir)/test_modal_visc3d.x is ready."
+
+TESTS = test_params test_drive test_band test_sht test_earth test_mesh test_integrals test_assembly test_love test_relax test_tidal test_rotation test_rotation_sle test_response test_sle test_flotation test_flotation_load test_ve_response test_tensor_sh test_response_3d test_sle_ve test_benchmark_love test_coupling test_restart test_benchmark_disc test_benchmark_martinec test_field test_sle_subgrid test_visc_load test_rotinv test_remap test_modal test_modal_resp test_modal_visc3d
 
 check: $(TESTS)
 	@echo ""
