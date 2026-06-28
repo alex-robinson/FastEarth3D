@@ -11,9 +11,9 @@
 #                 with n_modes=all converges to VE exactly; isolates the accuracy
 #                 of the mode-count / ranking dial (no lateral approximation).
 #   2. deglac3d — full run with laterally-varying (3-D) viscosity. The LGM spin-up
-#                 is done with the cheap 1-D solver in every case (spinup_1d, via
-#                 examples/visc3d_on.nml), then the transient runs on the 3-D path.
-#                 This is where modal is a genuine approximation to VE (design §4).
+#                 is done with the cheap 1-D solver in every case (spinup_1d=true),
+#                 then the transient runs on the 3-D path. This is where modal is a
+#                 genuine approximation to VE (design §4).
 #
 # Each set sweeps the modal dial: earth_response=modal x n_modes x mode_rank, plus
 # n_modes=all, plus the single VE reference. Compare each modal out.nc (rsl/bsl)
@@ -58,8 +58,11 @@ RANKS=${RANKS:-isostatic,rate,residue}       # mode_rank metric
 #   ""       stage the run dirs only (no run)
 RUNME_FLAGS=${RUNME_FLAGS--s -r}     # note: `-` not `:-`, so RUNME_FLAGS="" means stage-only
 
-OVERLAY=examples/visc3d_on.nml               # turns on l_visc_3d + spinup_1d (booleans can't be set via -p)
 REF=data/reference/rtopo_gauss_l${LMAX}.nc   # present-day reference (i_eq=1); resolved via the rundir 'data' symlink
+
+# Turning on 3-D viscosity + 1-D spin-up. runme writes booleans quoted ('true'),
+# but the model's nml reader parses 'true'/'false' as logicals, so -p is fine.
+VISC3D_ON=(fe3d.l_visc_3d=true fe3d.spinup_1d=true fe3d.visc_3d_file="$VISC3D")
 
 # Parameters common to every run (machine paths + the shared deglaciation setup).
 COMMON=(
@@ -76,15 +79,14 @@ COMMON=(
   fe3d.file_out=out.nc
 )
 
-# launch <outdir> <ensemble:0|1> <overlay_nml|-> <extra -p args...>
+# launch <outdir> <ensemble:0|1> <extra -p args...>
 launch() {
-  local out=$1 ens=$2 overlay=$3; shift 3
-  local nflag=() aflag=()
-  [ "$overlay" != "-" ] && nflag=(-n "$overlay")     # boolean toggles from a namelist overlay
+  local out=$1 ens=$2; shift 2
+  local aflag=()
   [ "$ens" = "1" ] && aflag=(-a)                     # name ensemble member dirs from their params
   echo ">>> $out   ($*)"
   runme -o "$out" -e main --omp "$OMP" $RUNME_FLAGS \
-        ${nflag[@]+"${nflag[@]}"} ${aflag[@]+"${aflag[@]}"} \
+        ${aflag[@]+"${aflag[@]}"} \
         -p "${COMMON[@]}" "$@"
 }
 
@@ -94,15 +96,15 @@ echo "exp root: $EXP    runme flags: '$RUNME_FLAGS'"
 # ---------------------------------------------------------------------------
 # Set 1 — idealized: 1-D (radial) viscosity. modal(n_modes=all) -> VE exactly.
 # ---------------------------------------------------------------------------
-launch "$EXP/radial/ve"        0 - fe3d.earth_response=ve    fe3d.scheme=fe
-launch "$EXP/radial/modal"     1 - fe3d.earth_response=modal fe3d.n_modes="$N_MODES" fe3d.mode_rank="$RANKS"
-launch "$EXP/radial/modal_all" 0 - fe3d.earth_response=modal fe3d.n_modes=-1
+launch "$EXP/radial/ve"        0 fe3d.earth_response=ve    fe3d.scheme=fe          fe3d.l_visc_3d=false
+launch "$EXP/radial/modal"     1 fe3d.earth_response=modal fe3d.n_modes="$N_MODES" fe3d.mode_rank="$RANKS" fe3d.l_visc_3d=false
+launch "$EXP/radial/modal_all" 0 fe3d.earth_response=modal fe3d.n_modes=-1         fe3d.l_visc_3d=false
 
 # ---------------------------------------------------------------------------
-# Set 2 — full deglaciation: 3-D viscosity, 1-D spin-up (examples/visc3d_on.nml).
+# Set 2 — full deglaciation: 3-D viscosity, 1-D spin-up.
 # ---------------------------------------------------------------------------
-launch "$EXP/deglac3d/ve"        0 "$OVERLAY" fe3d.earth_response=ve    fe3d.scheme=fe          fe3d.visc_3d_file="$VISC3D"
-launch "$EXP/deglac3d/modal"     1 "$OVERLAY" fe3d.earth_response=modal fe3d.n_modes="$N_MODES" fe3d.mode_rank="$RANKS" fe3d.visc_3d_file="$VISC3D"
-launch "$EXP/deglac3d/modal_all" 0 "$OVERLAY" fe3d.earth_response=modal fe3d.n_modes=-1         fe3d.visc_3d_file="$VISC3D"
+launch "$EXP/deglac3d/ve"        0 fe3d.earth_response=ve    fe3d.scheme=fe          "${VISC3D_ON[@]}"
+launch "$EXP/deglac3d/modal"     1 fe3d.earth_response=modal fe3d.n_modes="$N_MODES" fe3d.mode_rank="$RANKS" "${VISC3D_ON[@]}"
+launch "$EXP/deglac3d/modal_all" 0 fe3d.earth_response=modal fe3d.n_modes=-1         "${VISC3D_ON[@]}"
 
 echo "done."
