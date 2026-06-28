@@ -52,7 +52,7 @@ div.csl-indent {
 <script src="site_libs/quarto-search/fuse.min.js"></script>
 <script src="site_libs/quarto-search/quarto-search.js"></script>
 <meta name="quarto:offset" content="./">
-<link href="./implementation.html" rel="next">
+<link href="./getting-started.html" rel="next">
 <script src="site_libs/quarto-html/quarto.js" type="module"></script>
 <script src="site_libs/quarto-html/tabsets/tabsets.js" type="module"></script>
 <script src="site_libs/quarto-html/popper.min.js"></script>
@@ -310,6 +310,10 @@ window.Quarto = {
     <a class="nav-link active" href="./index.html" aria-current="page"> 
 <span class="menu-text">Overview</span></a>
   </li>  
+  <li class="nav-item">
+    <a class="nav-link" href="./getting-started.html"> 
+<span class="menu-text">Install &amp; run</span></a>
+  </li>  
   <li class="nav-item dropdown ">
     <a class="nav-link dropdown-toggle" href="#" id="nav-menu-physics" role="link" data-bs-toggle="dropdown" aria-expanded="false">
  <span class="menu-text">Physics</span>
@@ -324,12 +328,16 @@ window.Quarto = {
  <span class="dropdown-text">Maxwell rheology and the memory stress</span></a>
   </li>  
         <li>
+    <a class="dropdown-item" href="./physics/modal.html">
+ <span class="dropdown-text">The modal solver (a tunable approximation)</span></a>
+  </li>  
+        <li>
     <a class="dropdown-item" href="./physics/sea-level.html">
  <span class="dropdown-text">The sea-level equation</span></a>
   </li>  
         <li>
     <a class="dropdown-item" href="./physics/rotation.html">
- <span class="dropdown-text">Rotational feedback (planned)</span></a>
+ <span class="dropdown-text">Rotational feedback (polar motion)</span></a>
   </li>  
     </ul>
   </li>
@@ -416,6 +424,12 @@ window.Quarto = {
 </li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
+  <a href="./getting-started.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Installation and running</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
   <a href="./implementation.html" class="sidebar-item-text sidebar-link">
  <span class="menu-text">Implementation and attribution</span></a>
   </div>
@@ -445,6 +459,12 @@ window.Quarto = {
 </li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
+  <a href="./physics/modal.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">The modal solver (a tunable approximation)</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
   <a href="./physics/sea-level.html" class="sidebar-item-text sidebar-link">
  <span class="menu-text">The sea-level equation</span></a>
   </div>
@@ -452,7 +472,7 @@ window.Quarto = {
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
   <a href="./physics/rotation.html" class="sidebar-item-text sidebar-link">
- <span class="menu-text">Rotational feedback (planned)</span></a>
+ <span class="menu-text">Rotational feedback (polar motion)</span></a>
   </div>
 </li>
       </ul>
@@ -523,6 +543,12 @@ window.Quarto = {
   <div class="sidebar-item-container"> 
   <a href="./benchmarks/sea-level.html" class="sidebar-item-text sidebar-link">
  <span class="menu-text">Benchmark: the sea-level equation</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="./benchmarks/modal-vs-ve.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Modal vs VE: accuracy and cost</span></a>
   </div>
 </li>
       </ul>
@@ -622,19 +648,22 @@ window.Quarto = {
 </tr>
 </tbody>
 </table>
+<p>On top of the full time-domain solver, FastEarth3D adds an optional <strong>reduced <a href="./physics/modal.html">modal solver</a></strong> — the per-degree relaxation collapsed onto a handful of exponential modes — as a faster, tunable approximation that converges back to the full solver. It is a dial, not a different method.</p>
 </section>
 <section id="what-is-in-these-docs" class="level2">
 <h2 class="anchored" data-anchor-id="what-is-in-these-docs">What is in these docs</h2>
 <ul>
-<li><strong><a href="./physics/governing-equations.html">Physics</a></strong> — the governing equations (momentum, Poisson, incompressibility), the Maxwell rheology and its memory stress, the sea-level equation, and rotational feedback.</li>
+<li><strong><a href="./getting-started.html">Install &amp; run</a></strong> — building with <code>configme</code>, the <code>&amp;fe3d</code> namelist, the drivers, and staging runs with <code>runme</code>.</li>
+<li><strong><a href="./physics/governing-equations.html">Physics</a></strong> — the governing equations (momentum, Poisson, incompressibility), the Maxwell rheology and its memory stress, the <a href="./physics/modal.html">modal solver</a> (a tunable reduced approximation), the sea-level equation, and rotational feedback.</li>
 <li><strong><a href="./discretization/spectral.html">Discretization</a></strong> — the spectral reduction, the P1/P0 radial finite-element operator, the explicit time scheme, and the banded direct solver.</li>
-<li><strong><a href="./benchmarks/index.html">Benchmarks</a></strong> — a summary table of validation results, with one page per benchmark (Love numbers, the disc-load response, and the sea-level-equation intercomparison).</li>
+<li><strong><a href="./benchmarks/index.html">Benchmarks</a></strong> — a summary table of validation results, with one page per benchmark (Love numbers, the disc-load response, the sea-level-equation intercomparison, and the modal-vs-VE study).</li>
 <li><strong><a href="./implementation.html">Implementation</a></strong> — the libraries we build on (SHTns, FFTW), the codebases that informed the validation, and the attribution and clean-room policy.</li>
 </ul>
 </section>
 <section id="status" class="level2">
 <h2 class="anchored" data-anchor-id="status">Status</h2>
-<p>The solver core, the viscoelastic time stepping, the response operator, and the sea-level equation are implemented and validated in 1D against the Spada et al. (2011) and Martinec et al.&nbsp;(2018) benchmarks. Rotational feedback and the full 3D (laterally varying viscosity) validation are the next rungs of the <a href="./benchmarks/index.html">validation ladder</a>. The public API and installation workflow are still evolving and are intentionally left light here.</p>
+<p>The full model is implemented: the spectral–finite-element solver core, the viscoelastic time stepping and response operator, the self-consistent migrating-coastline sea-level equation, rotational feedback (polar motion), and <strong>laterally varying (3D) viscosity</strong> — together with restart and spin-up, online remapping of lon-lat forcing, and a host-coupling API. A second response operator, the reduced <strong><a href="./physics/modal.html">modal solver</a></strong>, offers a tunable, faster approximation that converges back to the full solver.</p>
+<p>Validation against the Spada et al.&nbsp;(2011) and Martinec et al.&nbsp;(2018) community benchmarks covers the radial solver, the disc-load response, and the sea-level equation; rotation is checked against Spada test 3/2. Cross-code validation of the 3D viscosity path and the <a href="./benchmarks/modal-vs-ve.html">modal-vs-VE accuracy/cost study</a> are ongoing — see the <a href="./benchmarks/index.html">validation ladder</a>.</p>
 
 
 
@@ -1077,8 +1106,8 @@ Willeit, M., A. Ganopolski, A. Robinson, and N. R. Edwards. 2022. <span>“The <
   <div class="nav-page nav-page-previous">
   </div>
   <div class="nav-page nav-page-next">
-      <a href="./implementation.html" class="pagination-link" aria-label="Implementation and attribution">
-        <span class="nav-page-text">Implementation and attribution</span> <i class="bi bi-arrow-right-short"></i>
+      <a href="./getting-started.html" class="pagination-link" aria-label="Installation and running">
+        <span class="nav-page-text">Installation and running</span> <i class="bi bi-arrow-right-short"></i>
       </a>
   </div>
 </nav>

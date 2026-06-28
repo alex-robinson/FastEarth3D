@@ -7,7 +7,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 
 
-<title>Benchmark: the sea-level equation – FastEarth3D</title>
+<title>The modal solver (a tunable approximation) – FastEarth3D</title>
 <style>
 /* Default styles provided by pandoc.
 ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
@@ -23,26 +23,7 @@ ul.task-list li input[type="checkbox"] {
   margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
   vertical-align: middle;
 }
-/* CSS for citations */
-div.csl-bib-body { }
-div.csl-entry {
-  clear: both;
-}
-.hanging-indent div.csl-entry {
-  margin-left:2em;
-  text-indent:-2em;
-}
-div.csl-left-margin {
-  min-width:2em;
-  float:left;
-}
-div.csl-right-inline {
-  margin-left:2em;
-  padding-left:1em;
-}
-div.csl-indent {
-  margin-left: 2em;
-}</style>
+</style>
 
 
 <script src="../site_libs/quarto-nav/quarto-nav.js"></script>
@@ -52,8 +33,8 @@ div.csl-indent {
 <script src="../site_libs/quarto-search/fuse.min.js"></script>
 <script src="../site_libs/quarto-search/quarto-search.js"></script>
 <meta name="quarto:offset" content="../">
-<link href="../benchmarks/modal-vs-ve.html" rel="next">
-<link href="../benchmarks/disc.html" rel="prev">
+<link href="../physics/sea-level.html" rel="next">
+<link href="../physics/rheology.html" rel="prev">
 <script src="../site_libs/quarto-html/quarto.js" type="module"></script>
 <script src="../site_libs/quarto-html/tabsets/tabsets.js" type="module"></script>
 <script src="../site_libs/quarto-html/popper.min.js"></script>
@@ -396,7 +377,7 @@ window.Quarto = {
       <button type="button" class="quarto-btn-toggle btn" data-bs-toggle="collapse" role="button" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
         <i class="bi bi-layout-text-sidebar-reverse"></i>
       </button>
-        <nav class="quarto-page-breadcrumbs" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="../benchmarks/index.html">Benchmarks</a></li><li class="breadcrumb-item"><a href="../benchmarks/sea-level.html">Benchmark: the sea-level equation</a></li></ol></nav>
+        <nav class="quarto-page-breadcrumbs" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="../physics/governing-equations.html">Physics</a></li><li class="breadcrumb-item"><a href="../physics/modal.html">The modal solver (a tunable approximation)</a></li></ol></nav>
         <a class="flex-grow-1" role="navigation" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">      
         </a>
     </div>
@@ -460,7 +441,7 @@ window.Quarto = {
 </li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
-  <a href="../physics/modal.html" class="sidebar-item-text sidebar-link">
+  <a href="../physics/modal.html" class="sidebar-item-text sidebar-link active">
  <span class="menu-text">The modal solver (a tunable approximation)</span></a>
   </div>
 </li>
@@ -542,7 +523,7 @@ window.Quarto = {
 </li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
-  <a href="../benchmarks/sea-level.html" class="sidebar-item-text sidebar-link active">
+  <a href="../benchmarks/sea-level.html" class="sidebar-item-text sidebar-link">
  <span class="menu-text">Benchmark: the sea-level equation</span></a>
   </div>
 </li>
@@ -570,24 +551,21 @@ window.Quarto = {
     <h2 id="toc-title">On this page</h2>
    
   <ul>
-  <li><a href="#benchmark-structure" id="toc-benchmark-structure" class="nav-link active" data-scroll-target="#benchmark-structure">Benchmark structure</a></li>
-  <li><a href="#case-a-pure-viscoelastic-loading" id="toc-case-a-pure-viscoelastic-loading" class="nav-link" data-scroll-target="#case-a-pure-viscoelastic-loading">Case A — pure viscoelastic loading</a></li>
-  <li><a href="#sle-cases-c2-d3-e2-f1" id="toc-sle-cases-c2-d3-e2-f1" class="nav-link" data-scroll-target="#sle-cases-c2-d3-e2-f1">SLE cases — C2, D3, E2, F1</a>
-  <ul class="collapse">
-  <li><a href="#representative-agreement" id="toc-representative-agreement" class="nav-link" data-scroll-target="#representative-agreement">Representative agreement</a></li>
-  </ul></li>
-  <li><a href="#figures" id="toc-figures" class="nav-link" data-scroll-target="#figures">Figures</a></li>
-  <li><a href="#provenance" id="toc-provenance" class="nav-link" data-scroll-target="#provenance">Provenance</a></li>
+  <li><a href="#why-a-finite-set-of-modes" id="toc-why-a-finite-set-of-modes" class="nav-link active" data-scroll-target="#why-a-finite-set-of-modes">Why a finite set of modes</a></li>
+  <li><a href="#the-dial" id="toc-the-dial" class="nav-link" data-scroll-target="#the-dial">The dial</a></li>
+  <li><a href="#exact-time-integration-no-stability-ceiling" id="toc-exact-time-integration-no-stability-ceiling" class="nav-link" data-scroll-target="#exact-time-integration-no-stability-ceiling">Exact time integration — no stability ceiling</a></li>
+  <li><a href="#laterally-varying-viscosity" id="toc-laterally-varying-viscosity" class="nav-link" data-scroll-target="#laterally-varying-viscosity">Laterally varying viscosity</a></li>
+  <li><a href="#when-to-use-which" id="toc-when-to-use-which" class="nav-link" data-scroll-target="#when-to-use-which">When to use which</a></li>
   </ul>
-<div class="toc-actions"><ul><li><a href="https://github.com/alex-robinson/FastEarth3D/blob/main/benchmarks/sea-level.qmd" class="toc-action"><i class="bi bi-github"></i>View source</a></li><li><a href="https://github.com/alex-robinson/FastEarth3D/issues/new" class="toc-action"><i class="bi empty"></i>Report an issue</a></li></ul></div></nav>
+<div class="toc-actions"><ul><li><a href="https://github.com/alex-robinson/FastEarth3D/blob/main/physics/modal.qmd" class="toc-action"><i class="bi bi-github"></i>View source</a></li><li><a href="https://github.com/alex-robinson/FastEarth3D/issues/new" class="toc-action"><i class="bi empty"></i>Report an issue</a></li></ul></div></nav>
     </div>
 <!-- main -->
 <main class="content" id="quarto-document-content">
 
 
-<header id="title-block-header" class="quarto-title-block default"><nav class="quarto-page-breadcrumbs quarto-title-breadcrumbs d-none d-lg-block" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="../benchmarks/index.html">Benchmarks</a></li><li class="breadcrumb-item"><a href="../benchmarks/sea-level.html">Benchmark: the sea-level equation</a></li></ol></nav>
+<header id="title-block-header" class="quarto-title-block default"><nav class="quarto-page-breadcrumbs quarto-title-breadcrumbs d-none d-lg-block" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="../physics/governing-equations.html">Physics</a></li><li class="breadcrumb-item"><a href="../physics/modal.html">The modal solver (a tunable approximation)</a></li></ol></nav>
 <div class="quarto-title">
-<h1 class="title">Benchmark: the sea-level equation</h1>
+<h1 class="title">The modal solver (a tunable approximation)</h1>
 </div>
 
 
@@ -604,205 +582,146 @@ window.Quarto = {
 </header>
 
 
-<div class="callout callout-style-simple callout-note no-icon">
-<div class="callout-body d-flex">
-<div class="callout-icon-container">
-<i class="callout-icon no-icon"></i>
-</div>
-<div class="callout-body-container">
-<p><strong>Reference:</strong> Martinec et al.&nbsp;(2018), the SLE intercomparison <span class="citation" data-cites="Martinec2018">(<a href="#ref-Martinec2018" role="doc-biblioref">Martinec et al. 2018</a>)</span>, cases A and C2/D3/E2/F1 (SBK reference curves). <strong>Tests:</strong> <code>test_benchmark_martinec</code> (case A, in <code>make check</code>) and <code>test_benchmark_sle</code> (the SLE cases, standalone). <strong>Status:</strong> ✅ all cases within inter-code scatter.</p>
-</div>
-</div>
-</div>
-<p>This is the capstone benchmark: the full <strong>self-consistent, migrating-coastline sea-level equation</strong> driven by the viscoelastic response — the same benchmark VILMA itself passed. It exercises the ocean function, mass conservation, coastline migration, grounded-ice flotation, and the sub-grid sloping coast all together.</p>
-<section id="benchmark-structure" class="level2">
-<h2 class="anchored" data-anchor-id="benchmark-structure">Benchmark structure</h2>
-<p>The authority for the case definitions is <strong>Martinec et al.&nbsp;(2018), Table 4</strong> (not the differing case labels in third-party reimplementations). The paper defines five cases from a small set of building blocks:</p>
-<ul>
-<li><strong>Ice</strong> (square-root cap <span class="math inline">\(h(\psi) = h_0\sqrt{(\cos\psi-\cos\alpha)/(1-\cos\alpha)}\)</span>, <span class="math inline">\(\alpha=10°\)</span>): <strong>L0</strong> pole/1500 m; <strong>L1</strong> colat 25°/lon 75°, 1500 m; <strong>L2</strong> same centre, 500 m.</li>
-<li><strong>Basin</strong> (<span class="math inline">\(\zeta^{(0)} = b_{\max} - b_0\,e^{-\psi^2/2\sigma^2}\)</span>, <span class="math inline">\(\sigma=26°\)</span>): <strong>B0</strong> none; <strong>B1</strong> colat 100°/lon 320°, shallow (760/1200); <strong>B2</strong> colat 35°/lon 25°, deep (3800/6000, 2200 m at centre).</li>
-<li><strong>Time</strong>: <strong>T0</strong> Heaviside (load held, <span class="math inline">\(t_f = 10\)</span> kyr); <strong>T1</strong> linear growth over 10 kyr then held to 15 kyr.</li>
-<li><strong>Ocean</strong>: <strong>SLE0</strong> none; <strong>SLE1</strong> fixed geometry <span class="math inline">\(O^{(0)}\)</span>; <strong>SLE2</strong> time-varying (migrating coastline).</li>
-<li>Densities <span class="math inline">\(\rho_{\text{ice}}/\rho_{\text{water}} = 931/1000\ \mathrm{kg\,m^{-3}}\)</span>, <span class="math inline">\(g_0 = 9.815\ \mathrm{m\,s^{-2}}\)</span>.</li>
-</ul>
-<p>The vendored SBK reference files use a labelling offset by one letter from the paper (SBK letter = paper letter + 1):</p>
-<table class="caption-top table">
-<colgroup>
-<col style="width: 16%">
-<col style="width: 16%">
-<col style="width: 16%">
-<col style="width: 16%">
-<col style="width: 16%">
-<col style="width: 16%">
-</colgroup>
-<thead>
-<tr class="header">
-<th style="text-align: center;">SBK</th>
-<th style="text-align: center;">paper</th>
-<th>ocean</th>
-<th>ice</th>
-<th>time</th>
-<th>basin</th>
-</tr>
-</thead>
-<tbody>
-<tr class="odd">
-<td style="text-align: center;"><strong>A</strong></td>
-<td style="text-align: center;">A</td>
-<td>SLE0 (none)</td>
-<td>L0 (1500 m)</td>
-<td>T0</td>
-<td>B0 (none)</td>
-</tr>
-<tr class="even">
-<td style="text-align: center;"><strong>C2</strong></td>
-<td style="text-align: center;">B</td>
-<td>SLE1 fixed</td>
-<td>L1 (1500 m)</td>
-<td>T0</td>
-<td>B1 (shallow)</td>
-</tr>
-<tr class="odd">
-<td style="text-align: center;"><strong>D3</strong></td>
-<td style="text-align: center;">C</td>
-<td>SLE1 fixed</td>
-<td>L2 (500 m)</td>
-<td>T1</td>
-<td>B2 (deep)</td>
-</tr>
-<tr class="even">
-<td style="text-align: center;"><strong>E2</strong></td>
-<td style="text-align: center;">D</td>
-<td>SLE2 migrate</td>
-<td>L2 (500 m)</td>
-<td>T1</td>
-<td>B2 (deep)</td>
-</tr>
-<tr class="odd">
-<td style="text-align: center;"><strong>F1</strong></td>
-<td style="text-align: center;">E</td>
-<td>SLE2 migrate</td>
-<td>L2 (500 m)</td>
-<td>T1</td>
-<td>B2* (paleo-topo prescribed)</td>
-</tr>
-</tbody>
-</table>
-</section>
-<section id="case-a-pure-viscoelastic-loading" class="level2">
-<h2 class="anchored" data-anchor-id="case-a-pure-viscoelastic-loading">Case A — pure viscoelastic loading</h2>
-<p>The simplest case: a spherical cap, Heaviside loading, 10 kyr relaxation, <strong>no ocean</strong>, with degrees <span class="math inline">\(n=0,1\)</span> dropped — a pure viscoelastic cap response. FastEarth3D matches Martinec (2018) fig.&nbsp;10 to <strong>0.52 % (uplift) / 0.69 % (horizontal) / 1.94 % (geoid)</strong> (peak-normalized). This is the <strong>first horizontal-displacement</strong> benchmark and confirms the spheroidal <span class="math inline">\(V\)</span> field (<code>test_benchmark_martinec</code>).</p>
-</section>
-<section id="sle-cases-c2-d3-e2-f1" class="level2">
-<h2 class="anchored" data-anchor-id="sle-cases-c2-d3-e2-f1">SLE cases — C2, D3, E2, F1</h2>
-<p>These run the full SLE with the time-varying load. The reference files give seven columns: longitude/colatitude, vertical displacement, the two horizontal components, the gravitational potential increment, the sea-surface variation, and the SLE result, sampled along circles of constant longitude/latitude (figs. 10–13).</p>
-<p>Mass is conserved to <span class="math inline">\(\sim 10^{-16}\)</span> per step by construction in every case. Key findings from working through the cases:</p>
-<ul>
-<li><strong>Fixed vs.&nbsp;migrating ocean is the dominant control</strong> for C2/D3. C2 and D3 are fixed-ocean (SLE1) cases; running them with a migrating coastline drains the shallow/fixed basin roughly twice too far (C2 esl <span class="math inline">\(-272\)</span> → <span class="math inline">\(-126\)</span> m vs.&nbsp;data <span class="math inline">\(-120\)</span>; D3 <span class="math inline">\(-50\)</span> → <span class="math inline">\(-25.7\)</span> vs.&nbsp;<span class="math inline">\(-25.5\)</span>). Honouring the fixed-ocean mode is what makes them match.</li>
-<li><strong>Grounded-ice masking matters.</strong> The SLE load must apply only over <em>grounded</em> ice (<span class="math inline">\(\rho_{\text{ice}}\,\Delta I\,(1-C)\)</span>); floating ice over the deep basin is carried by the ocean term, and the ocean-water budget counts only grounded ice. Getting this wrong produced <span class="math inline">\(\sim 70\)</span> m of spurious flank subsidence.</li>
-<li><strong>The sub-grid sloping coast</strong> collapses the cap-edge grounding-line residual. In E2, switching the binary coastline for the sub-grid water-column load takes the worst local errors from <span class="math inline">\(\sim 14\)</span>–<span class="math inline">\(42\%\)</span> down to <span class="math inline">\(\sim 1\%\)</span> (esl <span class="math inline">\(-30.28\)</span> vs.&nbsp;data <span class="math inline">\(-30.0\)</span>), because the SBK reference is itself a sub-grid coast.</li>
-</ul>
-<section id="representative-agreement" class="level3">
-<h3 class="anchored" data-anchor-id="representative-agreement">Representative agreement</h3>
-<table class="caption-top table">
-<colgroup>
-<col style="width: 16%">
-<col style="width: 16%">
-<col style="width: 16%">
-<col style="width: 16%">
-<col style="width: 16%">
-<col style="width: 16%">
-</colgroup>
-<thead>
-<tr class="header">
-<th style="text-align: center;">Case</th>
-<th style="text-align: center;">uplift</th>
-<th style="text-align: center;">geoid</th>
-<th style="text-align: center;">sea-surface</th>
-<th style="text-align: center;">SLE</th>
-<th>notes</th>
-</tr>
-</thead>
-<tbody>
-<tr class="odd">
-<td style="text-align: center;">A</td>
-<td style="text-align: center;">0.52 %</td>
-<td style="text-align: center;">1.94 %</td>
-<td style="text-align: center;">—</td>
-<td style="text-align: center;">—</td>
-<td>horizontal 0.69 %; no ocean</td>
-</tr>
-<tr class="even">
-<td style="text-align: center;">C2</td>
-<td style="text-align: center;"><span class="math inline">\(\le 2.5\%\)</span></td>
-<td style="text-align: center;"><span class="math inline">\(\le 7\%\)</span></td>
-<td style="text-align: center;"><span class="math inline">\(5\%\)</span></td>
-<td style="text-align: center;"><span class="math inline">\(7\%\)</span></td>
-<td>fixed ocean; horiz <span class="math inline">\(\le 28\%\)</span> on symmetry axis</td>
-</tr>
-<tr class="odd">
-<td style="text-align: center;">D3</td>
-<td style="text-align: center;"><span class="math inline">\(\le 7\%\)</span></td>
-<td style="text-align: center;"><span class="math inline">\(\le 7\%\)</span></td>
-<td style="text-align: center;"><span class="math inline">\(\le 7\%\)</span></td>
-<td style="text-align: center;"><span class="math inline">\(\le 7\%\)</span></td>
-<td>best SLE case (all <span class="math inline">\(\le 7\%\)</span>)</td>
-</tr>
-<tr class="even">
-<td style="text-align: center;">E2</td>
-<td style="text-align: center;"><span class="math inline">\(\sim 0.7\%\)</span>*</td>
-<td style="text-align: center;"><span class="math inline">\(\sim 1\%\)</span>*</td>
-<td style="text-align: center;"><span class="math inline">\(\sim 1\%\)</span>*</td>
-<td style="text-align: center;"><span class="math inline">\(\sim 1\%\)</span>*</td>
-<td>*with sub-grid coast</td>
-</tr>
-<tr class="odd">
-<td style="text-align: center;">F1</td>
-<td style="text-align: center;">within scatter</td>
-<td style="text-align: center;">within scatter</td>
-<td style="text-align: center;">within scatter</td>
-<td style="text-align: center;">within scatter</td>
-<td>E2 + paleo-topo spin-up</td>
-</tr>
-</tbody>
-</table>
-<p>Horizontal-displacement error is normalized by the peak <em>vector</em> magnitude <span class="math inline">\(|(v_\theta,v_\phi)|\)</span> rather than per-component, since a profile through a symmetry axis nulls one component.</p>
-<div class="callout callout-style-default callout-note callout-titled" title="An inter-code comparison, not an analytic one">
+<p>The default response operator is the full Martinec time-domain solve (<code>RESP_VE</code>): every step takes a banded radial solve per spherical-harmonic coefficient and carries the whole radial memory-stress tensor (see <a href="../physics/rheology.html">Rheology</a>). FastEarth3D also offers a <strong>reduced modal response</strong> (<code>RESP_MODAL</code>) — a deliberately approximate operator that collapses each degree’s relaxation onto a handful of exponential modes. It is <strong>selectable by namelist</strong> (<code>earth_response = "modal"</code>), and the full solver is retained as both the exact option and the ground-truth reference.</p>
+<section id="why-a-finite-set-of-modes" class="level2">
+<h2 class="anchored" data-anchor-id="why-a-finite-set-of-modes">Why a finite set of modes</h2>
+<p>For an <strong>incompressible</strong>, self-gravitating, layered Maxwell Earth the load response <em>per harmonic degree</em> is a <strong>finite sum of exponential relaxation modes</strong> — incompressibility is exactly what keeps the spectrum discrete (a compressible Earth would have a continuum). Physically there is roughly one mode per interface — a fundamental mantle mode, a buoyancy mode per density jump, a transient mode per viscosity contrast, a core mode — so an M3–L70–V01-class structure has <span class="math inline">\(\sim 10\)</span> modes, of which <strong>only 1–3 dominate the surface response at any given degree</strong>. The surplus modes are numerically present but move the surface negligibly.</p>
+<p>This is the structural fact the modal solver exploits: the per-degree response can be written exactly as an elastic gain plus a small sum of decaying exponentials,</p>
+<p><span class="math display">\[
+u_{\ell m}(t) = u_{\rm el}(\ell)\,\sigma_{\ell m}
+              + \sum_{k=1}^{K} r^{u}_{k}(\ell)\,\xi_{k,\ell m}(t),
+\qquad
+\dot{\xi}_{k,\ell m} = -\frac{\xi_{k,\ell m}}{\tau_{k}(\ell)} + b_{k}(\ell)\,\sigma_{\ell m},
+\]</span></p>
+<p>with one scalar ODE per mode per coefficient (and the same form for the geoid <span class="math inline">\(N\)</span> and horizontal <span class="math inline">\(V\)</span>). The prognostic state shrinks from the full radial memory tensor to <strong><span class="math inline">\(K\)</span> complex scalars per <span class="math inline">\((\ell,m)\)</span></strong>.</p>
+<div class="callout callout-style-default callout-note callout-titled" title="Not normal-mode root finding">
 <div class="callout-header d-flex align-content-center">
 <div class="callout-icon-container">
 <i class="callout-icon"></i>
 </div>
 <div class="callout-title-container flex-fill">
-<span class="screen-reader-only">Note</span>An inter-code comparison, not an analytic one
+<span class="screen-reader-only">Note</span>Not normal-mode root finding
 </div>
 </div>
 <div class="callout-body-container callout-body">
-<p>The SBK reference is one code’s (giapy’s) output, so these tolerances are assessed against the documented <strong>inter-code scatter</strong> of the Martinec (2018) intercomparison, not against a closed-form solution. The residual few-metre eustatic offsets and the cap-edge grounding-line differences are within that scatter; where a definitional choice (binary vs.&nbsp;sub-grid coast) is involved, matching the reference’s choice removes the discrepancy.</p>
+<p>The relaxation times <span class="math inline">\(\tau_k\)</span>, residues <span class="math inline">\(r_k\)</span>, and load projections <span class="math inline">\(b_k\)</span> are <strong>extracted once at initialization from the same validated finite-element relaxation operator</strong> the full solver uses — not from an analytic secular-determinant root find (the SELEN/TABOO/ALMA route the project rules out). The modal basis is therefore a property of the discretized model itself, which is why <code>K = all</code> <strong>converges back to <code>RESP_VE</code></strong>. How the modes are extracted (a matrix-free subspace iteration) is a discretization detail and is not covered here.</p>
 </div>
 </div>
 </section>
+<section id="the-dial" class="level2">
+<h2 class="anchored" data-anchor-id="the-dial">The dial</h2>
+<p>The whole point of the modal form is that it is a <strong>single dial</strong> spanning the gap between a one-mode model and the full solver:</p>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 50%">
+<col style="width: 50%">
+</colgroup>
+<thead>
+<tr class="header">
+<th><code>n_modes</code> (<span class="math inline">\(K\)</span>)</th>
+<th>Behaviour</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>1</code></td>
+<td>the dominant mode only — a global, spherical-harmonic analogue of an LV-ELVA-type single-mode model</td>
+</tr>
+<tr class="even">
+<td><code>1 &lt; K &lt; all</code></td>
+<td>tune fidelity to context: low <span class="math inline">\(K\)</span> for fast continental deglaciation, higher <span class="math inline">\(K\)</span> for careful regional GIA</td>
+</tr>
+<tr class="odd">
+<td><code>-1</code> (all above tolerance)</td>
+<td><strong>converges to <code>RESP_VE</code></strong> (for radially varying viscosity)</td>
+</tr>
+</tbody>
+</table>
+<p>Which modes to keep is itself a choice, set by <code>mode_rank</code>:</p>
+<table class="caption-top table">
+<colgroup>
+<col style="width: 33%">
+<col style="width: 33%">
+<col style="width: 33%">
+</colgroup>
+<thead>
+<tr class="header">
+<th><code>mode_rank</code></th>
+<th>Keeps the modes that…</th>
+<th>Tends to favour</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>"isostatic"</code> <em>(default)</em></td>
+<td>dominate the <strong>final relaxed</strong> uplift, <span class="math inline">\(\lvert r^{u}_{k}\,b_{k}\,\tau_{k}\rvert\)</span></td>
+<td>the slow, isostatic modes (<span class="math inline">\(K=1\approx\)</span> fundamental)</td>
+</tr>
+<tr class="even">
+<td><code>"rate"</code></td>
+<td>dominate the <strong>initial relaxation rate</strong>, <span class="math inline">\(\lvert r^{u}_{k}\,b_{k}\rvert\)</span></td>
+<td>faster transient modes</td>
+</tr>
+<tr class="odd">
+<td><code>"residue"</code></td>
+<td>have the strongest <strong>surface coupling</strong>, <span class="math inline">\(\lvert r^{u}_{k}\rvert\)</span></td>
+<td>pure coupling strength</td>
+</tr>
+</tbody>
+</table>
+<p>All three are cheap by-products of the same initialization, so <code>mode_rank</code> is sweepable. The <a href="../benchmarks/modal-vs-ve.html">modal-vs-VE comparison</a> quantifies the accuracy/cost trade-off across <span class="math inline">\(K\)</span> and <code>mode_rank</code>.</p>
 </section>
-<section id="figures" class="level2">
-<h2 class="anchored" data-anchor-id="figures">Figures</h2>
-<p><em>Figures to be added: per-case profiles (figs. 10–13) of uplift, horizontal displacement, geoid/potential, sea-surface, and the SLE result, FastEarth3D vs. the SBK reference; the eustatic-sea-level time series.</em></p>
-<!--
-![Case E2, fig. 10 profiles](figures/sle_E2_fig10.png)
-![Eustatic sea level vs time](figures/sle_esl_series.png)
--->
+<section id="exact-time-integration-no-stability-ceiling" class="level2">
+<h2 class="anchored" data-anchor-id="exact-time-integration-no-stability-ceiling">Exact time integration — no stability ceiling</h2>
+<p>Because each mode is a single decaying exponential, a step with a constant load <span class="math inline">\(\sigma\)</span> advances by the <strong>analytic solution</strong></p>
+<p><span class="math display">\[
+\xi_{k} \;\leftarrow\; e^{-\Delta t/\tau_{k}}\,\xi_{k}
+        \;+\; b_{k}\tau_{k}\bigl(1 - e^{-\Delta t/\tau_{k}}\bigr)\,\sigma ,
+\]</span></p>
+<p>so the modal scheme is <strong>unconditionally stable</strong>: there is no Maxwell-number <span class="math inline">\(\Delta t\)</span> ceiling and <strong>no sub-stepping</strong>, unlike the explicit forward-Euler memory update of the full solver (see <a href="../discretization/time-stepping.html">Time stepping</a>). For the SLE-coupled, fast-load case the same closed form is used with a linear-in-time load (a trapezoidal variant), giving second order in the load with no stability constraint. The response stays <strong>affine</strong> in the current load, so it slots into the iterative <a href="../physics/sea-level.html">sea-level equation</a> exactly as the full solver does, and <code>set_dt</code> only rescales the <span class="math inline">\(e^{-\Delta t/\tau_k}\)</span> factors — no operator re-factorization.</p>
 </section>
-<section id="provenance" class="level2">
-<h2 class="anchored" data-anchor-id="provenance">Provenance</h2>
-<p>Reference: <code>data/benchmarks/sle_martinec2018/*_SBK.dat</code>, from the <code>giapy</code> package (<code>tests/sbk_benchmark_data.tar.gz</code>, MIT), originating in the Martinec et al. (2018) intercomparison. The case ↔︎ paper mapping and column definitions are in <code>data/benchmarks/PROVENANCE.md</code>.</p>
-
-
-
-</section>
-
-<a onclick="window.scrollTo(0, 0); return false;" role="button" id="quarto-back-to-top"><i class="bi bi-arrow-up"></i> Back to top</a><div id="quarto-appendix" class="default"><section class="quarto-appendix-contents" role="doc-bibliography" id="quarto-bibliography"><h2 class="anchored quarto-appendix-heading">References</h2><div id="refs" class="references csl-bib-body hanging-indent" role="list">
-<div id="ref-Martinec2018" class="csl-entry" role="listitem">
-Martinec, Z., V. Klemann, W. van der Wal, et al. 2018. <span>“A Benchmark Study of Numerical Implementations of the Sea Level Equation in <span>GIA</span> Modelling.”</span> <em>Geophysical Journal International</em> 215 (1): 389–414. <a href="https://doi.org/10.1093/gji/ggy280">https://doi.org/10.1093/gji/ggy280</a>.
+<section id="laterally-varying-viscosity" class="level2">
+<h2 class="anchored" data-anchor-id="laterally-varying-viscosity">Laterally varying viscosity</h2>
+<p>Lateral viscosity breaks the clean per-degree decoupling. The modal solver handles it as a <strong>depth-weighted, per-mode rate modulation</strong> (a split-operator): the modal basis is built once from the laterally <em>averaged</em> radial profile, and each mode’s relaxation rate is then modulated by the local viscosity in the <strong>depth band that mode samples</strong>, weighted by the mode’s radial strain-energy profile. The mean modulation is applied in spectral space (it rescales <span class="math inline">\(\tau_k\)</span> per degree exactly); the zero-mean lateral anomaly is applied in real space via <span class="math inline">\(K\)</span> <strong>scalar</strong> spherical-harmonic transforms per step.</p>
+<p>This is much cheaper than the full solver’s six-component tensor-SH memory advance, and the depth weighting captures something a single-mode model cannot: the fundamental mode responds to deep-mantle structure, the transient modes to their own layers.</p>
+<div class="callout callout-style-default callout-important callout-titled" title="Exactness ladder — be honest about it">
+<div class="callout-header d-flex align-content-center">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
 </div>
-</div></section></div></main> <!-- /main -->
+<div class="callout-title-container flex-fill">
+<span class="screen-reader-only">Important</span>Exactness ladder — be honest about it
+</div>
+</div>
+<div class="callout-body-container callout-body">
+<ul>
+<li><strong>Radial viscosity:</strong> <code>RESP_MODAL</code> with <code>n_modes = -1</code> (all modes above tolerance) <strong>converges to <code>RESP_VE</code></strong>. The mode count is the only approximation, and it is a controlled one.</li>
+<li><strong>Lateral viscosity:</strong> <code>RESP_MODAL</code> is an <strong>approximation at every <span class="math inline">\(K\)</span></strong> — rate modulation is not the full lateral coupling. <code>RESP_VE</code> (the tensor-SH path) remains the ground-truth reference; modal-LV is the fast, tunable approximation to it, cheaper than the full path at all <span class="math inline">\(K\)</span>.</li>
+</ul>
+</div>
+</div>
+</section>
+<section id="when-to-use-which" class="level2">
+<h2 class="anchored" data-anchor-id="when-to-use-which">When to use which</h2>
+<p>Use <strong><code>RESP_VE</code></strong> when you want the exact viscoelastic response, when validating, or as the reference for a lateral-viscosity run. Use <strong><code>RESP_MODAL</code></strong> when speed matters and a controlled approximation is acceptable — long transient deglaciations, large ensembles, or coupled climate runs — turning the <code>n_modes</code> dial up if a case needs more fidelity. Both share the same coupling interface, sea-level equation, rotation, restart, and validation harness, so a run can be switched between them by changing a single namelist value.</p>
+<div class="callout callout-style-default callout-tip callout-titled" title="Where this lives in the code">
+<div class="callout-header d-flex align-content-center">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+<span class="screen-reader-only">Tip</span>Where this lives in the code
+</div>
+</div>
+<div class="callout-body-container callout-body">
+<p><code>fe_modal</code> extracts the per-degree modes from the validated relaxation operator; <code>fe_response</code> holds the <code>RESP_MODAL</code> state (<span class="math inline">\(\xi_k\)</span> per <span class="math inline">\((\ell,m)\)</span>), the affine <code>apply</code>, the exact-exponential commit, and the lateral split-operator. Selected by <code>earth_response = "modal"</code>, tuned by <code>n_modes</code> and <code>mode_rank</code>. Validated by <code>test_modal</code>, <code>test_modal_resp</code>, and (lateral) <code>test_modal_visc3d</code>; the accuracy/cost study is <a href="../benchmarks/modal-vs-ve.html">Modal vs VE</a>.</p>
+</div>
+</div>
+
+
+</section>
+
+<a onclick="window.scrollTo(0, 0); return false;" role="button" id="quarto-back-to-top"><i class="bi bi-arrow-up"></i> Back to top</a></main> <!-- /main -->
 <script id="quarto-html-after-body" type="application/javascript">
   window.document.addEventListener("DOMContentLoaded", function (event) {
     // Ensure there is a toggle, if there isn't float one in the top right
@@ -1218,13 +1137,13 @@ Martinec, Z., V. Klemann, W. van der Wal, et al. 2018. <span>“A Benchmark Stud
   </script>
 <nav class="page-navigation">
   <div class="nav-page nav-page-previous">
-      <a href="../benchmarks/disc.html" class="pagination-link" aria-label="Benchmark: disc-load response">
-        <i class="bi bi-arrow-left-short"></i> <span class="nav-page-text">Benchmark: disc-load response</span>
+      <a href="../physics/rheology.html" class="pagination-link" aria-label="Maxwell rheology and the memory stress">
+        <i class="bi bi-arrow-left-short"></i> <span class="nav-page-text">Maxwell rheology and the memory stress</span>
       </a>          
   </div>
   <div class="nav-page nav-page-next">
-      <a href="../benchmarks/modal-vs-ve.html" class="pagination-link" aria-label="Modal vs VE: accuracy and cost">
-        <span class="nav-page-text">Modal vs VE: accuracy and cost</span> <i class="bi bi-arrow-right-short"></i>
+      <a href="../physics/sea-level.html" class="pagination-link" aria-label="The sea-level equation">
+        <span class="nav-page-text">The sea-level equation</span> <i class="bi bi-arrow-right-short"></i>
       </a>
   </div>
 </nav>
@@ -1233,4 +1152,4 @@ Martinec, Z., V. Klemann, W. van der Wal, et al. 2018. <span>“A Benchmark Stud
 
 
 
-<footer class="footer"><div class="nav-footer"><div class="nav-footer-center"><div class="toc-actions d-sm-block d-md-none"><ul><li><a href="https://github.com/alex-robinson/FastEarth3D/blob/main/benchmarks/sea-level.qmd" class="toc-action"><i class="bi bi-github"></i>View source</a></li><li><a href="https://github.com/alex-robinson/FastEarth3D/issues/new" class="toc-action"><i class="bi empty"></i>Report an issue</a></li></ul></div></div></div></footer></body></html>
+<footer class="footer"><div class="nav-footer"><div class="nav-footer-center"><div class="toc-actions d-sm-block d-md-none"><ul><li><a href="https://github.com/alex-robinson/FastEarth3D/blob/main/physics/modal.qmd" class="toc-action"><i class="bi bi-github"></i>View source</a></li><li><a href="https://github.com/alex-robinson/FastEarth3D/issues/new" class="toc-action"><i class="bi empty"></i>Report an issue</a></li></ul></div></div></div></footer></body></html>

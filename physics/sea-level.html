@@ -53,7 +53,7 @@ div.csl-indent {
 <script src="../site_libs/quarto-search/quarto-search.js"></script>
 <meta name="quarto:offset" content="../">
 <link href="../physics/rotation.html" rel="next">
-<link href="../physics/rheology.html" rel="prev">
+<link href="../physics/modal.html" rel="prev">
 <script src="../site_libs/quarto-html/quarto.js" type="module"></script>
 <script src="../site_libs/quarto-html/tabsets/tabsets.js" type="module"></script>
 <script src="../site_libs/quarto-html/popper.min.js"></script>
@@ -311,6 +311,10 @@ window.Quarto = {
     <a class="nav-link active" href="../index.html" aria-current="page"> 
 <span class="menu-text">Overview</span></a>
   </li>  
+  <li class="nav-item">
+    <a class="nav-link" href="../getting-started.html"> 
+<span class="menu-text">Install &amp; run</span></a>
+  </li>  
   <li class="nav-item dropdown ">
     <a class="nav-link dropdown-toggle" href="#" id="nav-menu-physics" role="link" data-bs-toggle="dropdown" aria-expanded="false">
  <span class="menu-text">Physics</span>
@@ -325,12 +329,16 @@ window.Quarto = {
  <span class="dropdown-text">Maxwell rheology and the memory stress</span></a>
   </li>  
         <li>
+    <a class="dropdown-item" href="../physics/modal.html">
+ <span class="dropdown-text">The modal solver (a tunable approximation)</span></a>
+  </li>  
+        <li>
     <a class="dropdown-item" href="../physics/sea-level.html">
  <span class="dropdown-text">The sea-level equation</span></a>
   </li>  
         <li>
     <a class="dropdown-item" href="../physics/rotation.html">
- <span class="dropdown-text">Rotational feedback (planned)</span></a>
+ <span class="dropdown-text">Rotational feedback (polar motion)</span></a>
   </li>  
     </ul>
   </li>
@@ -417,6 +425,12 @@ window.Quarto = {
 </li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
+  <a href="../getting-started.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Installation and running</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
   <a href="../implementation.html" class="sidebar-item-text sidebar-link">
  <span class="menu-text">Implementation and attribution</span></a>
   </div>
@@ -446,6 +460,12 @@ window.Quarto = {
 </li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
+  <a href="../physics/modal.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">The modal solver (a tunable approximation)</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
   <a href="../physics/sea-level.html" class="sidebar-item-text sidebar-link active">
  <span class="menu-text">The sea-level equation</span></a>
   </div>
@@ -453,7 +473,7 @@ window.Quarto = {
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
   <a href="../physics/rotation.html" class="sidebar-item-text sidebar-link">
- <span class="menu-text">Rotational feedback (planned)</span></a>
+ <span class="menu-text">Rotational feedback (polar motion)</span></a>
   </div>
 </li>
       </ul>
@@ -524,6 +544,12 @@ window.Quarto = {
   <div class="sidebar-item-container"> 
   <a href="../benchmarks/sea-level.html" class="sidebar-item-text sidebar-link">
  <span class="menu-text">Benchmark: the sea-level equation</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../benchmarks/modal-vs-ve.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Modal vs VE: accuracy and cost</span></a>
   </div>
 </li>
       </ul>
@@ -1102,13 +1128,13 @@ Kendall, R. A., J. X. Mitrovica, and G. A. Milne. 2005. <span>“On Post-Glacial
   </script>
 <nav class="page-navigation">
   <div class="nav-page nav-page-previous">
-      <a href="../physics/rheology.html" class="pagination-link" aria-label="Maxwell rheology and the memory stress">
-        <i class="bi bi-arrow-left-short"></i> <span class="nav-page-text">Maxwell rheology and the memory stress</span>
+      <a href="../physics/modal.html" class="pagination-link" aria-label="The modal solver (a tunable approximation)">
+        <i class="bi bi-arrow-left-short"></i> <span class="nav-page-text">The modal solver (a tunable approximation)</span>
       </a>          
   </div>
   <div class="nav-page nav-page-next">
-      <a href="../physics/rotation.html" class="pagination-link" aria-label="Rotational feedback (planned)">
-        <span class="nav-page-text">Rotational feedback (planned)</span> <i class="bi bi-arrow-right-short"></i>
+      <a href="../physics/rotation.html" class="pagination-link" aria-label="Rotational feedback (polar motion)">
+        <span class="nav-page-text">Rotational feedback (polar motion)</span> <i class="bi bi-arrow-right-short"></i>
       </a>
   </div>
 </nav>

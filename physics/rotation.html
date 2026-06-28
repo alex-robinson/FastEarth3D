@@ -7,7 +7,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
 
 
-<title>Rotational feedback (planned) – FastEarth3D</title>
+<title>Rotational feedback (polar motion) – FastEarth3D</title>
 <style>
 /* Default styles provided by pandoc.
 ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
@@ -311,6 +311,10 @@ window.Quarto = {
     <a class="nav-link active" href="../index.html" aria-current="page"> 
 <span class="menu-text">Overview</span></a>
   </li>  
+  <li class="nav-item">
+    <a class="nav-link" href="../getting-started.html"> 
+<span class="menu-text">Install &amp; run</span></a>
+  </li>  
   <li class="nav-item dropdown ">
     <a class="nav-link dropdown-toggle" href="#" id="nav-menu-physics" role="link" data-bs-toggle="dropdown" aria-expanded="false">
  <span class="menu-text">Physics</span>
@@ -325,12 +329,16 @@ window.Quarto = {
  <span class="dropdown-text">Maxwell rheology and the memory stress</span></a>
   </li>  
         <li>
+    <a class="dropdown-item" href="../physics/modal.html">
+ <span class="dropdown-text">The modal solver (a tunable approximation)</span></a>
+  </li>  
+        <li>
     <a class="dropdown-item" href="../physics/sea-level.html">
  <span class="dropdown-text">The sea-level equation</span></a>
   </li>  
         <li>
     <a class="dropdown-item" href="../physics/rotation.html">
- <span class="dropdown-text">Rotational feedback (planned)</span></a>
+ <span class="dropdown-text">Rotational feedback (polar motion)</span></a>
   </li>  
     </ul>
   </li>
@@ -388,7 +396,7 @@ window.Quarto = {
       <button type="button" class="quarto-btn-toggle btn" data-bs-toggle="collapse" role="button" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">
         <i class="bi bi-layout-text-sidebar-reverse"></i>
       </button>
-        <nav class="quarto-page-breadcrumbs" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="../physics/governing-equations.html">Physics</a></li><li class="breadcrumb-item"><a href="../physics/rotation.html">Rotational feedback (planned)</a></li></ol></nav>
+        <nav class="quarto-page-breadcrumbs" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="../physics/governing-equations.html">Physics</a></li><li class="breadcrumb-item"><a href="../physics/rotation.html">Rotational feedback (polar motion)</a></li></ol></nav>
         <a class="flex-grow-1" role="navigation" data-bs-toggle="collapse" data-bs-target=".quarto-sidebar-collapse-item" aria-controls="quarto-sidebar" aria-expanded="false" aria-label="Toggle sidebar navigation" onclick="if (window.quartoToggleHeadroom) { window.quartoToggleHeadroom(); }">      
         </a>
     </div>
@@ -413,6 +421,12 @@ window.Quarto = {
   <div class="sidebar-item-container"> 
   <a href="../index.html" class="sidebar-item-text sidebar-link">
  <span class="menu-text">FastEarth3D</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../getting-started.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Installation and running</span></a>
   </div>
 </li>
           <li class="sidebar-item">
@@ -446,6 +460,12 @@ window.Quarto = {
 </li>
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
+  <a href="../physics/modal.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">The modal solver (a tunable approximation)</span></a>
+  </div>
+</li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
   <a href="../physics/sea-level.html" class="sidebar-item-text sidebar-link">
  <span class="menu-text">The sea-level equation</span></a>
   </div>
@@ -453,7 +473,7 @@ window.Quarto = {
           <li class="sidebar-item">
   <div class="sidebar-item-container"> 
   <a href="../physics/rotation.html" class="sidebar-item-text sidebar-link active">
- <span class="menu-text">Rotational feedback (planned)</span></a>
+ <span class="menu-text">Rotational feedback (polar motion)</span></a>
   </div>
 </li>
       </ul>
@@ -526,6 +546,12 @@ window.Quarto = {
  <span class="menu-text">Benchmark: the sea-level equation</span></a>
   </div>
 </li>
+          <li class="sidebar-item">
+  <div class="sidebar-item-container"> 
+  <a href="../benchmarks/modal-vs-ve.html" class="sidebar-item-text sidebar-link">
+ <span class="menu-text">Modal vs VE: accuracy and cost</span></a>
+  </div>
+</li>
       </ul>
   </li>
         <li class="sidebar-item">
@@ -544,9 +570,10 @@ window.Quarto = {
     <h2 id="toc-title">On this page</h2>
    
   <ul>
-  <li><a href="#intended-formulation" id="toc-intended-formulation" class="nav-link active" data-scroll-target="#intended-formulation">Intended formulation</a></li>
-  <li><a href="#design-constraints-to-honour" id="toc-design-constraints-to-honour" class="nav-link" data-scroll-target="#design-constraints-to-honour">Design constraints to honour</a></li>
-  <li><a href="#validation-target" id="toc-validation-target" class="nav-link" data-scroll-target="#validation-target">Validation target</a></li>
+  <li><a href="#formulation" id="toc-formulation" class="nav-link active" data-scroll-target="#formulation">Formulation</a></li>
+  <li><a href="#coupling-through-the-sea-level-equation" id="toc-coupling-through-the-sea-level-equation" class="nav-link" data-scroll-target="#coupling-through-the-sea-level-equation">Coupling through the sea-level equation</a></li>
+  <li><a href="#design-constraints-honoured" id="toc-design-constraints-honoured" class="nav-link" data-scroll-target="#design-constraints-honoured">Design constraints honoured</a></li>
+  <li><a href="#validation" id="toc-validation" class="nav-link" data-scroll-target="#validation">Validation</a></li>
   </ul>
 <div class="toc-actions"><ul><li><a href="https://github.com/alex-robinson/FastEarth3D/blob/main/physics/rotation.qmd" class="toc-action"><i class="bi bi-github"></i>View source</a></li><li><a href="https://github.com/alex-robinson/FastEarth3D/issues/new" class="toc-action"><i class="bi empty"></i>Report an issue</a></li></ul></div></nav>
     </div>
@@ -554,9 +581,9 @@ window.Quarto = {
 <main class="content" id="quarto-document-content">
 
 
-<header id="title-block-header" class="quarto-title-block default"><nav class="quarto-page-breadcrumbs quarto-title-breadcrumbs d-none d-lg-block" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="../physics/governing-equations.html">Physics</a></li><li class="breadcrumb-item"><a href="../physics/rotation.html">Rotational feedback (planned)</a></li></ol></nav>
+<header id="title-block-header" class="quarto-title-block default"><nav class="quarto-page-breadcrumbs quarto-title-breadcrumbs d-none d-lg-block" aria-label="breadcrumb"><ol class="breadcrumb"><li class="breadcrumb-item"><a href="../physics/governing-equations.html">Physics</a></li><li class="breadcrumb-item"><a href="../physics/rotation.html">Rotational feedback (polar motion)</a></li></ol></nav>
 <div class="quarto-title">
-<h1 class="title">Rotational feedback (planned)</h1>
+<h1 class="title">Rotational feedback (polar motion)</h1>
 </div>
 
 
@@ -573,35 +600,65 @@ window.Quarto = {
 </header>
 
 
-<div class="callout callout-style-default callout-important callout-titled" title="Status: not yet implemented">
+<p>A redistribution of surface mass (ice, ocean water) and the resulting solid-Earth deformation change the planet’s inertia tensor, which perturbs the rotation vector — <strong>true polar wander</strong> (TPW). The shifted rotation in turn alters the centrifugal potential, itself a <strong>degree-2</strong> surface load that drives further deformation and sea-level change. FastEarth3D implements this two-way <strong>rotational feedback</strong> in the time domain, consistent with the explicit memory-stress machinery.</p>
+<div class="callout callout-style-default callout-note callout-titled" title="Status: implemented, on by default">
 <div class="callout-header d-flex align-content-center">
 <div class="callout-icon-container">
 <i class="callout-icon"></i>
 </div>
 <div class="callout-title-container flex-fill">
-<span class="screen-reader-only">Important</span>Status: not yet implemented
+<span class="screen-reader-only">Note</span>Status: implemented, on by default
 </div>
 </div>
 <div class="callout-body-container callout-body">
-<p>Rotational feedback is rung 5 of the <a href="../benchmarks/index.html">validation ladder</a> and is not yet in the code. This page records the intended physics and the design constraints so the implementation is shaped correctly from the start.</p>
+<p>Rotation is implemented (<code>fe_rotation</code>), coupled self-consistently into the <a href="../physics/sea-level.html">sea-level equation</a>, persisted across restarts, and tested against the Spada et al.&nbsp;(2011) polar-motion benchmark (<code>test_rotation</code>, <code>test_rotation_sle</code>). It is <strong>on by default</strong> (<code>rotation = .true.</code>) for real-Earth runs; the non-rotating community benchmarks set <code>rotation = .false.</code> explicitly.</p>
 </div>
 </div>
-<p>A redistribution of surface mass (ice, ocean water) and the resulting solid-Earth deformation change the planet’s inertia tensor, which perturbs the rotation vector — <strong>true polar wander</strong> and length-of-day changes. The shifted rotation in turn alters the centrifugal potential, which is itself a <strong>degree-2</strong> surface load that drives further deformation and sea-level change. This two-way coupling is the <em>rotational feedback</em>.</p>
-<section id="intended-formulation" class="level2">
-<h2 class="anchored" data-anchor-id="intended-formulation">Intended formulation</h2>
-<p>FastEarth3D will follow the <strong>time-domain</strong> rotational theory of <span class="citation" data-cites="MartinecHagedoorn2014">Martinec and Hagedoorn (<a href="#ref-MartinecHagedoorn2014" role="doc-biblioref">2014</a>)</span>, which is consistent with the explicit memory-stress machinery already in place: the centrifugal potential perturbation is assembled as an extra degree-2 forcing on the same per-degree operator, and the Liouville equation for the rotation vector is integrated alongside the Maxwell memory. This avoids the linearized, normal-mode rotational treatments that do not compose with a time-domain, 3D-viscosity solver.</p>
+<section id="formulation" class="level2">
+<h2 class="anchored" data-anchor-id="formulation">Formulation</h2>
+<p>The rotational theory follows the <strong>time-domain</strong> approach of <span class="citation" data-cites="MartinecHagedoorn2014">Martinec and Hagedoorn (<a href="#ref-MartinecHagedoorn2014" role="doc-biblioref">2014</a>)</span>, which composes with a viscoelastic, 3D-viscosity solver. On the GIA timescale the Chandler wobble is neglected, leaving a <strong>quasi-static Liouville equation</strong> for the polar-motion vector <span class="math inline">\(\mathbf{m}\)</span>,</p>
+<p><span class="math display">\[
+\Bigl[\,1 - \tfrac{k^{T}(t)}{k_{s}}\,\Bigr] * \mathbf{m}(t) = \Psi_{L}(t),
+\qquad
+\Psi_{L}(t) = \frac{I(t)}{C-A},
+\qquad
+I(t) = \bigl[\delta(t) + k^{L}(t)\bigr] * I_{\rm rigid}(t),
+\]</span></p>
+<p>where <span class="math inline">\(*\)</span> is time convolution, <span class="math inline">\(I_{\rm rigid}\)</span> is the rigid-body inertia perturbation from the surface load, <span class="math inline">\(k^{L}\)</span> and <span class="math inline">\(k^{T}\)</span> are the <strong>loading</strong> and <strong>tidal</strong> degree-2 Love numbers, <span class="math inline">\(k_s\)</span> is the secular (fluid-limit) number, and <span class="math inline">\(C-A\)</span> is the moment difference.</p>
+<p>The implementation carries <strong>two degree-2 viscoelastic channels</strong> on the same per-degree operator — a <em>loading</em> channel forced by the rigid inertia (a direct Gauss-grid quadrature of the load, so no axisymmetry is assumed) and a <em>tidal</em> channel forced by the centrifugal potential. Each carries its own Maxwell memory. The polar motion <span class="math inline">\(\mathbf{m}\)</span> is solved algebraically each step and is <strong>affine</strong> in the load, so it sits inside the SLE ↔︎ rotation fixed point safely; the channel memories are committed once with the converged <span class="math inline">\(\mathbf{m}\)</span>.</p>
 </section>
-<section id="design-constraints-to-honour" class="level2">
-<h2 class="anchored" data-anchor-id="design-constraints-to-honour">Design constraints to honour</h2>
+<section id="coupling-through-the-sea-level-equation" class="level2">
+<h2 class="anchored" data-anchor-id="coupling-through-the-sea-level-equation">Coupling through the sea-level equation</h2>
+<p>The centrifugal potential of the perturbed rotation,</p>
+<p><span class="math display">\[
+\Lambda = \Omega^{2} a^{2}\,\sin\theta\cos\theta\,(m_1\cos\phi + m_2\sin\phi),
+\]</span></p>
+<p>is a degree-2, order-1 field. It enters the SLE as the rotational sea-surface contribution <span class="math inline">\(s_{\rm rot} = (1+k^{T})\Lambda/g - h^{T}\Lambda/g\)</span> (geoid minus uplift), held constant across the SLE solve while the caller iterates the rotation ↔︎ SLE fixed point. The rotational potential is thus treated as a load like any other — self-consistent, not a bolt-on correction.</p>
+</section>
+<section id="design-constraints-honoured" class="level2">
+<h2 class="anchored" data-anchor-id="design-constraints-honoured">Design constraints honoured</h2>
 <ul>
 <li><strong>Degree-2, tidal Love numbers.</strong> The rotational deformation uses <em>tidal</em> (not loading) Love numbers; the centrifugal forcing is purely degree 2.</li>
-<li><strong>Fix the fluid Love number <span class="math inline">\(k_f\)</span> from the observed flattening</strong> <span class="citation" data-cites="Mitrovica2005">(<a href="#ref-Mitrovica2005" role="doc-biblioref">Mitrovica et al. 2005</a>)</span>. Computing <span class="math inline">\(k_f\)</span> from the assumed lithosphere thickness leads to the well-known “lithosphere-thickness paradox” in rotational stability; pinning <span class="math inline">\(k_f\)</span> to the observed hydrostatic flattening avoids it.</li>
-<li><strong>Couple through the SLE.</strong> The rotational potential is a load like any other, so it enters the <a href="../physics/sea-level.html">sea-level equation</a> self-consistently rather than as a bolt-on correction.</li>
+<li><strong>The secular number <span class="math inline">\(k_s\)</span>.</strong> Computing <span class="math inline">\(k_s\)</span> from the assumed lithosphere thickness leads to the well-known “lithosphere-thickness paradox” in rotational stability; the model can instead pin <span class="math inline">\(k_s\)</span> to the observed hydrostatic flattening <span class="citation" data-cites="Mitrovica2005">(<a href="#ref-Mitrovica2005" role="doc-biblioref">Mitrovica et al. 2005</a>)</span>, recommended for deep time.</li>
+<li><strong>Couple through the SLE.</strong> The rotational potential enters the sea-level equation self-consistently (above).</li>
 </ul>
 </section>
-<section id="validation-target" class="level2">
-<h2 class="anchored" data-anchor-id="validation-target">Validation target</h2>
-<p>Spada et al.&nbsp;(2011) test 3/2 (polar motion) is the planned benchmark <span class="citation" data-cites="Spada2011">(<a href="#ref-Spada2011" role="doc-biblioref">Spada et al. 2011</a>)</span>, cross-checked against the rotational cases of the GIA intercomparison.</p>
+<section id="validation" class="level2">
+<h2 class="anchored" data-anchor-id="validation">Validation</h2>
+<p>The Liouville polar-motion solve is checked against <strong>Spada et al.&nbsp;(2011) test 3/2</strong> <span class="citation" data-cites="Spada2011">(<a href="#ref-Spada2011" role="doc-biblioref">Spada et al. 2011</a>)</span> (model fluid <span class="math inline">\(k_s \approx 0.93\)</span>–<span class="math inline">\(0.94\)</span>), and the rotation ↔︎ SLE per-step fixed point is exercised by <code>test_rotation_sle</code>. See the <a href="../benchmarks/index.html">validation ladder</a>.</p>
+<div class="callout callout-style-default callout-tip callout-titled" title="Where this lives in the code">
+<div class="callout-header d-flex align-content-center">
+<div class="callout-icon-container">
+<i class="callout-icon"></i>
+</div>
+<div class="callout-title-container flex-fill">
+<span class="screen-reader-only">Tip</span>Where this lives in the code
+</div>
+</div>
+<div class="callout-body-container callout-body">
+<p><code>fe_rotation</code> holds the two degree-2 channels, the Liouville solve, and the <code>s_rot</code> SLE contribution; <code>fe_coupling</code> drives the rotation ↔︎ SLE fixed point; <code>fe_io</code> persists the polar motion and channel memory on restart. On by default (<code>rotation = .true.</code>); set <code>rotation = .false.</code> for non-rotating benchmarks.</p>
+</div>
+</div>
 
 
 
