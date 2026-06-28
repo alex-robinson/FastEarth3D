@@ -1,26 +1,25 @@
 {
-    "exe_default" : "libmodel/bin/model.x",
+    "exe_default" : "bin/fastearth.x",
 
     "par_path_as_argument" : false,
 
     "exe_aliases" :
-        {   "main" : "libmodel/bin/model.x"
+        {   "main"  : "bin/fastearth.x",
+            "mkref" : "bin/fastearth_mkref.x",
+            "remap" : "bin/fastearth_remap.x"
         },
 
     "grp_aliases" : {},
 
     "par_paths" :
-        {   "alias" : "None"
+        {   "all" : "fastearth.nml"
         },
 
     "files" :
-        ["None"],
+        [],
 
-    "dir-special" :
-    {
-        "None" : "target_dir_name"
-    },
+    "dir-special" : {},
 
     "links" :
-        []
+        ["data", "input"]
 }
