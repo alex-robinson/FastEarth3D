@@ -62,6 +62,12 @@ EXP=${EXP:-runs/modal_vs_ve}                 # experiment root (under gitignored
 N_MODES=${N_MODES:-1,2,4,8}                  # modes kept per degree (truncated)
 RANKS=${RANKS:-isostatic,rate,residue}       # mode_rank metric
 
+# Adaptive step-doubling tolerance for the MODAL response (RESP_MODAL now sub-steps
+# each coupling interval to this rtol; VE uses scheme=fe and ignores it). Lower =
+# more accurate, more sub-steps: ~1e-4 best accuracy (~9 SLE/couple), 1e-3 a good
+# balance (~3.6 SLE/couple, ~30x better than 1-step modal). See diag_modal_sle.
+RTOL=${RTOL:-1e-4}
+
 # How runme launches each (group) of runs:
 #   "-s -r"  prepare SLURM scripts AND submit   (HPC, default)
 #   "-s"     prepare SLURM scripts, do NOT submit (inspect, submit by hand)
@@ -94,6 +100,7 @@ COMMON=(
   fe3d.time_init="$T0"
   fe3d.time_end="$T1"
   fe3d.rotation=true            # real-Earth runs: rotational feedback on (both solvers)
+  fe3d.rtol="$RTOL"             # modal adaptive sub-step tolerance (VE ignores it)
   fe3d.file_out=out.nc
 )
 

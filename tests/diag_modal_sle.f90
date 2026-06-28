@@ -34,7 +34,7 @@ program diag_modal_sle
    implicit none
 
    integer            :: lmax, nsub, n_spin, n_degla, k
-   real(wp)           :: dt, f_a, f_b
+   real(wp)           :: dt, f_a, f_b, rtol
    character(len=64)  :: arg
    type(sht_grid)     :: sht
    type(earth_model)  :: e
@@ -49,12 +49,13 @@ program diag_modal_sle
    real(wp), allocatable :: Struth0(:,:), ice_a(:,:), ice_b(:,:), ice_ref0(:,:)
    real(wp) :: tcur
 
-   lmax = 16;  nsub = 8;  n_spin = 60;  n_degla = 200;  dt = 100.0_wp
+   lmax = 16;  nsub = 8;  n_spin = 60;  n_degla = 200;  dt = 100.0_wp;  rtol = 1.0e-4_wp
    if (command_argument_count() >= 1) then; call get_command_argument(1,arg); read(arg,*) lmax;    end if
    if (command_argument_count() >= 2) then; call get_command_argument(2,arg); read(arg,*) nsub;    end if
    if (command_argument_count() >= 3) then; call get_command_argument(3,arg); read(arg,*) n_spin;  end if
    if (command_argument_count() >= 4) then; call get_command_argument(4,arg); read(arg,*) n_degla; end if
    if (command_argument_count() >= 5) then; call get_command_argument(5,arg); read(arg,*) dt;      end if
+   if (command_argument_count() >= 6) then; call get_command_argument(6,arg); read(arg,*) rtol;    end if
    dt = dt*1.0e-3_wp*kyr
 
    call sht_grid_init(sht, lmax, nlat=2*lmax, nphi=4*lmax)
@@ -76,10 +77,11 @@ program diag_modal_sle
    call response_init_modal(mdN, e, sht, n_modes=-1, mode_rank=1, dt_be=5.0_wp*kyr)
    call response_init_modal(ma,  e, sht, n_modes=-1, mode_rank=1, dt_be=5.0_wp*kyr)
    tcur = 0.0_wp                           ! running clock for the adaptive stepper
+   stp_ma%rtol = rtol                      ! A3 accuracy tolerance (the cost knob)
 
    write(*,'(a)') ' === modal vs VE through the SLE: temporal attribution — M3-L70-V01, deglaciation ==='
-   write(*,'(a,i0,a,i0,a,i0,a,i0,a,f6.1,a)') '   lmax=', lmax, '  nsub=', nsub, &
-        '  n_spin=', n_spin, '  n_degla=', n_degla, '  dt=', dt/kyr*1.0e3_wp, ' yr  (rotation off)'
+   write(*,'(a,i0,a,i0,a,i0,a,i0,a,f6.1,a,es8.1,a)') '   lmax=', lmax, '  nsub=', nsub, &
+        '  n_spin=', n_spin, '  n_degla=', n_degla, '  dt=', dt/kyr*1.0e3_wp, ' yr  rtol=', rtol, '  (rot off)'
    write(*,'(a)') ''
 
    ! ---- LGM spin-up: hold the cap so each trajectory relaxes toward equilibrium --
