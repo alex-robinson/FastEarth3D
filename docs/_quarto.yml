@@ -17,10 +17,13 @@ website:
     left:
       - text: "Overview"
         file: index.qmd
+      - text: "Install & run"
+        file: getting-started.qmd
       - text: "Physics"
         menu:
           - physics/governing-equations.qmd
           - physics/rheology.qmd
+          - physics/modal.qmd
           - physics/sea-level.qmd
           - physics/rotation.qmd
       - text: "Discretization"
@@ -46,11 +49,13 @@ website:
       - section: "Getting started"
         contents:
           - index.qmd
+          - getting-started.qmd
           - implementation.qmd
       - section: "Physics"
         contents:
           - physics/governing-equations.qmd
           - physics/rheology.qmd
+          - physics/modal.qmd
           - physics/sea-level.qmd
           - physics/rotation.qmd
       - section: "Discretization"
@@ -65,6 +70,7 @@ website:
           - benchmarks/love-numbers.qmd
           - benchmarks/disc.qmd
           - benchmarks/sea-level.qmd
+          - benchmarks/modal-vs-ve.qmd
       - references.qmd
 
 format:

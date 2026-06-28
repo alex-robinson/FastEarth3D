@@ -27,6 +27,13 @@ Elastic layers ($M\to 0$) freeze; fluid layers ($\mu=0$) carry no memory. The
 elastic Love number to the fluid limit $-(2j+1)/3$, with $t_{\text{relax}}\propto\eta$
 and convergence under step refinement.
 
+This explicit update is **conditionally stable** — the step is capped by the
+shortest Maxwell time, so a short dynamical $\Delta t$ is sub-cycled within the
+coupling interval (the `fe_timestep` controller sizes it; `scheme = "trap"`
+selects the 2nd-order adaptive variant). The [modal solver](../physics/modal.qmd)
+sidesteps this ceiling entirely — each mode advances by its exact exponential, so
+it is unconditionally stable with no sub-stepping.
+
 ## The viscoelastic field driver
 
 The SLE needs a *field* load whose every coefficient $(\ell,m)$ has its **own
@@ -59,19 +66,26 @@ degree-2 field reproduces the 1D `ve_degree` history to $\sim 10^{-13}$.
 The per-$(\ell,m)$ memory and drift are stored in **degree-grouped slot order**
 (an $\ell m \leftrightarrow k$ map), so the inner loop is contiguous *and*
 per-degree, allowing operator reuse without scattering the (large) memory arrays.
-The **only prognostic state** carried across a restart is the Maxwell memory
-$\boldsymbol{\tau}$ plus the model time; reference fields (equilibrium bedrock,
-reference ice/topo) are static and validated on read. `test_restart` confirms a
-checkpoint-restart reproduces an uninterrupted run **bit-for-bit**.
+The **only prognostic state** carried across a restart is the viscoelastic
+memory — the Maxwell stress $\boldsymbol{\tau}$ for `RESP_VE`, or the modal
+amplitudes $\xi_k$ for `RESP_MODAL` — plus the integrator state and the model
+time; reference fields (equilibrium bedrock, reference ice/topo) are static and
+validated on read. `test_restart` confirms a checkpoint-restart reproduces an
+uninterrupted run **bit-for-bit**. A lower-resolution restart is interpolated up
+to the model grid (degree-grouped spectral block copy), so a run can be spun up
+cheaply at coarse resolution and continued at fine resolution.
 
 ## Coupling cadence
 
 For host coupling (CLIMBER-X), the model sub-cycles its short dynamical step
-$\Delta t$ within a longer coupling interval (default 10 yr): ice thickness is
-held across the interval, the SLE is solved each $\Delta t$, and the bedrock
+$\Delta t$ within a longer coupling interval: ice thickness is held across the
+interval, the SLE is solved each $\Delta t$, and the bedrock
 $z_{\text{bed}} = z_{\text{bed,eq}} - \text{rsl}$ is returned at the coupling
-cadence. The reference state is the fully relaxed configuration (zero Maxwell
-memory, no spin-up).
+cadence. The reference state and its datum are chosen by `i_eq` (e.g. a
+present-day RTopo reference, or an equilibrium configuration); a non-equilibrium
+start (a held LGM load) is brought into balance by a **spin-up** of `dt_equil`
+per pass, which `spinup_1d` can run with the cheap 1-D solver before switching
+the transient to the 3-D path.
 
 ::: {.callout-tip title="Where this lives in the code"}
 `fe_viscoelastic` (1D stepper + shared kernel), `fe_response` (`ve_response`

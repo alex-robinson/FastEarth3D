@@ -22,12 +22,13 @@ reference data, so the validation tests are self-contained.
 | 2 | [Love numbers $h,\ell,k$](love-numbers.qmd) | elastic + fluid radial solve, self-gravity | M3–L70–V01 table [@Spada2011] | ✅ | $\sim 0.1\%$, all degrees 2–256 |
 | 3 | [Disc-load response](disc.qmd) | deformation + geoid, time relaxation | Spada disc test [@Spada2011] | ✅ | $u$ $\sim 1\%$ near-field; geoid $\sim 1\%$ ($\ell\ge2$) |
 | 4 | [Sea-level equation](sea-level.qmd) | migrating-coastline SLE, flotation, sub-grid | Martinec 2018 cases A/C2/D3/E2/F1 [@Martinec2018] | ✅ | within inter-code scatter (esl $\lesssim 5$ m; D3 $\sim 0.2$ m) |
-| 5 | [Rotation / polar motion](../physics/rotation.qmd) | rotational feedback (TPW) | Spada test 3/2 [@Spada2011] | ⏳ planned | — |
-| 6 | 3D (lateral viscosity) | laterally varying $\eta$ | ASPECT/TABOO cross-checks | ⏳ planned | — |
+| 5 | [Rotation / polar motion](../physics/rotation.qmd) | rotational feedback (TPW) | Spada test 3/2 [@Spada2011] | ✅ | polar motion vs Spada 3/2; on by default |
+| 6 | 3D (lateral viscosity) | laterally varying $\eta$ | `RESP_VE` tensor-SH path | 🔧 | code path implemented + tested; cross-code validation ongoing |
+| 7 | [Modal vs VE](modal-vs-ve.qmd) | reduced modal solver | `RESP_VE` (internal) | 🔧 | accuracy/cost sweep; converges to VE for radial $\eta$ |
 
-Legend: ✅ implemented and validated · ⏳ planned. "Agreement" quotes the
-representative relative error against the reference; see each page for the full
-breakdown.
+Legend: ✅ implemented and validated · 🔧 implemented, validation ongoing ·
+⏳ planned. "Agreement" quotes the representative relative error against the
+reference; see each page for the full breakdown.
 
 ## How to read the rungs
 
@@ -43,8 +44,14 @@ breakdown.
   function, mass conservation, coastline migration, flotation, and the sub-grid
   sloping coast — against the dedicated SLE intercomparison. This is the
   benchmark VILMA itself passed.
-- **Rungs 5–6** (rotation, 3D) are not yet implemented; their pages record the
-  intended physics and validation targets.
+- **Rung 5** (rotation) is implemented and coupled into the SLE, with the
+  Liouville polar-motion solve checked against Spada test 3/2; it is on by
+  default for real-Earth runs (off for the non-rotating benchmarks). **Rung 6** (laterally varying viscosity) is implemented in both the
+  full and modal solvers and exercised by unit tests, with cross-code
+  validation ongoing. **Rung 7** is the internal [modal-vs-VE](modal-vs-ve.qmd)
+  accuracy/cost study — not a community benchmark, but the check that the
+  reduced solver converges to the full one (for radial viscosity) and quantifies
+  its approximation (for lateral viscosity).
 
 ::: {.callout-note title="Analytic vs. inter-code benchmarks"}
 Rungs 2–3 are effectively *analytic* (normal-mode Love numbers and their spatial
@@ -64,3 +71,5 @@ figures (to be added as the benchmark figures are generated):
 - **[Disc-load response](disc.qmd)** — vertical displacement, geoid, and uplift
   rate for the 10° disc.
 - **[Sea-level equation](sea-level.qmd)** — the five Martinec (2018) cases.
+- **[Modal vs VE](modal-vs-ve.qmd)** — accuracy and cost of the reduced modal
+  solver against the full viscoelastic one (an internal intercomparison).

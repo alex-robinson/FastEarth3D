@@ -47,26 +47,42 @@ code paths are therefore the same solver**.
 | **Time-domain spectral–FE** | **VILMA** [@Martinec2000] | **yes** | **fast** | **chosen** |
 | Full 3D FE/FV | CitcomSVE, ASPECT, Elmer | yes | slow, heavy | too complex |
 
+On top of the full time-domain solver, FastEarth3D adds an optional **reduced
+[modal solver](physics/modal.qmd)** — the per-degree relaxation collapsed onto a
+handful of exponential modes — as a faster, tunable approximation that converges
+back to the full solver. It is a dial, not a different method.
+
 ## What is in these docs
 
+- **[Install & run](getting-started.qmd)** — building with `configme`, the
+  `&fe3d` namelist, the drivers, and staging runs with `runme`.
 - **[Physics](physics/governing-equations.qmd)** — the governing equations
   (momentum, Poisson, incompressibility), the Maxwell rheology and its memory
-  stress, the sea-level equation, and rotational feedback.
+  stress, the [modal solver](physics/modal.qmd) (a tunable reduced
+  approximation), the sea-level equation, and rotational feedback.
 - **[Discretization](discretization/spectral.qmd)** — the spectral reduction,
   the P1/P0 radial finite-element operator, the explicit time scheme, and the
   banded direct solver.
 - **[Benchmarks](benchmarks/index.qmd)** — a summary table of validation
   results, with one page per benchmark (Love numbers, the disc-load response,
-  and the sea-level-equation intercomparison).
+  the sea-level-equation intercomparison, and the modal-vs-VE study).
 - **[Implementation](implementation.qmd)** — the libraries we build on (SHTns,
   FFTW), the codebases that informed the validation, and the attribution and
   clean-room policy.
 
 ## Status
 
-The solver core, the viscoelastic time stepping, the response operator, and the
-sea-level equation are implemented and validated in 1D against the Spada et al.
-(2011) and Martinec et al. (2018) benchmarks. Rotational feedback and the full
-3D (laterally varying viscosity) validation are the next rungs of the
-[validation ladder](benchmarks/index.qmd). The public API and installation
-workflow are still evolving and are intentionally left light here.
+The full model is implemented: the spectral–finite-element solver core, the
+viscoelastic time stepping and response operator, the self-consistent
+migrating-coastline sea-level equation, rotational feedback (polar motion), and
+**laterally varying (3D) viscosity** — together with restart and spin-up, online
+remapping of lon-lat forcing, and a host-coupling API. A second response
+operator, the reduced **[modal solver](physics/modal.qmd)**, offers a tunable,
+faster approximation that converges back to the full solver.
+
+Validation against the Spada et al. (2011) and Martinec et al. (2018) community
+benchmarks covers the radial solver, the disc-load response, and the sea-level
+equation; rotation is checked against Spada test 3/2. Cross-code validation of
+the 3D viscosity path and the [modal-vs-VE accuracy/cost
+study](benchmarks/modal-vs-ve.qmd) are ongoing — see the
+[validation ladder](benchmarks/index.qmd).

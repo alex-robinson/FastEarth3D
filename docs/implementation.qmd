@@ -73,13 +73,13 @@ Full provenance and licensing of every vendored dataset is in the repository's
 
 ## Build and host coupling
 
-The model uses a `configme`-style build (a machine fragment inserted into a
-Makefile template), with dependencies provided through a `fesm-utils` checkout
-(FFTW, SHTns) plus system netCDF. The host-coupling contract (designed for
+The model uses a **configme** build (a machine fragment inserted into a Makefile
+template), with dependencies provided through a `fesm-utils` checkout (FFTW,
+SHTns) plus system netCDF, and runs are staged with **runme** — both covered in
+[Install & run](getting-started.qmd). The host-coupling contract (designed for
 CLIMBER-X) is intentionally narrow: the host passes **ice thickness** in and
 receives **relative sea level** and **bedrock** out, with all spherical-harmonic
-transforms kept inside the model. The public API and installation workflow are
-still evolving and are intentionally kept light in these docs at this stage.
+transforms kept inside the model.
 
 ## License and citation
 

@@ -9,42 +9,50 @@ time-domain** approach of Martinec (2000): spherical harmonics horizontally,
 finite elements radially, an incompressible Maxwell rheology integrated
 explicitly in time, a self-consistent sea-level equation with migrating
 coastlines, and rotational feedback. It is built **3D-ready from the start**
-(laterally varying viscosity) but validated first in 1D against the published
-GIA benchmarks.
+(laterally varying viscosity) and validated against the published GIA benchmarks.
 
-See [doc/design.md](doc/design.md) for the design rationale, the method
-comparison, the validation ladder, and the implementation details that the
-literature flags as easy to get wrong.
+Full documentation (physics, discretization, benchmarks, install & run) is the
+Quarto site under [`docs/`](docs/); see [doc/design.md](doc/design.md) for the
+design rationale and method comparison.
 
 ## Status
 
-Scaffold. The build system, module architecture, and the spherical-harmonic
-transform kernel (SHTns) are in place and tested; the physics modules are
-interface stubs being filled in along the validation ladder.
+The full model is implemented and validated: the spectral–finite-element solver
+core, viscoelastic time stepping, the self-consistent migrating-coastline
+sea-level equation, rotational feedback (polar motion), and laterally varying
+(3D) viscosity — plus restart, spin-up, online lon-lat→Gauss remapping, and a
+host-coupling API. A second response operator, a reduced **modal solver**, offers
+a tunable, faster approximation that converges back to the full solver.
 
-## Dependencies
+Validated against the Spada et al. (2011) and Martinec et al. (2018) community
+benchmarks (radial Love numbers, disc-load response, sea-level equation) and
+Spada test 3/2 (rotation). Cross-code validation of the 3D path and the
+modal-vs-VE accuracy/cost study are ongoing.
 
-All provided by [fesm-utils](https://github.com/fesm-org/fesm-utils) (FFTW,
-SHTns, the `fesmutils` helper library) plus a system netCDF. SHTns is built
-through fesm-utils' `build.py`:
+## Install
+
+Dependencies are [fesm-utils](https://github.com/fesm-org/fesm-utils) (branch
+`coords-dev`, providing FFTW, SHTns, the `fesmutils` helper and the `coords`
+module) plus a system netCDF. **configme** clones/links the dependencies and
+generates the machine/compiler Makefile:
 
 ```bash
-# in the fesm-utils checkout
-./build.py -m macbook -c gfortran --component shtns --variant serial
+configme install FastEarth3D                 # resolve machine/compiler, clone deps
+configme install FastEarth3D -m macbook -c gfortran
+configme install FastEarth3D --link fesm-utils=/abs/path/to/fesm-utils   # reuse a checkout
 ```
 
 ## Build
 
 ```bash
-# point a symlink at your fesm-utils checkout
-ln -s ../fesm-utils fesm-utils
-
-# generate the Makefile for your machine/compiler, then build + test
-python config.py config/macbook_gfortran
-make check
+make fastearth        # -> bin/fastearth.x        (standalone forced-run driver)
+make fastearth_mkref  # -> bin/fastearth_mkref.x  (build a Gauss-grid reference)
+make fastearth_remap  # -> bin/fastearth_remap.x  (offline lon-lat -> Gauss remap)
+make check            # build + run the test suite
 ```
 
-`make` switches: `debug=0|1|2`, `openmp=0|1`.
+`make` switches: `debug=0|1|2`, `openmp=0|1` (default 1; build `openmp=1` for the
+threaded degree loop at production resolutions).
 
 ## Configure & run
 
@@ -54,21 +62,37 @@ complete, documented defaults set; a run can pass a sparse file overlaid on it
 (yelmo `defaults_file` convention), overriding only what it needs. Time fields
 (`dt_*`, `time_*`) are given in **years** and converted to SI seconds on load.
 
-The earth structure is selected by `earth` — a named built-in (e.g.
-`"M3-L70-V01"`) or `"custom"` to assemble from the surface-first layer arrays.
-The memory integrator (`scheme = "trap"`) is advanced with the adaptive
-time-stepper (`fe_timestep`), whose tolerances are also in `&fe3d`.
+- **Earth structure** — `earth`: a named built-in (e.g. `"M3-L70-V01"`) or
+  `"custom"` to assemble from the surface-first layer arrays.
+- **Response solver** — `earth_response`: `"ve"` (full viscoelastic, default),
+  `"modal"` (reduced, with `n_modes` / `mode_rank`), `"elastic"`, `"null"`.
+- **Time scheme** — `scheme = "fe"` (1st-order explicit) or `"trap"` (2nd-order
+  adaptive), advanced by the `fe_timestep` controller.
+- **3D viscosity / spin-up / restart** — `l_visc_3d`, `dt_equil`, `spinup_1d`,
+  `restart_in_file`.
+- **Rotation** — `rotation` (TPW feedback): on by default; `.false.` for the
+  non-rotating benchmarks.
 
-Build and run the standalone forced-run driver:
+Run the standalone driver directly (sparse overlay + complete defaults):
 
 ```bash
-make fastearth                       # -> bin/fastearth.x
-./bin/fastearth.x [config.nml]       # default config: fastearth.nml
+./bin/fastearth.x examples/deglac_lgm.nml fastearth.nml
 ```
 
-It reads a reference equilibrium state (`file_ref`) and an ice-thickness forcing
-(`file_forcing`, `h_ice(lon,lat,time)` on the model Gauss grid), marches the
-model across the forcing, and writes the diagnostic surface fields to `file_out`.
+It reads a reference state and an ice-thickness forcing (`file_forcing`,
+`h_ice(lon,lat,time)`; remapped from lon-lat on the fly by default), marches the
+model across the forcing, and writes the diagnostic surface fields (`rsl`,
+`z_bed`, …) to `file_out`.
+
+Or stage/submit runs and ensembles with **runme** (`-r` run, `-s` submit;
+comma-lists in `-p` define ensemble dimensions):
+
+```bash
+runme -o runs/deglac -e main --omp 8 -r -p fe3d.lmax=128 fe3d.earth_response=ve
+```
+
+The [`scripts/run_modal_vs_ve.sh`](scripts/run_modal_vs_ve.sh) launcher stages
+the full modal-vs-VE accuracy/cost sweep through runme.
 
 Embedding the model in a host (the CLIMBER-X coupling path) uses the same API
 behind a single `use fastearth3d`:
