@@ -5,10 +5,11 @@ Variable-io table (yelmo convention) for FastEarth3D netCDF I/O, used by
 the netCDF variable name, its dimensions, units, and a long_name. The time axis
 (unlimited) lets several snapshots live in one file.
 
-The Maxwell memory-stress fields `tau_*` and the adaptive controller's next-step
-Δt seed `dt_try` are the prognostic state restored on restart; the reference
-fields `z_bed_eq`/`h_ice_ref` are static (written once) and checked on read; the
-rest are diagnostic.
+The prognostic state restored on restart depends on the response kind: the
+Maxwell memory-stress fields `tau_*` (+ `sigma_n_*`) for `RESP_VE`, or the modal
+amplitudes `phi_*` for `RESP_MODAL`; plus the adaptive controller's next-step Δt
+seed `dt_try` for both. The reference fields `z_bed_eq`/`h_ice_ref` are static
+(written once) and checked on read; the rest are diagnostic.
 
 | id | variable     | dimensions    | units  | long_name                                        |
 |----|--------------|---------------|--------|--------------------------------------------------|
@@ -29,3 +30,5 @@ rest are diagnostic.
 | 15 | sigma_n_im   | nlm, time     | kg m-2 | Trapezoidal start-of-step load σ_n (imag part)   |
 | 16 | sigma_primed | time          | 1      | Flag: σ_n is tracked (1) or not yet primed (0)   |
 | 17 | bsl          | time          | m      | Barystatic sea level vs reference (eustatic eq.) |
+| 18 | phi_re       | nphi_modal, time | Pa  | Modal amplitude φ per (l,m) and mode (real part)  |
+| 19 | phi_im       | nphi_modal, time | Pa  | Modal amplitude φ per (l,m) and mode (imag part)  |

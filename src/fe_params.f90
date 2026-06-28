@@ -46,6 +46,12 @@ module fe_params
       character(len=8) :: scheme = "fe"        !! fe | etd1 | trap | be
       integer  :: max_couple_iter = 20         !! SLE<->memory co-convergence cap (implicit schemes)
 
+      ! --- response kind selector (fe_response / fe_modal) -----------------------
+      character(len=8)  :: earth_response = "ve"  !! ve | modal | elastic | null
+      integer  :: n_modes   = -1                  !! modal: # modes/degree (<=0 => all above tol)
+      character(len=12) :: mode_rank = "isostatic" !! modal rank metric: isostatic | rate | residue
+      real(wp) :: dt_be     = kyr                 !! modal eigensolve backward-Euler Δt [s] (nml in YEARS)
+
       ! --- sea-level equation (fe_sle) ------------------------------------------
       integer  :: sle_n_outer      = 3
       integer  :: sle_n_inner      = 20
@@ -150,7 +156,7 @@ contains
       character(len=64)  :: g
       character(len=512) :: df
       real(wp) :: dt_couple_yr, dt_init_yr, dt_min_yr, dt_max_yr, time_init_yr, time_end_yr
-      real(wp) :: dt_equil_yr
+      real(wp) :: dt_equil_yr, dt_be_yr
 
       g  = "fe3d";      if (present(group))         g  = group
       df = filename;    if (present(defaults_file)) df = defaults_file
@@ -179,6 +185,14 @@ contains
       ! memory scheme
       call nml_read(filename, g, "scheme",          p%scheme,          defaults_file=df)
       call nml_read(filename, g, "max_couple_iter", p%max_couple_iter, defaults_file=df)
+
+      ! response kind selector (dt_be given in YEARS, converted to SI below)
+      call nml_read(filename, g, "earth_response",  p%earth_response,  defaults_file=df)
+      call nml_read(filename, g, "n_modes",         p%n_modes,         defaults_file=df)
+      call nml_read(filename, g, "mode_rank",       p%mode_rank,       defaults_file=df)
+      dt_be_yr = p%dt_be/sec_per_year
+      call nml_read(filename, g, "dt_be",           dt_be_yr,          defaults_file=df)
+      p%dt_be = dt_be_yr*sec_per_year
 
       ! sea-level equation
       call nml_read(filename, g, "sle_n_outer",      p%sle_n_outer,      defaults_file=df)
@@ -277,6 +291,11 @@ contains
                  ']  rho=', p%rho(k), '  mu=', p%mu(k), '  eta=', p%eta(k), &
                  '  rheol=', p%rheology(k)
          end do
+      end if
+      write(u,'(a,a)')        '   response: ', trim(p%earth_response)
+      if (trim(p%earth_response) == "modal") then
+         write(u,'(a,i0,a,a,a,es9.2)') '     modal: n_modes=', p%n_modes, &
+              '  mode_rank=', trim(p%mode_rank), '  dt_be=', p%dt_be
       end if
       write(u,'(a,a,a,i0)')   '   scheme: ', trim(p%scheme), '   max_couple_iter=', p%max_couple_iter
       write(u,'(a,i0,a,i0,a,es8.1,a,l1,a,l1)') &

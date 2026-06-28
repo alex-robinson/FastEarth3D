@@ -29,7 +29,10 @@ module fe_coupling
    use fe_sht,             only: sht_grid, sht_grid_synthesis, sht_grid_surface_integral
    use fe_earth_structure, only: earth_model, build_earth, load_visc_3d
    use fe_viscoelastic,    only: scheme_from_name
-   use fe_response,        only: response_destroy, response_enable_lateral_visc_from_nodes, response, response_init_elastic, response_init_ve, response_init_null
+   use fe_response,        only: response_destroy, response_enable_lateral_visc_from_nodes, response, &
+                                 response_init_elastic, response_init_ve, response_init_null, response_init_modal, &
+                                 response_enable_lateral_visc_modal_from_nodes, RESP_VE, RESP_MODAL
+   use fe_modal,           only: rank_from_name
    use fe_sle,             only: sle_solver, sle_result, ocean_function
    use fe_timestep,        only: stepper_advance, adaptive_stepper
    use fe_rotation,        only: rotation_destroy, rotation_update, rotation_s_rot, rotation_begin_step, rotation_init, rotation_state
@@ -99,9 +102,24 @@ contains
       ! Δt enters only through Mk = (μ/η)Δt, which the adaptive stepper rescales
       ! per sub-step (resp%set_dt) — so the init Δt is just a nominal seed.
       dt0 = p%dt_init;  if (dt0 <= 0.0_wp) dt0 = p%dt_couple
-      call response_init_ve(self%resp, self%earth, sht, dt0)
-      self%resp%scheme          = scheme_from_name(p%scheme)
-      self%resp%max_couple_iter = p%max_couple_iter
+      select case (trim(p%earth_response))
+      case ("ve")
+         call response_init_ve(self%resp, self%earth, sht, dt0)
+         self%resp%scheme          = scheme_from_name(p%scheme)
+         self%resp%max_couple_iter = p%max_couple_iter
+      case ("modal")
+         ! Reduced modal response: scheme is forced FE internally (exact exponential
+         ! advance, unconditionally stable). dt_be is the eigensolve BE shift Δt.
+         call response_init_modal(self%resp, self%earth, sht, n_modes=p%n_modes, &
+                                  mode_rank=rank_from_name(p%mode_rank), dt_be=p%dt_be)
+         self%resp%max_couple_iter = p%max_couple_iter
+      case ("elastic")
+         call response_init_elastic(self%resp, self%earth, sht%lmax)
+      case ("null")
+         call response_init_null(self%resp)
+      case default
+         error stop "solid_earth_init: unknown earth_response (use ve|modal|elastic|null)"
+      end select
 
       ! optional laterally-varying (3D) viscosity (rung 6c), unless deferred (spinup_1d).
       do_visc_3d = p%l_visc_3d
@@ -170,7 +188,11 @@ contains
       type(sht_grid),       intent(in), target  :: sht
       real(wp), allocatable :: visc_node(:,:)
       call load_visc_3d(p, sht, self%resp%r, visc_node)
-      call response_enable_lateral_visc_from_nodes(self%resp, sht, visc_node)
+      select case (self%resp%kind)
+      case (RESP_VE);    call response_enable_lateral_visc_from_nodes(self%resp, sht, visc_node)
+      case (RESP_MODAL); call response_enable_lateral_visc_modal_from_nodes(self%resp, sht, visc_node)
+      case default;      error stop 'solid_earth_enable_visc_3d: lateral viscosity needs earth_response=ve|modal'
+      end select
    end subroutine solid_earth_enable_visc_3d
 
    subroutine solid_earth_update(self, h_ice, dt)
