@@ -28,6 +28,7 @@
 #   LMAX=128 ./scripts/run_modal_vs_ve.sh                      # whole script at lmax 128
 #   LMAX_DEGLAC=128 ./scripts/run_modal_vs_ve.sh               # radial at 64, deglaciation at 128
 #   FORCING=/work/ice.nc VISC3D=/work/bagge.nc RUNME_FLAGS="-s -r" ./scripts/run_modal_vs_ve.sh
+#   RUNME_FLAGS="-rs -q 12h -w 06:00:00" ./scripts/run_modal_vs_ve.sh 
 #
 set -euo pipefail
 cd "$(dirname "$0")/.."                      # repo root (where .runme/ lives)
@@ -35,8 +36,11 @@ cd "$(dirname "$0")/.."                      # repo root (where .runme/ lives)
 # ============================================================================
 # MACHINE-SPECIFIC paths — EDIT THESE for the target cluster (absolute paths).
 # ============================================================================
-FORCING=${FORCING:-/Users/alrobi001/models/climber-x/input/geo_ice_tarasov_deglac.nc}   # ice_thickness(lon,lat,time)
-VISC3D=${VISC3D:-/Users/alrobi001/models/isostasy_data/earth_structure/viscosity/bagge2021.nc}  # log10(eta)(lon,lat,r)
+CLIMBER_ROOT=/albedo/work/projects/p_forclima/robinson/models/climber-x
+ISOSTASY_DATA=/albedo/work/projects/p_forclima/isostasy_data
+ICE_DATA=/albedo/work/projects/p_forclima/ice_data
+FORCING=${FORCING:-${CLIMBER_ROOT}/input/geo_ice_tarasov_deglac.nc}   # ice_thickness(lon,lat,time)
+VISC3D=${VISC3D:-${ISOSTASY_DATA}/earth_structure/viscosity/bagge2021.nc}  # log10(eta)(lon,lat,r)
 
 # ============================================================================
 # Experiment knobs.
