@@ -52,8 +52,11 @@ module fe_rotation
 
    public :: rotation_state
    public :: channel_init, channel_set_dt, channel_begin, channel_commit, channel_destroy, rotation_init, rotation_begin_step, rotation_solve_m, rotation_s_rot, rotation_commit, rotation_update, rotation_destroy
+   public :: rotation_ne, rotation_get_memory, rotation_set_memory, ROT_NCOMP
 
    integer, parameter :: JROT = 2          !! rotation is purely degree 2
+   integer, parameter :: ROT_NCOMP = 6     !! packed memory components per channel:
+                                           !! [Are, Aim, Bre, Bim, Cre, Cim]
 
    type :: deg2_channel
       !! A single degree-2 viscoelastic response to a COMPLEX forcing coefficient,
@@ -80,7 +83,7 @@ module fe_rotation
    end type deg2_channel
 
    type :: rotation_state
-      logical     :: enabled = .false.       !! off until validated against benchmark
+      logical     :: enabled = .false.       !! set from p%rotation by the coupling init
       complex(wp) :: m = (0.0_wp, 0.0_wp)     !! polar motion m₁ + i m₂ [rad]
       real(wp)    :: time = 0.0_wp            !! model time [s]
       ! physics constants (defaults: Spada 2011 Table 2; overridable for deep time)
@@ -249,6 +252,60 @@ contains
       self%m = (0.0_wp, 0.0_wp);  self%time = 0.0_wp
       self%k_s = 0.0_wp;  self%kTe = 0.0_wp;  self%hTe = 0.0_wp
    end subroutine rotation_destroy
+
+   ! === restart serialization =================================================
+   ! The prognostic state of the rotation solver is the polar motion m plus both
+   ! channels' per-element Maxwell memory stress; everything else (the operators,
+   ! elastic Love numbers, secular constants) is rebuilt deterministically by
+   ! rotation_init. The drift fields are intra-step (frozen by begin_step from the
+   ! memory each step), so they are not persisted. These accessors keep the channel
+   ! internals private to this module — fe_io moves only opaque packed arrays.
+
+   pure integer function rotation_ne(self) result(ne)
+      !! Maxwell elements per degree-2 channel (both channels share the mesh); 0 if
+      !! the channels were never allocated (rotation not initialised).
+      type(rotation_state), intent(in) :: self
+      ne = 0
+      if (allocated(self%load_ch%Are)) ne = size(self%load_ch%Are, 2)
+   end function rotation_ne
+
+   subroutine rotation_get_memory(self, m, load_mem, tidal_mem)
+      !! Serialize the prognostic state: the polar motion m and both channels'
+      !! memory stress, packed along the last axis (ROT_NCOMP = 6) as
+      !! [Are, Aim, Bre, Bim, Cre, Cim]. load_mem/tidal_mem are (NLAM, rotation_ne, 6).
+      type(rotation_state), intent(in)  :: self
+      complex(wp),          intent(out) :: m
+      real(wp),             intent(out) :: load_mem(:,:,:), tidal_mem(:,:,:)
+      m = self%m
+      call pack_channel(self%load_ch,  load_mem)
+      call pack_channel(self%tidal_ch, tidal_mem)
+   end subroutine rotation_get_memory
+
+   subroutine rotation_set_memory(self, m, load_mem, tidal_mem)
+      !! Inverse of rotation_get_memory: restore m and both channels' memory stress.
+      type(rotation_state), intent(inout) :: self
+      complex(wp),          intent(in)    :: m
+      real(wp),             intent(in)    :: load_mem(:,:,:), tidal_mem(:,:,:)
+      self%m = m
+      call unpack_channel(self%load_ch,  load_mem)
+      call unpack_channel(self%tidal_ch, tidal_mem)
+   end subroutine rotation_set_memory
+
+   subroutine pack_channel(ch, mem)
+      type(deg2_channel), intent(in)  :: ch
+      real(wp),           intent(out) :: mem(:,:,:)   !! (NLAM, ne, ROT_NCOMP)
+      mem(:,:,1) = ch%Are;  mem(:,:,2) = ch%Aim
+      mem(:,:,3) = ch%Bre;  mem(:,:,4) = ch%Bim
+      mem(:,:,5) = ch%Cre;  mem(:,:,6) = ch%Cim
+   end subroutine pack_channel
+
+   subroutine unpack_channel(ch, mem)
+      type(deg2_channel), intent(inout) :: ch
+      real(wp),           intent(in)    :: mem(:,:,:)
+      ch%Are = mem(:,:,1);  ch%Aim = mem(:,:,2)
+      ch%Bre = mem(:,:,3);  ch%Bim = mem(:,:,4)
+      ch%Cre = mem(:,:,5);  ch%Cim = mem(:,:,6)
+   end subroutine unpack_channel
 
    ! === degree-2 inertia from the load (3-D-ready grid quadrature) =============
 
