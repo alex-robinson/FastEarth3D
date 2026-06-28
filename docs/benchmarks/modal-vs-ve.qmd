@@ -1,0 +1,84 @@
+---
+title: "Modal vs VE: accuracy and cost"
+---
+
+This is not a community benchmark but an **internal solver intercomparison**: it
+quantifies how well the reduced [modal solver](../physics/modal.qmd)
+(`RESP_MODAL`) approximates the full viscoelastic solver (`RESP_VE`) — the
+[ground truth](../physics/modal.qmd) — in both **accuracy** and **wall-clock
+cost**, as the `n_modes` / `mode_rank` dial is swept. The deliverable is an
+accuracy/cost curve that justifies the "tune fidelity to context" claim.
+
+## What it measures
+
+The comparison runs the same deglaciation forcing through both solvers and
+compares each modal run's surface output (`rsl`, `bsl`) against the `RESP_VE`
+run **in the same set** (the reference), alongside the wall time from the run
+profile. Two sets isolate the two regimes of the [exactness
+ladder](../physics/modal.qmd):
+
+| Set | Viscosity | What it isolates |
+|---|---|---|
+| **radial** | 1-D (radially symmetric) | the clean limit where `n_modes = all` converges to `RESP_VE` **exactly** — isolates the accuracy of the mode-count / ranking dial, with no lateral approximation |
+| **deglac3d** | 3-D (laterally varying) | the genuine-approximation regime: the LGM spin-up is done with the cheap 1-D solver (`spinup_1d`), then the transient runs on the 3-D path, where modal is an approximation to `RESP_VE` at every $K$ |
+
+Each set sweeps `earth_response = modal` over `n_modes` × `mode_rank`, adds an
+`n_modes = all` run, and includes the single `RESP_VE` reference.
+
+## Running it
+
+A ready-made launcher stages and submits the whole matrix through
+[runme](../getting-started.qmd#running-with-runme):
+
+```bash
+./scripts/run_modal_vs_ve.sh
+```
+
+It runs from anywhere (it `cd`s to the repo root so runme finds `.runme/`).
+Everything is overridable from the environment:
+
+```bash
+LMAX=128 ./scripts/run_modal_vs_ve.sh                    # whole sweep at lmax 128
+LMAX_RADIAL=64 LMAX_DEGLAC=128 ./scripts/run_modal_vs_ve.sh   # cheap radial, fine deglac
+FORCING=/work/ice.nc VISC3D=/work/bagge.nc RUNME_FLAGS="-s -r" ./scripts/run_modal_vs_ve.sh
+```
+
+Key knobs (all with sensible defaults in the script):
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `LMAX` | spherical-harmonic degree for the whole sweep | `64` |
+| `LMAX_RADIAL` / `LMAX_DEGLAC` | per-set overrides of `LMAX` | `=LMAX` |
+| `N_MODES` | modal dial swept in each set (comma list ⇒ ensemble) | `1,2,4,8` |
+| `RANKS` | `mode_rank` metric swept | `isostatic,rate,residue` |
+| `T0` / `T1` | transient window [yr] (LGM → present) | `-26000` / `0` |
+| `DT_COUPLE` | coupling interval [yr] (forcing cadence) | `100` |
+| `DT_EQUIL` | LGM-memory spin-up [yr/pass] | `10000` |
+| `OMP` | OpenMP threads per run | `8` |
+| `FORCING` / `VISC3D` | ice forcing and 3-D `log10(eta)` field (absolute paths) | machine-specific |
+| `RUNME_FLAGS` | how runme launches (`-s -r` submit, `-s` stage, `-r` local, `""` stage-only) | `-s -r` |
+
+The matching present-day reference `data/reference/rtopo_gauss_l<LMAX>.nc` must
+exist for each resolution used (build it with `fastearth_mkref` if needed); the
+script checks for it up front.
+
+::: {.callout-note title="Machine-specific paths"}
+The `FORCING` and `VISC3D` defaults at the top of `scripts/run_modal_vs_ve.sh`
+point at one workstation's data layout. Set them (via the environment or by
+editing the two lines) for your cluster before submitting.
+:::
+
+## Reading the results
+
+Each leaf run directory holds an `out.nc` (the `rsl`/`bsl` fields) and a run
+profile. Compare:
+
+- **accuracy** — each `modal/.../out.nc` against the set's `ve/out.nc` (e.g. RMS
+  and max `rsl` difference at present day);
+- **cost** — wall time from the `[PROFILE]` lines in the run log (or SLURM
+  accounting).
+
+The expected shape: in the **radial** set, the modal error falls toward zero as
+`n_modes` rises to all (a convergence check on the dial); in the **deglac3d**
+set, the error plateaus at a small residual (the lateral-coupling approximation)
+while modal stays cheaper than `RESP_VE` at every $K$.

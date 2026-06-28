@@ -75,7 +75,7 @@ module fe_params
       real(wp) :: cfl       = 1.0_wp         !! explicit (fe) sub-step Maxwell-number ceiling M=μΔt/η
 
       ! --- rotational feedback (fe_rotation) ------------------------------------
-      logical  :: rotation = .false.         !! TPW feedback (off until validated)
+      logical  :: rotation = .true.          !! TPW feedback (on for real runs; off for non-rotating benchmarks)
 
       ! --- driver I/O (program fastearth only) ----------------------------------
       character(len=512) :: file_forcing = ""            !! ice-thickness forcing (lon,lat,time)

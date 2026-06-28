@@ -7,9 +7,9 @@ program test_restart
    !!   (1) direct state restore — read the last snapshot into a fresh model and
    !!       its z_bed/rsl match what was written;
    !!   (2) bit-for-bit continuation — restore the EARLIER snapshot's memory
-   !!       (tau_*/φ) + adaptive-Δt seed and step forward; the trajectory reproduces
-   !!       the uninterrupted run exactly (the restored prognostic state is all that
-   !!       is needed);
+   !!       (tau_*/φ, plus the rotation state m + channel memory rot_*) + adaptive-Δt
+   !!       seed and step forward; the trajectory reproduces the uninterrupted run
+   !!       exactly (the restored prognostic state is all that is needed);
    !!   (3) multi-snapshot file — two snapshots at different times coexist, and a
    !!       specific earlier time can be selected on read.
    use fe_precision,       only: wp
@@ -63,6 +63,8 @@ contains
 
       p%dt_couple     = 1.0_wp*kyr        ! interval per update; M3-L70-V01
       p%earth_response = resp             ! "ve" (memory tensor) or "modal" (φ amplitudes)
+      p%rotation      = .true.            ! rotation on: also round-trips the polar
+                                          ! motion m + both channels' memory (rot_*)
 
       ! === reference run A ====================================================
       call solid_earth_init(a, p, sht, z_bed_eq, h_ice_ref)

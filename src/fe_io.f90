@@ -12,14 +12,16 @@ module fe_io
    !! Prognostic (restored on restart): the Maxwell memory-stress fields tau_*
    !! (nlam,ne,nk), the model time, and the adaptive controller's next-step Δt
    !! suggestion dt_try (so a restarted run sub-steps the same path → bit-for-bit
-   !! continuation). Static (written once, checked on read):
-   !! the reference state z_bed_eq, h_ice_ref. Diagnostic: h_ice, rsl, z_bed,
-   !! C_ocean (lon,lat) — written for inspection and restored if present.
+   !! continuation). With rotation enabled, the polar motion m and both degree-2
+   !! channels' memory stress (rot_*) are persisted too. Static (written once,
+   !! checked on read): the reference state z_bed_eq, h_ice_ref. Diagnostic: h_ice,
+   !! rsl, z_bed, C_ocean (lon,lat) — written for inspection and restored if present.
    use fe_precision,    only: wp
    use fe_constants,    only: rad2deg, sec_per_year
    use fe_viscoelastic, only: NLAM
    use fe_response,     only: response_prime_sigma, response, response_init_elastic, response_init_ve, &
                               response_init_null, RESP_VE, RESP_MODAL
+   use fe_rotation,     only: rotation_ne, rotation_get_memory, rotation_set_memory, ROT_NCOMP
    use fe_coupling,     only: solid_earth
    use ncio
    use variable_io
@@ -118,10 +120,45 @@ contains
             end select
             do q = 1, size(vars);  call write_one(self, filename, trim(vars(q)), n, ncid);  end do
          end block
+         ! rotation prognostic state (m + both channels' memory), if enabled
+         if (self%rotation%enabled) call write_rotation(self, filename, n, ncid)
       end if
 
       call nc_close(ncid)
    end subroutine fe_write_step
+
+   subroutine write_rotation(self, filename, n, ncid)
+      !! Write the rotation solver's prognostic state at time slice n: the polar
+      !! motion m (two scalars) and both degree-2 channels' packed memory stress
+      !! (NLAM, ne_rot, ROT_NCOMP). Serialization is owned by fe_rotation; this just
+      !! moves the packed arrays into the file.
+      type(solid_earth), intent(in) :: self
+      character(len=*),   intent(in) :: filename
+      integer,            intent(in) :: n, ncid
+      complex(wp) :: m
+      real(wp), allocatable :: load_mem(:,:,:), tidal_mem(:,:,:)
+      integer :: ne
+      ne = rotation_ne(self%rotation)
+      allocate(load_mem(NLAM, ne, ROT_NCOMP), tidal_mem(NLAM, ne, ROT_NCOMP))
+      call rotation_get_memory(self%rotation, m, load_mem, tidal_mem)
+      call put_scalar(filename, "rot_m_re", real(m, wp),  n, ncid)
+      call put_scalar(filename, "rot_m_im", aimag(m),     n, ncid)
+      call put_rotmem(filename, "rot_load_mem",  load_mem,  ne, n, ncid)
+      call put_rotmem(filename, "rot_tidal_mem", tidal_mem, ne, n, ncid)
+   end subroutine write_rotation
+
+   subroutine put_rotmem(filename, name, dat, ne, n, ncid)
+      !! Write a packed degree-2 channel memory field (nlam, ne_rot, nrc) at slice n.
+      character(len=*), intent(in) :: filename, name
+      real(wp),         intent(in) :: dat(:,:,:)
+      integer,          intent(in) :: ne, n, ncid
+      type(var_io_type) :: v
+      call find_var_io_in_table(v, name, vtable, with_error=.true.)
+      call nc_write(filename, name, dat, ncid=ncid, &
+           dim1="nlam", dim2="ne_rot", dim3="nrc", dim4="time", &
+           start=[1,1,1,n], count=[NLAM, ne, ROT_NCOMP, 1], &
+           units=trim(v%units), long_name=trim(v%long_name))
+   end subroutine put_rotmem
 
    subroutine write_init(self, filename, time)
       !! Create the file and its dimensions (lon, lat, nlam, ne, nk, time) and
@@ -150,6 +187,15 @@ contains
          ! nphi_modal = total ragged modal-amplitude count Σ_k nmode_deg(kdeg(k))
          call nc_write_dim(filename, "nphi_modal", x=1, dx=1, nx=modal_nphi(self%resp), units="1")
       end select
+      ! rotation memory dimensions (independent of the response kind / lmax). The
+      ! packed channel memory is (nlam, ne_rot, nrc); only the RESP_VE branch above
+      ! creates nlam, so create it here for the other kinds when rotation is on.
+      if (self%rotation%enabled) then
+         if (self%resp%kind /= RESP_VE) &
+            call nc_write_dim(filename, "nlam", x=1, dx=1, nx=NLAM, units="1")
+         call nc_write_dim(filename, "ne_rot", x=1, dx=1, nx=rotation_ne(self%rotation), units="1")
+         call nc_write_dim(filename, "nrc",    x=1, dx=1, nx=ROT_NCOMP,                  units="1")
+      end if
       call nc_write_dim(filename, "time", x=time/sec_per_year, dx=1.0_wp, nx=1, &
            units="years", unlimited=.true.)
 
@@ -369,7 +415,37 @@ contains
       self%time      = tvals(n)
       call nc_read(filename, "dt_try", self%stepper%dt_try, start=[n], count=[1])
       self%stepper%dt_try = self%stepper%dt_try*sec_per_year   ! file stores years
+
+      ! rotation prognostic state, if this run has rotation on AND the file carries
+      ! it (an older, rotation-off restart lacks the rot_* vars → cold-start rotation)
+      if (self%rotation%enabled .and. nc_exists_var(filename, "rot_m_re")) &
+         call read_rotation(self, filename, n)
    end subroutine fe_restart_read
+
+   subroutine read_rotation(self, filename, n)
+      !! Restore the rotation solver's prognostic state at slice n: the polar motion
+      !! m and both degree-2 channels' memory stress. The channels are rebuilt by
+      !! init() (so ne_rot matches and is lmax-independent); only m + memory restore.
+      type(solid_earth), intent(inout) :: self
+      character(len=*),   intent(in)    :: filename
+      integer,            intent(in)    :: n
+      complex(wp) :: m
+      real(wp), allocatable :: load_mem(:,:,:), tidal_mem(:,:,:)
+      real(wp) :: mre, mim
+      integer  :: ne, ne_f
+      ne   = rotation_ne(self%rotation)
+      ne_f = nc_size(filename, "ne_rot")
+      if (ne_f /= ne) &
+         error stop 'fe_restart_read: rotation channel size (ne_rot) does not match the model'
+      allocate(load_mem(NLAM, ne, ROT_NCOMP), tidal_mem(NLAM, ne, ROT_NCOMP))
+      call nc_read(filename, "rot_load_mem",  load_mem,  start=[1,1,1,n], count=[NLAM, ne, ROT_NCOMP, 1])
+      call nc_read(filename, "rot_tidal_mem", tidal_mem, start=[1,1,1,n], count=[NLAM, ne, ROT_NCOMP, 1])
+      call nc_read(filename, "rot_m_re", mre, start=[n], count=[1])
+      call nc_read(filename, "rot_m_im", mim, start=[n], count=[1])
+      m = cmplx(mre, mim, wp)
+      call rotation_set_memory(self%rotation, m, load_mem, tidal_mem)
+      self%rotation%time = self%time
+   end subroutine read_rotation
 
    subroutine read_ve_state(self, filename, n, np, nl)
       !! Restore RESP_VE memory at slice n. Same-resolution (file nk == model nk):

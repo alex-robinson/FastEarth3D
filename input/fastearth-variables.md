@@ -32,3 +32,7 @@ seed `dt_try` for both. The reference fields `z_bed_eq`/`h_ice_ref` are static
 | 17 | bsl          | time          | m      | Barystatic sea level vs reference (eustatic eq.) |
 | 18 | phi_re       | nphi_modal, time | Pa  | Modal amplitude φ per (l,m) and mode (real part)  |
 | 19 | phi_im       | nphi_modal, time | Pa  | Modal amplitude φ per (l,m) and mode (imag part)  |
+| 20 | rot_m_re     | time          | 1      | Polar motion m₁ (rotation, real part)            |
+| 21 | rot_m_im     | time          | 1      | Polar motion m₂ (rotation, imag part)            |
+| 22 | rot_load_mem | nlam, ne_rot, nrc | Pa | Rotation loading-channel memory stress (packed)  |
+| 23 | rot_tidal_mem| nlam, ne_rot, nrc | Pa | Rotation tidal-channel memory stress (packed)    |

@@ -1,0 +1,138 @@
+---
+title: "The modal solver (a tunable approximation)"
+---
+
+The default response operator is the full Martinec time-domain solve
+(`RESP_VE`): every step takes a banded radial solve per spherical-harmonic
+coefficient and carries the whole radial memory-stress tensor (see
+[Rheology](rheology.qmd)). FastEarth3D also offers a **reduced modal response**
+(`RESP_MODAL`) — a deliberately approximate operator that collapses each
+degree's relaxation onto a handful of exponential modes. It is **selectable by
+namelist** (`earth_response = "modal"`), and the full solver is retained as both
+the exact option and the ground-truth reference.
+
+## Why a finite set of modes
+
+For an **incompressible**, self-gravitating, layered Maxwell Earth the load
+response *per harmonic degree* is a **finite sum of exponential relaxation
+modes** — incompressibility is exactly what keeps the spectrum discrete (a
+compressible Earth would have a continuum). Physically there is roughly one mode
+per interface — a fundamental mantle mode, a buoyancy mode per density jump, a
+transient mode per viscosity contrast, a core mode — so an M3–L70–V01-class
+structure has $\sim 10$ modes, of which **only 1–3 dominate the surface response
+at any given degree**. The surplus modes are numerically present but move the
+surface negligibly.
+
+This is the structural fact the modal solver exploits: the per-degree response
+can be written exactly as an elastic gain plus a small sum of decaying
+exponentials,
+
+$$
+u_{\ell m}(t) = u_{\rm el}(\ell)\,\sigma_{\ell m}
+              + \sum_{k=1}^{K} r^{u}_{k}(\ell)\,\xi_{k,\ell m}(t),
+\qquad
+\dot{\xi}_{k,\ell m} = -\frac{\xi_{k,\ell m}}{\tau_{k}(\ell)} + b_{k}(\ell)\,\sigma_{\ell m},
+$$
+
+with one scalar ODE per mode per coefficient (and the same form for the geoid
+$N$ and horizontal $V$). The prognostic state shrinks from the full radial
+memory tensor to **$K$ complex scalars per $(\ell,m)$**.
+
+::: {.callout-note title="Not normal-mode root finding"}
+The relaxation times $\tau_k$, residues $r_k$, and load projections $b_k$ are
+**extracted once at initialization from the same validated finite-element
+relaxation operator** the full solver uses — not from an analytic
+secular-determinant root find (the SELEN/TABOO/ALMA route the project rules out).
+The modal basis is therefore a property of the discretized model itself, which is
+why `K = all` **converges back to `RESP_VE`**. How the modes are extracted (a
+matrix-free subspace iteration) is a discretization detail and is not covered
+here.
+:::
+
+## The dial
+
+The whole point of the modal form is that it is a **single dial** spanning the
+gap between a one-mode model and the full solver:
+
+| `n_modes` ($K$) | Behaviour |
+|---|---|
+| `1` | the dominant mode only — a global, spherical-harmonic analogue of an LV-ELVA-type single-mode model |
+| `1 < K < all` | tune fidelity to context: low $K$ for fast continental deglaciation, higher $K$ for careful regional GIA |
+| `-1` (all above tolerance) | **converges to `RESP_VE`** (for radially varying viscosity) |
+
+Which modes to keep is itself a choice, set by `mode_rank`:
+
+| `mode_rank` | Keeps the modes that… | Tends to favour |
+|---|---|---|
+| `"isostatic"` *(default)* | dominate the **final relaxed** uplift, $\lvert r^{u}_{k}\,b_{k}\,\tau_{k}\rvert$ | the slow, isostatic modes ($K=1\approx$ fundamental) |
+| `"rate"` | dominate the **initial relaxation rate**, $\lvert r^{u}_{k}\,b_{k}\rvert$ | faster transient modes |
+| `"residue"` | have the strongest **surface coupling**, $\lvert r^{u}_{k}\rvert$ | pure coupling strength |
+
+All three are cheap by-products of the same initialization, so `mode_rank` is
+sweepable. The [modal-vs-VE comparison](../benchmarks/modal-vs-ve.qmd)
+quantifies the accuracy/cost trade-off across $K$ and `mode_rank`.
+
+## Exact time integration — no stability ceiling
+
+Because each mode is a single decaying exponential, a step with a constant load
+$\sigma$ advances by the **analytic solution**
+
+$$
+\xi_{k} \;\leftarrow\; e^{-\Delta t/\tau_{k}}\,\xi_{k}
+        \;+\; b_{k}\tau_{k}\bigl(1 - e^{-\Delta t/\tau_{k}}\bigr)\,\sigma ,
+$$
+
+so the modal scheme is **unconditionally stable**: there is no Maxwell-number
+$\Delta t$ ceiling and **no sub-stepping**, unlike the explicit forward-Euler
+memory update of the full solver (see [Time stepping](../discretization/time-stepping.qmd)).
+For the SLE-coupled, fast-load case the same closed form is used with a
+linear-in-time load (a trapezoidal variant), giving second order in the load
+with no stability constraint. The response stays **affine** in the current load,
+so it slots into the iterative [sea-level equation](sea-level.qmd) exactly as the
+full solver does, and `set_dt` only rescales the $e^{-\Delta t/\tau_k}$ factors —
+no operator re-factorization.
+
+## Laterally varying viscosity
+
+Lateral viscosity breaks the clean per-degree decoupling. The modal solver
+handles it as a **depth-weighted, per-mode rate modulation** (a split-operator):
+the modal basis is built once from the laterally *averaged* radial profile, and
+each mode's relaxation rate is then modulated by the local viscosity in the
+**depth band that mode samples**, weighted by the mode's radial strain-energy
+profile. The mean modulation is applied in spectral space (it rescales $\tau_k$
+per degree exactly); the zero-mean lateral anomaly is applied in real space via
+$K$ **scalar** spherical-harmonic transforms per step.
+
+This is much cheaper than the full solver's six-component tensor-SH memory
+advance, and the depth weighting captures something a single-mode model cannot:
+the fundamental mode responds to deep-mantle structure, the transient modes to
+their own layers.
+
+::: {.callout-important title="Exactness ladder — be honest about it"}
+- **Radial viscosity:** `RESP_MODAL` with `n_modes = -1` (all modes above
+  tolerance) **converges to `RESP_VE`**. The mode count is the only
+  approximation, and it is a controlled one.
+- **Lateral viscosity:** `RESP_MODAL` is an **approximation at every $K$** —
+  rate modulation is not the full lateral coupling. `RESP_VE` (the
+  tensor-SH path) remains the ground-truth reference; modal-LV is the fast,
+  tunable approximation to it, cheaper than the full path at all $K$.
+:::
+
+## When to use which
+
+Use **`RESP_VE`** when you want the exact viscoelastic response, when validating,
+or as the reference for a lateral-viscosity run. Use **`RESP_MODAL`** when speed
+matters and a controlled approximation is acceptable — long transient
+deglaciations, large ensembles, or coupled climate runs — turning the `n_modes`
+dial up if a case needs more fidelity. Both share the same coupling interface,
+sea-level equation, rotation, restart, and validation harness, so a run can be
+switched between them by changing a single namelist value.
+
+::: {.callout-tip title="Where this lives in the code"}
+`fe_modal` extracts the per-degree modes from the validated relaxation operator;
+`fe_response` holds the `RESP_MODAL` state ($\xi_k$ per $(\ell,m)$), the affine
+`apply`, the exact-exponential commit, and the lateral split-operator. Selected
+by `earth_response = "modal"`, tuned by `n_modes` and `mode_rank`. Validated by
+`test_modal`, `test_modal_resp`, and (lateral) `test_modal_visc3d`; the
+accuracy/cost study is [Modal vs VE](../benchmarks/modal-vs-ve.qmd).
+:::

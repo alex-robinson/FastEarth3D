@@ -7,7 +7,9 @@ elastically on short timescales and viscously on long ones, with a single
 Maxwell time $\tau_M = \eta/\mu$ per layer. FastEarth3D integrates this
 constitutive law **explicitly in the time domain** — there is no normal-mode
 decomposition and no Laplace transform. This is the structural choice that makes
-laterally varying (3D) viscosity essentially free.
+laterally varying (3D) viscosity essentially free. This page describes the full
+solver (`RESP_VE`); a faster, optional reduction onto a few relaxation modes is
+the [modal solver](modal.qmd), validated against it.
 
 ## The Maxwell body
 
