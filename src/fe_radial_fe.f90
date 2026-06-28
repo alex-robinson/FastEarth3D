@@ -421,14 +421,18 @@ contains
       dc_b = 1.0_wp;  dr_b = 1.0_wp
       do k = 1, nd
          self%dc(k) = colnorm(A(:,k))
-         if (self%bordered .and. abs(self%w(k)) > 1.0_wp/self%dc(k)**2) &
-            self%dc(k) = 1.0_wp/sqrt(abs(self%w(k)))
+         if (self%bordered) then                                ! w allocated only when bordered
+            if (abs(self%w(k)) > 1.0_wp/self%dc(k)**2) &
+               self%dc(k) = 1.0_wp/sqrt(abs(self%w(k)))
+         end if
       end do
       if (self%bordered) dc_b = colnorm(self%w)                 ! border column w
       do i = 1, nd
          self%dr(i) = rownorm(A(i,:), self%dc)
-         if (self%bordered .and. abs(self%w(i))*dc_b > 1.0_wp/self%dr(i)**2) &
-            self%dr(i) = 1.0_wp/sqrt(abs(self%w(i))*dc_b)
+         if (self%bordered) then
+            if (abs(self%w(i))*dc_b > 1.0_wp/self%dr(i)**2) &
+               self%dr(i) = 1.0_wp/sqrt(abs(self%w(i))*dc_b)
+         end if
       end do
       if (self%bordered) dr_b = rownorm(self%w, self%dc)        ! border row wᵀ
 
