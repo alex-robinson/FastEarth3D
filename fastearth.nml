@@ -44,6 +44,7 @@
     n_modes         = -1       ! modal: # relaxation modes per degree (<=0 => all above tol)
     mode_rank       = "isostatic" ! modal rank metric: isostatic | rate | residue
     dt_be           = 1000.0   ! modal eigensolve backward-Euler Δt [years]
+    n_krylov        = 20       ! modal: Arnoldi/Krylov block size (caps modes/degree found; raise so all->VE)
 
     ! --- sea-level equation (fe_sle) ----------------------------------
     sle_n_outer      = 3

@@ -494,17 +494,23 @@ contains
 
    ! --- modal reduced response (RESP_MODAL) -----------------------------------
 
-   subroutine response_init_modal(self, earth, sht, n_modes, mode_rank, dt_be)
+   subroutine response_init_modal(self, earth, sht, n_modes, mode_rank, dt_be, p_block)
       !! Build the reduced modal response: per degree l≥1, extract the dominant
       !! relaxation modes (fe_modal) and store them ragged, with the elastic gains.
       !! The per-(l,m) modal amplitudes φ start at zero (relaxed reference). Scheme
       !! is FE so the timestep controller takes the explicit (unconditionally
       !! stable here) path — one step per coupling interval.
+      !!
+      !! p_block is the Arnoldi/Krylov block size (default in modal_solve): it caps
+      !! how many relaxation modes per degree the load-Krylov subspace can resolve, so
+      !! it is the ceiling that n_modes=all truncates to. Raise it until n_modes=all
+      !! converges to RESP_VE (radial η); see doc/design-modal.md §exactness ladder.
       type(response),    intent(inout) :: self
       type(earth_model), intent(in)    :: earth
       type(sht_grid),    intent(in)    :: sht
       integer,           intent(in)    :: n_modes, mode_rank
       real(wp), optional, intent(in)   :: dt_be
+      integer,  optional, intent(in)   :: p_block
       type(radial_mesh) :: mesh
       type(modal_spectrum), allocatable :: specs(:)
       integer :: l, m, k, i, base, tot, ptot
@@ -561,9 +567,10 @@ contains
       do l = 1, self%lmax
          if (present(dt_be)) then
             call modal_solve(specs(l), earth, mesh, l, n_modes=n_modes, &
-                             mode_rank=mode_rank, dt_be=dt_be)
+                             mode_rank=mode_rank, dt_be=dt_be, p_block=p_block)
          else
-            call modal_solve(specs(l), earth, mesh, l, n_modes=n_modes, mode_rank=mode_rank)
+            call modal_solve(specs(l), earth, mesh, l, n_modes=n_modes, &
+                             mode_rank=mode_rank, p_block=p_block)
          end if
       end do
 

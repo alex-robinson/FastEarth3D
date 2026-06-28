@@ -111,7 +111,8 @@ contains
          ! Reduced modal response: scheme is forced FE internally (exact exponential
          ! advance, unconditionally stable). dt_be is the eigensolve BE shift Δt.
          call response_init_modal(self%resp, self%earth, sht, n_modes=p%n_modes, &
-                                  mode_rank=rank_from_name(p%mode_rank), dt_be=p%dt_be)
+                                  mode_rank=rank_from_name(p%mode_rank), dt_be=p%dt_be, &
+                                  p_block=p%n_krylov)
          self%resp%max_couple_iter = p%max_couple_iter
       case ("elastic")
          call response_init_elastic(self%resp, self%earth, sht%lmax)
