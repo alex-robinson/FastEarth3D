@@ -8,6 +8,10 @@
 *.x
 *.dSYM/
 
+# configme related artifacts
+.install.sh
+.upgrade.sh
+
 # runme related machine-specific config file
 .runme/config.toml
 
