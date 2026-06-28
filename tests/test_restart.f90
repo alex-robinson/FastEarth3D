@@ -1,13 +1,15 @@
 program test_restart
    !! netCDF restart round-trip for the coupling state (yelmo-convention I/O via
-   !! fe_io: a time axis lets several snapshots share one file). Checks:
+   !! fe_io: a time axis lets several snapshots share one file). Run for BOTH
+   !! response kinds — RESP_VE (Maxwell memory tensor + σ_n) and RESP_MODAL (the
+   !! per-(l,m) modal amplitudes φ; the spectrum is rebuilt by init). Checks:
    !!
    !!   (1) direct state restore — read the last snapshot into a fresh model and
    !!       its z_bed/rsl match what was written;
-   !!   (2) bit-for-bit continuation — restore the EARLIER snapshot's Maxwell
-   !!       memory + adaptive-Δt seed and step forward; the trajectory reproduces
-   !!       the uninterrupted run exactly (the restored prognostic state — memory
-   !!       and dt_try — is all that is needed);
+   !!   (2) bit-for-bit continuation — restore the EARLIER snapshot's memory
+   !!       (tau_*/φ) + adaptive-Δt seed and step forward; the trajectory reproduces
+   !!       the uninterrupted run exactly (the restored prognostic state is all that
+   !!       is needed);
    !!   (3) multi-snapshot file — two snapshots at different times coexist, and a
    !!       specific earlier time can be selected on read.
    use fe_precision,       only: wp
@@ -21,14 +23,8 @@ program test_restart
    implicit none
 
    integer, parameter :: LMAX = 12, K1 = 3, K2 = 3
-   character(len=*), parameter :: FILE = "obj/test_restart.nc"
    type(sht_grid), target :: sht
-   type(fe_param_class)   :: p
-   type(solid_earth)      :: a, b, c
    real(wp), allocatable  :: z_bed_eq(:,:), h_ice_ref(:,:), h_ice(:,:)
-   real(wp), allocatable  :: a6_zbed(:,:), a6_rsl(:,:)
-   real(wp) :: dt_couple, t1, t2, d_restore, d_continue
-   integer  :: step, nt
    logical  :: ok
 
    ok = .true.
@@ -37,63 +33,15 @@ program test_restart
             h_ice(sht%nphi,sht%nlat))
    call make_fields(z_bed_eq, h_ice_ref, h_ice)
 
-   dt_couple = 1.0_wp*kyr              ! interval per update; M3-L70-V01, trapezoidal
-   p%dt_couple = dt_couple
+   call roundtrip("ve",    "obj/test_restart_ve.nc",    ok)
+   call roundtrip("modal", "obj/test_restart_modal.nc", ok)
 
-   ! === reference run A =======================================================
-   call solid_earth_init(a, p, sht, z_bed_eq, h_ice_ref)
-   do step = 1, K1
-      call solid_earth_update(a, h_ice, dt_couple)
-   end do
-   t1 = a%time
-   call fe_restart_write(a, t1, filename=FILE, init=.true.)   ! snapshot 1 (memory @ K1)
-
-   do step = 1, K2
-      call solid_earth_update(a, h_ice, dt_couple)
-   end do
-   t2 = a%time
-   call fe_restart_write(a, t2, filename=FILE, init=.false.)  ! snapshot 2 (state @ K1+K2)
-   a6_zbed = a%z_bed;  a6_rsl = a%rsl
-
-   write(*,'(a,i0,a,f6.2,a,f6.2)') ' restart: lmax=', LMAX, &
-        '   t1=', t1/kyr, ' kyr   t2=', t2/kyr
-
-   ! === (3) multi-snapshot file ==============================================
-   nt = nc_size(FILE, "time")
-   write(*,'(a,i0)') '   snapshots in file: ', nt
-   if (nt /= 2) then
-      write(*,'(a)') '   FAIL: expected two time snapshots in one file'; ok = .false.
-   end if
-
-   ! === (1) direct state restore (default = last snapshot, t2) ================
-   call solid_earth_init(b, p, sht, z_bed_eq, h_ice_ref)
-   call fe_restart_read(b, FILE)
-   d_restore = max(maxval(abs(b%z_bed - a6_zbed)), maxval(abs(b%rsl - a6_rsl)))
-   write(*,'(a,es11.2)') '   (1) state restore  max|B - A|     =', d_restore
-   if (d_restore > 1.0e-9_wp) then
-      write(*,'(a)') '   FAIL: restored state does not match the written state'; ok = .false.
-   end if
-
-   ! === (2) bit-for-bit continuation from the earlier snapshot (t1) ===========
-   call solid_earth_init(c, p, sht, z_bed_eq, h_ice_ref)
-   call fe_restart_read(c, FILE, time=t1)                ! restore memory @ K1
-   do step = 1, K2
-      call solid_earth_update(c, h_ice, dt_couple)                               ! same load, K2 steps
-   end do
-   d_continue = max(maxval(abs(c%z_bed - a6_zbed)), maxval(abs(c%rsl - a6_rsl)))
-   write(*,'(a,es11.2)') '   (2) continuation   max|C - A|     =', d_continue
-   if (d_continue > 1.0e-9_wp) then
-      write(*,'(a)') '   FAIL: restarted trajectory diverges from the uninterrupted run'
-      ok = .false.
-   end if
-
-   call solid_earth_finalize(a);  call solid_earth_finalize(b);  call solid_earth_finalize(c)
    call sht_grid_destroy(sht)
 
    write(*,'(a)') ''
    if (ok) then
       write(*,'(a)') ' PASS: netCDF restart restores state, continues bit-for-bit,'
-      write(*,'(a)') '       and stores several time snapshots in one file'
+      write(*,'(a)') '       and stores several snapshots in one file (RESP_VE + RESP_MODAL)'
    else
       write(*,'(a)') ' FAIL: restart round-trip did not all pass'
       call radial_fe_finalize()
@@ -102,6 +50,69 @@ program test_restart
    call radial_fe_finalize()
 
 contains
+
+   subroutine roundtrip(resp, file, ok)
+      !! Full restart round-trip for one response kind on the shared grid/fields.
+      character(len=*),  intent(in)    :: resp, file
+      logical,           intent(inout) :: ok
+      type(fe_param_class) :: p
+      type(solid_earth)    :: a, b, c
+      real(wp), allocatable :: a6_zbed(:,:), a6_rsl(:,:)
+      real(wp) :: t1, t2, d_restore, d_continue
+      integer  :: step, nt
+
+      p%dt_couple     = 1.0_wp*kyr        ! interval per update; M3-L70-V01
+      p%earth_response = resp             ! "ve" (memory tensor) or "modal" (φ amplitudes)
+
+      ! === reference run A ====================================================
+      call solid_earth_init(a, p, sht, z_bed_eq, h_ice_ref)
+      do step = 1, K1
+         call solid_earth_update(a, h_ice, p%dt_couple)
+      end do
+      t1 = a%time
+      call fe_restart_write(a, t1, filename=file, init=.true.)   ! snapshot 1 (memory @ K1)
+
+      do step = 1, K2
+         call solid_earth_update(a, h_ice, p%dt_couple)
+      end do
+      t2 = a%time
+      call fe_restart_write(a, t2, filename=file, init=.false.)  ! snapshot 2 (state @ K1+K2)
+      a6_zbed = a%z_bed;  a6_rsl = a%rsl
+
+      write(*,'(a,a,a,i0,a,f6.2,a,f6.2)') ' restart [', trim(resp), ']: lmax=', LMAX, &
+           '   t1=', t1/kyr, ' kyr   t2=', t2/kyr
+
+      ! === (3) multi-snapshot file ===========================================
+      nt = nc_size(file, "time")
+      write(*,'(a,i0)') '   snapshots in file: ', nt
+      if (nt /= 2) then
+         write(*,'(a)') '   FAIL: expected two time snapshots in one file'; ok = .false.
+      end if
+
+      ! === (1) direct state restore (default = last snapshot, t2) =============
+      call solid_earth_init(b, p, sht, z_bed_eq, h_ice_ref)
+      call fe_restart_read(b, file)
+      d_restore = max(maxval(abs(b%z_bed - a6_zbed)), maxval(abs(b%rsl - a6_rsl)))
+      write(*,'(a,es11.2)') '   (1) state restore  max|B - A|     =', d_restore
+      if (d_restore > 1.0e-9_wp) then
+         write(*,'(a)') '   FAIL: restored state does not match the written state'; ok = .false.
+      end if
+
+      ! === (2) bit-for-bit continuation from the earlier snapshot (t1) =========
+      call solid_earth_init(c, p, sht, z_bed_eq, h_ice_ref)
+      call fe_restart_read(c, file, time=t1)                ! restore memory @ K1
+      do step = 1, K2
+         call solid_earth_update(c, h_ice, p%dt_couple)     ! same load, K2 steps
+      end do
+      d_continue = max(maxval(abs(c%z_bed - a6_zbed)), maxval(abs(c%rsl - a6_rsl)))
+      write(*,'(a,es11.2)') '   (2) continuation   max|C - A|     =', d_continue
+      if (d_continue > 1.0e-9_wp) then
+         write(*,'(a)') '   FAIL: restarted trajectory diverges from the uninterrupted run'
+         ok = .false.
+      end if
+
+      call solid_earth_finalize(a);  call solid_earth_finalize(b);  call solid_earth_finalize(c)
+   end subroutine roundtrip
 
    subroutine make_fields(z_bed_eq, h_ice_ref, h_ice)
       !! Polar land cap (colat<50°, +500 m) over deep ocean (−4000 m); no

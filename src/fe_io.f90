@@ -18,7 +18,8 @@ module fe_io
    use fe_precision,    only: wp
    use fe_constants,    only: rad2deg, sec_per_year
    use fe_viscoelastic, only: NLAM
-   use fe_response,     only: response_prime_sigma, response, response_init_elastic, response_init_ve, response_init_null
+   use fe_response,     only: response_prime_sigma, response, response_init_elastic, response_init_ve, &
+                              response_init_null, RESP_VE, RESP_MODAL
    use fe_coupling,     only: solid_earth
    use ncio
    use variable_io
@@ -27,12 +28,18 @@ module fe_io
 
    public :: fe_restart_write, fe_restart_read, fe_write_step, fe_io_set_table
 
-   ! The full time-varying variable set written each step (a restart writes all
-   ! of these). Static reference fields are written once in the init branch.
-   character(len=12), parameter :: ALL_VARS(15) = [character(len=12) :: &
-        "tau_a_re",   "tau_a_im",   "tau_b_re", "tau_b_im", "tau_c_re", "tau_c_im", &
-        "h_ice",      "rsl",        "z_bed",    "C_ocean",  "dt_try",   &
-        "sigma_n_re", "sigma_n_im", "sigma_primed", "bsl"]
+   ! The full time-varying variable set a restart writes, split by response kind.
+   ! COMMON_VARS apply to every kind; the prognostic memory differs: RESP_VE carries
+   ! the Maxwell stress tensor + trapezoidal σ_n, RESP_MODAL the per-(l,m) modal
+   ! amplitudes φ. RESP_ELASTIC/RESP_NULL are memoryless (COMMON_VARS only).
+   ! Static reference fields are written once in the init branch.
+   character(len=12), parameter :: COMMON_VARS(6) = [character(len=12) :: &
+        "h_ice", "rsl", "z_bed", "C_ocean", "dt_try", "bsl"]
+   character(len=12), parameter :: VE_MEM_VARS(9) = [character(len=12) :: &
+        "tau_a_re", "tau_a_im", "tau_b_re", "tau_b_im", "tau_c_re", "tau_c_im", &
+        "sigma_n_re", "sigma_n_im", "sigma_primed"]
+   character(len=12), parameter :: MODAL_MEM_VARS(2) = [character(len=12) :: &
+        "phi_re", "phi_im"]
 
    character(len=256), save              :: table_file = "input/fastearth-variables.md"
    type(var_io_type), allocatable, save  :: vtable(:)
@@ -100,9 +107,17 @@ contains
       end if
 
       if (present(nms)) then
-         do q = 1, size(nms);     call write_one(self, filename, trim(nms(q)), n, ncid);     end do
+         do q = 1, size(nms);  call write_one(self, filename, trim(nms(q)), n, ncid);  end do
       else
-         do q = 1, size(ALL_VARS); call write_one(self, filename, trim(ALL_VARS(q)), n, ncid); end do
+         block
+            character(len=12), allocatable :: vars(:)
+            select case (self%resp%kind)
+            case (RESP_VE);    vars = [VE_MEM_VARS,    COMMON_VARS]
+            case (RESP_MODAL); vars = [MODAL_MEM_VARS, COMMON_VARS]
+            case default;      vars = COMMON_VARS            ! elastic / null: memoryless
+            end select
+            do q = 1, size(vars);  call write_one(self, filename, trim(vars(q)), n, ncid);  end do
+         end block
       end if
 
       call nc_close(ncid)
@@ -122,12 +137,19 @@ contains
       call nc_create(filename, overwrite=.true.)
       call nc_write_dim(filename, "lon",  x=lon_deg, units="degrees_east")
       call nc_write_dim(filename, "lat",  x=lat_deg, units="degrees_north")
-      call nc_write_dim(filename, "nlam", x=1, dx=1, nx=NLAM,          units="1")
-      call nc_write_dim(filename, "ne",   x=1, dx=1, nx=self%resp%ne,  units="1")
-      ! nk = # deforming (l>=1) coefficients, in the ve_response degree-grouped order
-      call nc_write_dim(filename, "nk",   x=1, dx=1, nx=self%resp%nk,  units="1")
-      ! nlm = # spherical-harmonic (l,m) coefficients (carries the σ_n load vector)
-      call nc_write_dim(filename, "nlm",  x=1, dx=1, nx=self%resp%nlm, units="1")
+      ! prognostic-memory dimensions depend on the response kind
+      select case (self%resp%kind)
+      case (RESP_VE)
+         call nc_write_dim(filename, "nlam", x=1, dx=1, nx=NLAM,          units="1")
+         call nc_write_dim(filename, "ne",   x=1, dx=1, nx=self%resp%ne,  units="1")
+         ! nk = # deforming (l>=1) coefficients, in the ve_response degree-grouped order
+         call nc_write_dim(filename, "nk",   x=1, dx=1, nx=self%resp%nk,  units="1")
+         ! nlm = # spherical-harmonic (l,m) coefficients (carries the σ_n load vector)
+         call nc_write_dim(filename, "nlm",  x=1, dx=1, nx=self%resp%nlm, units="1")
+      case (RESP_MODAL)
+         ! nphi_modal = total ragged modal-amplitude count Σ_k nmode_deg(kdeg(k))
+         call nc_write_dim(filename, "nphi_modal", x=1, dx=1, nx=modal_nphi(self%resp), units="1")
+      end select
       call nc_write_dim(filename, "time", x=time/sec_per_year, dx=1.0_wp, nx=1, &
            units="years", unlimited=.true.)
 
@@ -189,6 +211,8 @@ contains
       case ("dt_try");   call put_scalar(filename, name, self%stepper%dt_try/sec_per_year, n, ncid)
       case ("sigma_n_re"); call put_sigma(self, filename, name, want_re=.true.,  n=n, ncid=ncid)
       case ("sigma_n_im"); call put_sigma(self, filename, name, want_re=.false., n=n, ncid=ncid)
+      case ("phi_re");     call put1d_modal(self, filename, name, want_re=.true.,  n=n, ncid=ncid)
+      case ("phi_im");     call put1d_modal(self, filename, name, want_re=.false., n=n, ncid=ncid)
       case ("sigma_primed")
          call put_scalar(filename, name, &
               merge(1.0_wp, 0.0_wp, allocated(self%resp%sigma_n) .and. self%resp%sigma_primed), &
@@ -236,6 +260,32 @@ contains
            start=[1,n], count=[nlm,1], units=trim(v%units), long_name=trim(v%long_name))
    end subroutine put_sigma
 
+   pure integer function modal_nphi(resp) result(nphi)
+      !! Total ragged modal-amplitude count = phi_off(nk+1) = size(resp%phi).
+      type(response), intent(in) :: resp
+      nphi = resp%phi_off(resp%nk + 1)
+   end function modal_nphi
+
+   subroutine put1d_modal(self, filename, name, want_re, n, ncid)
+      !! Write the real or imaginary part of the ragged modal amplitudes φ
+      !! (an (nphi_modal) vector) at time slice n.
+      type(solid_earth), intent(in) :: self
+      character(len=*),   intent(in) :: filename, name
+      logical,            intent(in) :: want_re
+      integer,            intent(in) :: n, ncid
+      type(var_io_type)     :: v
+      real(wp), allocatable :: dat(:)
+      integer :: nphi
+      nphi = modal_nphi(self%resp)
+      allocate(dat(nphi))
+      if (want_re) then;  dat = real(self%resp%phi, wp)
+      else;               dat = aimag(self%resp%phi)
+      end if
+      call find_var_io_in_table(v, name, vtable, with_error=.true.)
+      call nc_write(filename, name, dat, ncid=ncid, dim1="nphi_modal", dim2="time", &
+           start=[1,n], count=[nphi,1], units=trim(v%units), long_name=trim(v%long_name))
+   end subroutine put1d_modal
+
    subroutine put_scalar(filename, name, val, n, ncid)
       !! Write a single time-varying scalar (controller state) at time slice n.
       character(len=*), intent(in) :: filename, name
@@ -273,29 +323,69 @@ contains
 
    subroutine fe_restart_read(self, filename, time)
       !! Restore the prognostic state into an already-initialised solid_earth
-      !! (init() must have rebuilt the operators and grid). Reads the Maxwell
-      !! memory + model time at the time slice matching `time` (default: the last).
+      !! (init() must have rebuilt the operators, spectrum and grid). Reads the
+      !! response's memory state + model time at the time slice matching `time`
+      !! (default: the last), dispatching on the response kind:
       !!
-      !! Same-resolution (file nk == model nk): exact restore — diagnostic state and
-      !! the trapezoidal σ_n too, validated against the model reference, so the run
-      !! continues bit-for-bit.
+      !!   RESP_VE    — the Maxwell memory-stress tensor tau_* (+ trapezoidal σ_n).
+      !!                Same-resolution restore is exact (bit-for-bit continuation);
+      !!                a lower-resolution file upsamples via the degree-grouped block.
+      !!   RESP_MODAL — the per-(l,m) modal amplitudes φ. The spectrum is rebuilt by
+      !!                init(), so only φ is restored; same-resolution only.
+      !!   elastic/null — memoryless: only the diagnostics + clock are restored.
       !!
-      !! Cross-resolution (file nk < model nk, e.g. an l64 spin-up into an l128 run):
-      !! the memory is degree-grouped, so the shared low-degree block is contiguous —
-      !! copy it and zero-pad the higher degrees (upsampling only). σ_n and the spatial
-      !! diagnostics are NOT transferred (different grid); the caller re-seeds them with
-      !! a zero-Δt solve so the first slice is consistent with the transferred memory.
+      !! The clock and the adaptive controller's dt_try seed are restored for every
+      !! kind so the restarted run sub-steps the same path as the uninterrupted one.
       type(solid_earth), intent(inout) :: self
       character(len=*),   intent(in)    :: filename
       real(wp), optional, intent(in)    :: time
-      real(wp), allocatable :: tvals(:), ref(:,:)
-      integer :: nt, n, np, nl, ne, nk, nk_f, L
-      real(wp) :: tol
-      logical :: cross_res, ok_block
+      real(wp), allocatable :: tvals(:)
+      integer :: nt, n, np, nl
 
       np = self%sht%nphi;  nl = self%sht%nlat
-      ne = self%resp%ne;   nk = self%resp%nk
 
+      ! select the time slice. The file stores YEARS (item §14a); convert to SI
+      ! seconds immediately so the clock/comparison stay internally consistent.
+      nt = nc_size(filename, "time")
+      allocate(tvals(nt));  call nc_read(filename, "time", tvals)
+      tvals = tvals*sec_per_year
+      if (present(time)) then
+         n = minloc(abs(tvals - time), dim=1)
+         if (abs(tvals(n) - time) > 1.0e-6_wp*max(abs(time), 1.0_wp)) &
+            error stop 'fe_restart_read: requested time not present in file'
+      else
+         n = nt
+      end if
+
+      ! kind-specific prognostic memory + (where applicable) reference/diagnostics
+      select case (self%resp%kind)
+      case (RESP_VE);    call read_ve_state(self, filename, n, np, nl)
+      case (RESP_MODAL); call read_modal_state(self, filename, n, np, nl)
+      case default;      call read_diagnostics(self, filename, n, np, nl)  ! memoryless
+      end select
+
+      ! restore the clock and the adaptive controller's step-size seed
+      self%resp%time = tvals(n)
+      self%time      = tvals(n)
+      call nc_read(filename, "dt_try", self%stepper%dt_try, start=[n], count=[1])
+      self%stepper%dt_try = self%stepper%dt_try*sec_per_year   ! file stores years
+   end subroutine fe_restart_read
+
+   subroutine read_ve_state(self, filename, n, np, nl)
+      !! Restore RESP_VE memory at slice n. Same-resolution (file nk == model nk):
+      !! exact restore of the tau_* tensor, σ_n and diagnostics, validated against
+      !! the model reference, so the run continues bit-for-bit. Cross-resolution
+      !! (file nk < model nk, e.g. an l64 spin-up into an l128 run): the memory is
+      !! degree-grouped, so the shared low-degree block is contiguous — copy it and
+      !! zero-pad the higher degrees (upsampling only); σ_n and the spatial diagnostics
+      !! are NOT transferred (different grid), so the caller re-seeds with a zero-Δt solve.
+      type(solid_earth), intent(inout) :: self
+      character(len=*),   intent(in)    :: filename
+      integer,            intent(in)    :: n, np, nl
+      integer :: ne, nk, nk_f, L
+      logical :: cross_res, ok_block
+
+      ne = self%resp%ne;  nk = self%resp%nk
       ! the radial mesh (ne) and tensor rank (nlam) must always match; the horizontal
       ! resolution (nk) may differ -> cross-resolution restart.
       if (nc_size(filename, "nlam") /= NLAM .or. nc_size(filename, "ne") /= ne) &
@@ -315,19 +405,6 @@ contains
             error stop 'fe_restart_read: cross-resolution restart incompatible (mmax/mres mismatch)'
       end if
 
-      ! select the time slice. The file stores YEARS (item §14a); convert to SI
-      ! seconds immediately so the clock/comparison stay internally consistent.
-      nt = nc_size(filename, "time")
-      allocate(tvals(nt));  call nc_read(filename, "time", tvals)
-      tvals = tvals*sec_per_year
-      if (present(time)) then
-         n = minloc(abs(tvals - time), dim=1)
-         if (abs(tvals(n) - time) > 1.0e-6_wp*max(abs(time), 1.0_wp)) &
-            error stop 'fe_restart_read: requested time not present in file'
-      else
-         n = nt
-      end if
-
       if (cross_res) then
          ! prognostic Maxwell memory: copy the shared low-degree block, zero-pad above.
          call get3d_pad(filename, "tau_a_re", self%resp%Are, ne, nk_f, n)
@@ -340,16 +417,7 @@ contains
          ! the first step re-prime it (O(Δt); exact for the explicit fe scheme).
          self%resp%sigma_primed = .false.
       else
-         ! reference-state validation (memory must not be paired with a different ref)
-         allocate(ref(np,nl))
-         tol = 1.0e-3_wp
-         call nc_read(filename, "z_bed_eq", ref)
-         if (maxval(abs(ref - self%z_bed_eq)) > tol) &
-            error stop 'fe_restart_read: z_bed_eq does not match the initialised model'
-         call nc_read(filename, "h_ice_ref", ref)
-         if (maxval(abs(ref - self%h_ice_ref)) > tol) &
-            error stop 'fe_restart_read: h_ice_ref does not match the initialised model'
-
+         call check_reference(self, filename, np, nl)
          ! prognostic Maxwell memory at slice n
          call get3d(filename, "tau_a_re", self%resp%Are, ne, nk, n)
          call get3d(filename, "tau_a_im", self%resp%Aim, ne, nk, n)
@@ -357,26 +425,66 @@ contains
          call get3d(filename, "tau_b_im", self%resp%Bim, ne, nk, n)
          call get3d(filename, "tau_c_re", self%resp%Cre, ne, nk, n)
          call get3d(filename, "tau_c_im", self%resp%Cim, ne, nk, n)
-
-         ! diagnostic current state (so the restarted object reports correctly)
-         call get2d(filename, "h_ice",   self%h_ice, np, nl, n)
-         call get2d(filename, "rsl",     self%rsl,   np, nl, n)
-         call get2d(filename, "z_bed",   self%z_bed, np, nl, n)
-         call get2d(filename, "C_ocean", self%C,     np, nl, n)
-
+         call read_diagnostics(self, filename, n, np, nl)
          ! restore the trapezoidal start-of-step load σ_n (the other prognostic piece
          ! of the implicit scheme); without it the first step would re-derive σ_n to
          ! only the SLE solver tolerance, breaking bit-for-bit continuation.
          call restore_sigma(self, filename, n)
       end if
+   end subroutine read_ve_state
 
-      ! restore the clock and the adaptive controller's step-size seed (so the
-      ! restarted run sub-steps the same path as the uninterrupted one)
-      self%resp%time = tvals(n)
-      self%time      = tvals(n)
-      call nc_read(filename, "dt_try", self%stepper%dt_try, start=[n], count=[1])
-      self%stepper%dt_try = self%stepper%dt_try*sec_per_year   ! file stores years
-   end subroutine fe_restart_read
+   subroutine read_modal_state(self, filename, n, np, nl)
+      !! Restore RESP_MODAL memory at slice n: the per-(l,m) modal amplitudes φ. The
+      !! modal spectrum (τ_k, residues, slot maps) is a deterministic function of the
+      !! earth structure + lmax + n_modes/mode_rank/dt_be, all rebuilt by init(), so
+      !! only φ is persisted. Same-resolution only: a cross-resolution modal restart
+      !! (degree-grouped φ block copy) is not yet supported.
+      type(solid_earth), intent(inout) :: self
+      character(len=*),   intent(in)    :: filename
+      integer,            intent(in)    :: n, np, nl
+      real(wp), allocatable :: pre(:), pim(:)
+      integer :: nphi, nphi_f
+      nphi   = modal_nphi(self%resp)
+      nphi_f = nc_size(filename, "nphi_modal")
+      if (nphi_f /= nphi) &
+         error stop 'fe_restart_read: modal φ count mismatch (cross-resolution modal restart not supported)'
+      call check_reference(self, filename, np, nl)
+      allocate(pre(nphi), pim(nphi))
+      call nc_read(filename, "phi_re", pre, start=[1,n], count=[nphi,1])
+      call nc_read(filename, "phi_im", pim, start=[1,n], count=[nphi,1])
+      self%resp%phi   = cmplx(pre, pim, wp)
+      self%resp%phi_n = self%resp%phi               ! entering-step base for the next step
+      call read_diagnostics(self, filename, n, np, nl)
+   end subroutine read_modal_state
+
+   subroutine check_reference(self, filename, np, nl)
+      !! Verify the file's static reference fields match the initialised model, so
+      !! a restored memory state is not paired with a different reference.
+      type(solid_earth), intent(in) :: self
+      character(len=*),   intent(in) :: filename
+      integer,            intent(in) :: np, nl
+      real(wp), allocatable :: ref(:,:)
+      real(wp), parameter :: tol = 1.0e-3_wp
+      allocate(ref(np,nl))
+      call nc_read(filename, "z_bed_eq", ref)
+      if (maxval(abs(ref - self%z_bed_eq)) > tol) &
+         error stop 'fe_restart_read: z_bed_eq does not match the initialised model'
+      call nc_read(filename, "h_ice_ref", ref)
+      if (maxval(abs(ref - self%h_ice_ref)) > tol) &
+         error stop 'fe_restart_read: h_ice_ref does not match the initialised model'
+   end subroutine check_reference
+
+   subroutine read_diagnostics(self, filename, n, np, nl)
+      !! Restore the (lon,lat) diagnostic state so the restarted object reports
+      !! correctly: ice thickness, RSL, bedrock and the ocean function at slice n.
+      type(solid_earth), intent(inout) :: self
+      character(len=*),   intent(in)    :: filename
+      integer,            intent(in)    :: n, np, nl
+      call get2d(filename, "h_ice",   self%h_ice, np, nl, n)
+      call get2d(filename, "rsl",     self%rsl,   np, nl, n)
+      call get2d(filename, "z_bed",   self%z_bed, np, nl, n)
+      call get2d(filename, "C_ocean", self%C,     np, nl, n)
+   end subroutine read_diagnostics
 
    subroutine restore_sigma(self, filename, n)
       !! Restore σ_n at time slice n into the response, marking it primed, if the
