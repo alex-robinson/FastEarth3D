@@ -30,6 +30,7 @@ program diag_modal_sle
    use fe_sht,             only: sht_grid, sht_grid_init, sht_grid_destroy, &
                                  sht_grid_surface_integral
    use fe_sle,             only: sle_solve, sle_solver, sle_result
+   use fe_timestep,        only: stepper_advance, adaptive_stepper
    implicit none
 
    integer            :: lmax, nsub, n_spin, n_degla, k
@@ -39,12 +40,14 @@ program diag_modal_sle
    type(earth_model)  :: e
    type(sle_result)   :: res
    real(wp), allocatable :: topo0(:,:), ice_lgm(:,:), d_ice(:,:), ice(:,:)
-   ! four trajectories: VE-1, modal-1, VE-sub(truth), modal-sub
-   type(response)   :: ve1, md1, veN, mdN
-   type(sle_solver) :: slv_ve1, slv_md1, slv_veN, slv_mdN
-   real(wp), allocatable :: Sve1(:,:), Smd1(:,:), SveN(:,:), SmdN(:,:)
-   real(wp), allocatable :: Cve1(:,:), Cmd1(:,:), CveN(:,:), CmdN(:,:)
-   real(wp), allocatable :: Struth0(:,:)
+   ! five trajectories: VE-1, modal-1, VE-sub(truth), modal-sub, modal-ADAPTIVE (A3)
+   type(response)   :: ve1, md1, veN, mdN, ma
+   type(sle_solver) :: slv_ve1, slv_md1, slv_veN, slv_mdN, slv_ma
+   type(adaptive_stepper) :: stp_ma
+   real(wp), allocatable :: Sve1(:,:), Smd1(:,:), SveN(:,:), SmdN(:,:), Sma(:,:)
+   real(wp), allocatable :: Cve1(:,:), Cmd1(:,:), CveN(:,:), CmdN(:,:), Cma(:,:)
+   real(wp), allocatable :: Struth0(:,:), ice_a(:,:), ice_b(:,:), ice_ref0(:,:)
+   real(wp) :: tcur
 
    lmax = 16;  nsub = 8;  n_spin = 60;  n_degla = 200;  dt = 100.0_wp
    if (command_argument_count() >= 1) then; call get_command_argument(1,arg); read(arg,*) lmax;    end if
@@ -62,12 +65,17 @@ program diag_modal_sle
             SveN(sht%nphi,sht%nlat), SmdN(sht%nphi,sht%nlat), Struth0(sht%nphi,sht%nlat))
    allocate(Cve1(sht%nphi,sht%nlat), Cmd1(sht%nphi,sht%nlat), &
             CveN(sht%nphi,sht%nlat), CmdN(sht%nphi,sht%nlat))
+   allocate(Sma(sht%nphi,sht%nlat), Cma(sht%nphi,sht%nlat), &
+            ice_a(sht%nphi,sht%nlat), ice_b(sht%nphi,sht%nlat), ice_ref0(sht%nphi,sht%nlat))
+   ice_ref0 = 0.0_wp                       ! ice-free reference
    call make_fields(topo0, ice_lgm)
 
    call response_init_ve(ve1, e, sht, dt)
    call response_init_ve(veN, e, sht, dt)
    call response_init_modal(md1, e, sht, n_modes=-1, mode_rank=1, dt_be=5.0_wp*kyr)
    call response_init_modal(mdN, e, sht, n_modes=-1, mode_rank=1, dt_be=5.0_wp*kyr)
+   call response_init_modal(ma,  e, sht, n_modes=-1, mode_rank=1, dt_be=5.0_wp*kyr)
+   tcur = 0.0_wp                           ! running clock for the adaptive stepper
 
    write(*,'(a)') ' === modal vs VE through the SLE: temporal attribution — M3-L70-V01, deglaciation ==='
    write(*,'(a,i0,a,i0,a,i0,a,i0,a,f6.1,a)') '   lmax=', lmax, '  nsub=', nsub, &
@@ -80,6 +88,7 @@ program diag_modal_sle
       call step_couple(md1, slv_md1, Smd1, Cmd1, 1,    1.0_wp, 1.0_wp)
       call step_couple(veN, slv_veN, SveN, CveN, nsub, 1.0_wp, 1.0_wp)
       call step_couple(mdN, slv_mdN, SmdN, CmdN, nsub, 1.0_wp, 1.0_wp)
+      call step_adaptive(1.0_wp, 1.0_wp)
    end do
    Struth0 = SveN                         ! truth rsl entering the deglaciation
 
@@ -91,6 +100,7 @@ program diag_modal_sle
       call step_couple(md1, slv_md1, Smd1, Cmd1, 1,    f_a, f_b)
       call step_couple(veN, slv_veN, SveN, CveN, nsub, f_a, f_b)
       call step_couple(mdN, slv_mdN, SmdN, CmdN, nsub, f_a, f_b)
+      call step_adaptive(f_a, f_b)
    end do
 
    ! ---- report: each trajectory vs truth (VE, nsub substeps) ----------------
@@ -99,17 +109,30 @@ program diag_modal_sle
    write(*,'(a,es15.3,es15.3)') '   modal, 1 step/couple   (model) ', warea_rms(Smd1-SveN), maxval(abs(Smd1-SveN))
    write(*,'(a,es15.3,es15.3)') '   VE,    1 step/couple           ', warea_rms(Sve1-SveN), maxval(abs(Sve1-SveN))
    write(*,'(a,es15.3,es15.3)') '   modal, N substeps/couple       ', warea_rms(SmdN-SveN), maxval(abs(SmdN-SveN))
+   write(*,'(a,es15.3,es15.3,a,f5.2,a)') '   modal, ADAPTIVE (A3)           ', &
+        warea_rms(Sma-SveN), maxval(abs(Sma-SveN)), &
+        '   [', real(stp_ma%n_solve,wp)/real(n_spin+n_degla,wp), ' SLE/couple avg]'
    write(*,'(a,es15.3,a)')      '   (truth relax span over run     ', warea_rms(SveN-Struth0), ' m)'
    write(*,'(a)') ''
-   write(*,'(a)') ' Read: if modal-1 ≈ small and VE-1 is the large outlier, modal''s exact-exponential'
-   write(*,'(a)') ' is accurate and the ensemble gap is VE''s own under-resolved stepping. If modal-1'
-   write(*,'(a)') ' is large and modal-N is small, modal has a temporal error a linear-σ/FOH advance fixes.'
+   write(*,'(a)') ' Read: A3 (adaptive) should match modal-N accuracy by sub-stepping only where σ'
+   write(*,'(a)') ' varies (≈1 SLE/couple in spin-up, more during deglaciation), driven by rtol.'
 
    call response_destroy(ve1);  call response_destroy(md1)
-   call response_destroy(veN);  call response_destroy(mdN)
+   call response_destroy(veN);  call response_destroy(mdN);  call response_destroy(ma)
    call sht_grid_destroy(sht);  call radial_fe_finalize()
 
 contains
+
+   subroutine step_adaptive(f_a, f_b)
+      !! Advance one coupling interval through the adaptive controller (A3): the
+      !! stepper ramps the ice f_a·cap → f_b·cap over [tcur, tcur+dt] and sub-steps
+      !! modal to rtol via its own step-doubling. Advances the running clock tcur.
+      real(wp), intent(in) :: f_a, f_b
+      ice_a = f_a*ice_lgm;  ice_b = f_b*ice_lgm
+      call stepper_advance(stp_ma, sht, ma, slv_ma, topo0, ice_a, ice_b, ice_ref0, &
+                           tcur, tcur + dt, Sma, Cma)
+      tcur = tcur + dt
+   end subroutine step_adaptive
 
    subroutine step_couple(resp, sle, S, C, nss, f_a, f_b)
       !! Advance one coupling interval in nss substeps, the ice load ramping
