@@ -7,16 +7,21 @@
 #   pareto.png              accuracy-cost trade-off (rsl RMSE vs solver ms/step)
 #   bsl_timeseries.png      VE vs cheapest modal (n=1) + all, barystatic sea level
 #   resid_maps_<set>_<t>ka  modal-VE residual maps at PD/10/20/26 ka, all candidates
+#   rsl_panels_<set>_<t>ka  one figure per time slice: rows VE/modal-all/8/4/1,
+#                           col 1 = absolute rsl, col 2 = anomaly vs VE
 #
-# Usage:  julia analysis/plot_modal_vs_ve.jl [results.jld2]
-#         defaults to analysis/modal_vs_ve_results.jld2
+# Usage:  julia analysis/plot_modal_vs_ve.jl [results.jld2] [rsl_panel_set]
+#         defaults to analysis/modal_vs_ve_results.jld2  deglac3d
 
 using JLD2
 using CairoMakie
+using GeoMakie   # for thin continental outlines (110m Natural Earth, bundled offline)
 using Printf
 
-const JLD2_IN = length(ARGS) >= 1 ? ARGS[1] : "analysis/modal_vs_ve_results.jld2"
-const OUTDIR  = "analysis/figs/modal_vs_ve"
+const JLD2_IN  = length(ARGS) >= 1 ? ARGS[1] : "analysis/modal_vs_ve_results.jld2"
+const RSL_SET  = length(ARGS) >= 2 ? ARGS[2] : "deglac3d"   # set for the rsl-panel figures
+const RSL_RANK = "rate"                                     # mode ranking used for modal-8/4/1
+const OUTDIR   = "analysis/figs/modal_vs_ve"
 const RANK_COLOR = Dict("isostatic" => :firebrick, "rate" => :seagreen,
                         "residue" => :royalblue, "all" => :black)
 
@@ -133,6 +138,75 @@ function fig_resid_maps(R, sets)
     end
 end
 
+# fig 5: rsl panels — one figure per snapshot time. Rows VE / modal-all / 8 / 4 / 1
+# (modal-N uses the `rank` ranking). Col 1 = absolute rsl, col 2 = anomaly vs VE.
+# modal absolute is reconstructed as ve_rsl + resid (resid = rsl_modal − rsl_VE).
+function fig_rsl_panels(R, set; rank = RSL_RANK)
+    S = R[set]; lon = S["lon"]; lat = S["lat"]
+    rows = [("VE",        nothing),
+            ("modal-all", cand_by_label(S, "all")),
+            ("modal-8",   cand_by_label(S, "n8/$rank")),
+            ("modal-4",   cand_by_label(S, "n4/$rank")),
+            ("modal-1",   cand_by_label(S, "n1/$rank"))]
+    anom_range = (-30.0, 30.0)
+    nrow = length(rows)
+    coast = GeoMakie.coastlines()
+    function style!(ax; bottom = false, xlabel = "")
+        limits!(ax, -180, 180, -90, 90)
+        lines!(ax, coast; color = (:gray20, 0.6), linewidth = 0.35)
+        if bottom
+            ax.xlabel = xlabel; ax.xlabelsize = 15
+            hidexdecorations!(ax; label = false); hideydecorations!(ax)
+        else
+            hidedecorations!(ax)
+        end
+    end
+    for (k, tka) in enumerate(R["times_ka"])
+        ve = Float64.(S["ve_rsl"][:, :, k])
+        absflds = [c === nothing ? ve : ve .+ Float64.(c["resid"][:, :, k]) for (_, c) in rows]
+        # shared rsl range: robust 99th-percentile of |VE| (raw max is one localised
+        # ice-margin extreme that would wash out all structure), rounded up to 50 m.
+        vs = sort(vec(abs.(ve)))
+        p99 = vs[clamp(round(Int, 0.99 * length(vs)), 1, length(vs))]
+        rmax = max(50.0, ceil(p99 / 50) * 50)
+        rsl_range = (-rmax, rmax)
+
+        fig = Figure(size = (1000, 250 * nrow + 120))
+        local hm_rsl, hm_anom
+        for (i, (lbl, c)) in enumerate(rows)
+            Label(fig[i, 0], lbl; font = :bold, fontsize = 16, rotation = pi/2)
+            bottom = i == nrow
+            af = absflds[i]
+            ax1 = Axis(fig[i, 1]; titlesize = 14,
+                       title = @sprintf("max %.0f m", maximum(abs, af)))
+            hm_rsl = heatmap!(ax1, lon, lat, af; colormap = :vik, colorrange = rsl_range)
+            style!(ax1; bottom = bottom, xlabel = "absolute rsl")
+
+            c === nothing && continue
+            d = Float64.(c["resid"][:, :, k])
+            ax2 = Axis(fig[i, 2]; titlesize = 14,
+                       title = @sprintf("max %.1f m", maximum(abs, d)))
+            hm_anom = heatmap!(ax2, lon, lat, d; colormap = :balance, colorrange = anom_range)
+            style!(ax2; bottom = bottom, xlabel = "anomaly vs VE")
+        end
+        # tie every content row's height to the map-column width (lon:lat = 2:1) so
+        # all panels — including the VE row that lacks an anomaly axis — match.
+        for i in 1:nrow
+            rowsize!(fig.layout, i, Aspect(1, 0.5))
+        end
+        Colorbar(fig[2:nrow, 3], hm_rsl;  label = @sprintf("rsl [m]  (clipped at ±%.0f)", rmax),
+                 width = 11, height = Relative(0.42), labelsize = 12, ticklabelsize = 11)
+        Colorbar(fig[2:nrow, 4], hm_anom; label = "rsl(modal) − rsl(VE) [m]",
+                 width = 11, height = Relative(0.42), labelsize = 12, ticklabelsize = 11)
+        Label(fig[0, 0:4], @sprintf("%s — rsl at %.0f ka  (modal-N: %s)", set, tka, rank);
+              fontsize = 19, font = :bold)
+        resize_to_layout!(fig)
+        tag = @sprintf("%02dka", round(Int, abs(tka)))
+        fn = joinpath(OUTDIR, "rsl_panels_$(set)_$(tag).png")
+        save(fn, fig); println("wrote ", fn)
+    end
+end
+
 # ---------------------------------------------------------------------------
 function main()
     mkpath(OUTDIR)
@@ -142,6 +216,7 @@ function main()
     fig_pareto(R, sets)
     fig_bsl(R, sets)
     fig_resid_maps(R, sets)
+    fig_rsl_panels(R, RSL_SET)
 end
 
 main()
