@@ -89,6 +89,7 @@ COMMON=(
   fe3d.dt_equil="$DT_EQUIL"
   fe3d.time_init="$T0"
   fe3d.time_end="$T1"
+  fe3d.rotation=true            # real-Earth runs: rotational feedback on (both solvers)
   fe3d.file_out=out.nc
 )
 

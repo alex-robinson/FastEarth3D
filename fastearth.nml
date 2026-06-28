@@ -66,7 +66,8 @@
     cfl        = 1.0           ! explicit (fe) sub-step Maxwell-number ceiling M=mu*dt/eta
 
     ! --- rotational feedback (fe_rotation) ----------------------------
-    rotation = .false.         ! TPW feedback (off until validated)
+    rotation = .true.          ! TPW feedback: on for real runs; set .false. for
+                               ! the non-rotating community benchmarks
 
     ! --- driver I/O (program fastearth only) --------------------------
     file_forcing  = ""                 ! ice-thickness forcing, h_ice(lon,lat,time)
