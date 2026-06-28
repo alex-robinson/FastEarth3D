@@ -30,6 +30,7 @@ module fe_drive
    use fe_sht,       only: sht_grid, sht_grid_destroy, sht_grid_surface_integral, sht_grid_init
    use fe_coupling,  only: solid_earth_finalize, solid_earth_update, solid_earth_init, solid_earth, &
                            solid_earth_enable_visc_3d
+   use fe_response,  only: RESP_MODAL
    use fe_remap,     only: ll2gauss_map, ll2gauss_init, ll2gauss_apply
    use fe_io,        only: fe_write_step, fe_restart_write, fe_restart_read
    use ncio,         only: nc_read, nc_size, nc_exists_var
@@ -143,10 +144,18 @@ contains
       call system_clock(pc1)
       write(*,'(a,f8.2,a)') ' [PROFILE setup] solid_earth_init+visc3d+seed =', real(pc1-pc0,wp)/prate, ' s'
 
-      ! 1-D/3-D layer split diagnostic: how many elements are genuinely laterally 3-D
-      ! (pay the pseudo-spectral tensor-SH advance) vs collapse to the cheap 1-D path.
-      if (p%l_visc_3d) write(*,'(a,i0,a,i0,a)') ' visc3d split: ', se%resp%ne3d, &
-           ' of ', se%resp%ne, ' radial elements laterally 3-D (rest advance as 1-D)'
+      ! Lateral-viscosity diagnostic. RESP_VE: how many radial elements are genuinely
+      ! 3-D (pay the tensor-SH advance) vs collapse to the cheap 1-D path. RESP_MODAL:
+      ! how many within-degree mode ranks carry a lateral anomaly (the K scalar-SHT path).
+      if (p%l_visc_3d) then
+         if (se%resp%kind == RESP_MODAL) then
+            write(*,'(a,i0,a,i0,a)') ' modal lateral viscosity: ', se%resp%nrank3d, &
+                 ' of ', se%resp%maxmode, ' mode ranks carry a lateral anomaly'
+         else
+            write(*,'(a,i0,a,i0,a)') ' visc3d split: ', se%resp%ne3d, &
+                 ' of ', se%resp%ne, ' radial elements laterally 3-D (rest advance as 1-D)'
+         end if
+      end if
 
       ! --- march the transient --------------------------------------------------
       t0 = tyr(k0)*sec_per_year
