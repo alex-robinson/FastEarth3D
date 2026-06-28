@@ -40,7 +40,7 @@ module fe_modal
    public :: modal_degree, modal_spectrum
    public :: modal_degree_init, modal_degree_destroy, modal_apply_p
    public :: modal_solve, modal_spectrum_destroy
-   public :: RANK_ISOSTATIC, RANK_RATE, RANK_RESIDUE
+   public :: RANK_ISOSTATIC, RANK_RATE, RANK_RESIDUE, rank_from_name
 
    integer, parameter :: RANK_ISOSTATIC = 1   !! |C^u_k| = |r^u·b·τ| (final relaxed uplift)
    integer, parameter :: RANK_RATE      = 2   !! |r^u·b| (initial relaxation rate)
@@ -73,6 +73,18 @@ module fe_modal
    end type modal_spectrum
 
 contains
+
+   pure integer function rank_from_name(name) result(rank)
+      !! Map the namelist mode_rank string to its RANK_* code (mirrors
+      !! scheme_from_name). Unknown names stop with a clear message.
+      character(len=*), intent(in) :: name
+      select case (trim(adjustl(name)))
+      case ("isostatic"); rank = RANK_ISOSTATIC
+      case ("rate");      rank = RANK_RATE
+      case ("residue");   rank = RANK_RESIDUE
+      case default;       error stop "rank_from_name: unknown mode_rank (use isostatic|rate|residue)"
+      end select
+   end function rank_from_name
 
    ! ===================================================================
    ! Propagator + Maxwell-memory packing
