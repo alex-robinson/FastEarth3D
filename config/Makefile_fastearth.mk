@@ -320,6 +320,18 @@ test_modal_visc3d: fastearth-static | $(bindir)
 		-o $(bindir)/test_modal_visc3d.x $(objdir)/libfastearth.a $(LFLAGS)
 	@echo "    $(bindir)/test_modal_visc3d.x is ready."
 
+# Diagnostic (not in `check`): sweep the modal Krylov block size n_krylov and
+# report convergence of n_modes=all toward RESP_VE over the full degree spectrum.
+diag_modal_pblock: fastearth-static | $(bindir)
+	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(testdir)/diag_modal_pblock.f90 \
+		-o $(bindir)/diag_modal_pblock.x $(objdir)/libfastearth.a $(LFLAGS)
+	@echo "    $(bindir)/diag_modal_pblock.x is ready."
+
+diag_modal_ramp: fastearth-static | $(bindir)
+	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(testdir)/diag_modal_ramp.f90 \
+		-o $(bindir)/diag_modal_ramp.x $(objdir)/libfastearth.a $(LFLAGS)
+	@echo "    $(bindir)/diag_modal_ramp.x is ready."
+
 TESTS = test_params test_drive test_band test_sht test_earth test_mesh test_integrals test_assembly test_love test_relax test_tidal test_rotation test_rotation_sle test_response test_sle test_flotation test_flotation_load test_ve_response test_tensor_sh test_response_3d test_sle_ve test_benchmark_love test_coupling test_restart test_benchmark_disc test_benchmark_martinec test_field test_sle_subgrid test_visc_load test_rotinv test_remap test_modal test_modal_resp test_modal_visc3d
 
 check: $(TESTS)
