@@ -76,6 +76,7 @@ program diag_modal_sle
    call response_init_modal(md1, e, sht, n_modes=-1, mode_rank=1, dt_be=5.0_wp*kyr)
    call response_init_modal(mdN, e, sht, n_modes=-1, mode_rank=1, dt_be=5.0_wp*kyr)
    call response_init_modal(ma,  e, sht, n_modes=-1, mode_rank=1, dt_be=5.0_wp*kyr)
+   ma%modal_adaptive = .true.              ! opt this trajectory into A3 (off by default)
    tcur = 0.0_wp                           ! running clock for the adaptive stepper
    stp_ma%rtol = rtol                      ! A3 accuracy tolerance (the cost knob)
 

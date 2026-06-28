@@ -129,7 +129,11 @@ contains
          if (present(sigma_out)) sigma_out = sig_last
          return
       end if
-      if (.not. scheme_is_implicit(resp%scheme) .and. resp%kind /= RESP_MODAL) then
+      ! RESP_MODAL takes the adaptive step-doubling path only when modal_adaptive is set
+      ! (A3, off by default); otherwise it falls through the explicit path as one exact
+      ! step/interval (response_max_rate=0 => n_sub=1).
+      if (.not. scheme_is_implicit(resp%scheme) .and. &
+          .not. (resp%kind == RESP_MODAL .and. resp%modal_adaptive)) then
          ! --- explicit (forward-Euler) memory: a-priori stability sub-stepping -------
          ! The 1st-order memory carries no embedded error signal, so step-doubling is
          ! meaningless. Instead the interval is divided into equal sub-steps sized by

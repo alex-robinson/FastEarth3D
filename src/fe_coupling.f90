@@ -114,6 +114,7 @@ contains
                                   mode_rank=rank_from_name(p%mode_rank), dt_be=p%dt_be, &
                                   p_block=p%n_krylov)
          self%resp%max_couple_iter = p%max_couple_iter
+         self%resp%modal_adaptive  = p%modal_adaptive   ! A3 sub-stepping (off by default)
       case ("elastic")
          call response_init_elastic(self%resp, self%earth, sht%lmax)
       case ("null")

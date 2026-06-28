@@ -52,6 +52,9 @@ module fe_params
       character(len=12) :: mode_rank = "isostatic" !! modal rank metric: isostatic | rate | residue
       real(wp) :: dt_be     = kyr                 !! modal eigensolve backward-Euler Δt [s] (nml in YEARS)
       integer  :: n_krylov  = 20                  !! modal: Arnoldi/Krylov block size (caps modes/degree found)
+      logical  :: modal_adaptive = .false.        !! modal: sub-step each coupling interval to rtol (A3).
+                                                  !! .false. (default) = 1 exact step/interval (fast). Only
+                                                  !! worth it for 1-D temporal accuracy; does NOT help 3-D.
 
       ! --- sea-level equation (fe_sle) ------------------------------------------
       integer  :: sle_n_outer      = 3
@@ -192,6 +195,7 @@ contains
       call nml_read(filename, g, "n_modes",         p%n_modes,         defaults_file=df)
       call nml_read(filename, g, "mode_rank",       p%mode_rank,       defaults_file=df)
       call nml_read(filename, g, "n_krylov",        p%n_krylov,        defaults_file=df)
+      call nml_read(filename, g, "modal_adaptive",  p%modal_adaptive,  defaults_file=df)
       dt_be_yr = p%dt_be/sec_per_year
       call nml_read(filename, g, "dt_be",           dt_be_yr,          defaults_file=df)
       p%dt_be = dt_be_yr*sec_per_year
@@ -296,9 +300,9 @@ contains
       end if
       write(u,'(a,a)')        '   response: ', trim(p%earth_response)
       if (trim(p%earth_response) == "modal") then
-         write(u,'(a,i0,a,a,a,es9.2,a,i0)') '     modal: n_modes=', p%n_modes, &
+         write(u,'(a,i0,a,a,a,es9.2,a,i0,a,l1)') '     modal: n_modes=', p%n_modes, &
               '  mode_rank=', trim(p%mode_rank), '  dt_be=', p%dt_be, &
-              '  n_krylov=', p%n_krylov
+              '  n_krylov=', p%n_krylov, '  adaptive=', p%modal_adaptive
       end if
       write(u,'(a,a,a,i0)')   '   scheme: ', trim(p%scheme), '   max_couple_iter=', p%max_couple_iter
       write(u,'(a,i0,a,i0,a,es8.1,a,l1,a,l1)') &

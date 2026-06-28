@@ -189,6 +189,11 @@ module fe_response
       complex(wp), allocatable :: sigma_n_s(:)             !! saved σ_n (buffer A)
       logical     :: sigma_primed_s = .false.
       ! --- RESP_MODAL: per-degree modal spectrum + per-(l,m) amplitudes -------
+      ! When .true., the adaptive controller (fe_timestep) sub-steps each coupling
+      ! interval to rtol (A3); .false. (default) takes one exact-exponential step per
+      ! interval. Off by default: it only buys 1-D temporal accuracy at a 10-20x cost
+      ! and does NOT reduce the 3-D lateral-viscosity error (the dominant gap).
+      logical :: modal_adaptive = .false.
       ! Reduced model (fe_modal): per degree a few exponential relaxation modes,
       ! carried as scalar amplitudes φ per (l,m). Reuses gu/gn/gv (elastic gains),
       ! the degree-grouped slot map (k2lm/kdeg/kbeg/nk) and lmax/nlm/a/g/dt/time.
