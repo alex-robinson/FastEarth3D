@@ -26,7 +26,7 @@ module fe_timestep
    !! cheap rescale — no operator re-factorization (the band LU is Δt-independent).
    use fe_precision,    only: wp
    use fe_sht,          only: sht_grid
-   use fe_response,     only: response_coarse_fine_error, response_stash_coarse, response_prime_sigma, response_restore_state, response_set_dt, response_save_state, response_memory_norm, response_max_rate, response, response_init_elastic, response_init_ve, response_init_null
+   use fe_response,     only: response_coarse_fine_error, response_stash_coarse, response_prime_sigma, response_restore_state, response_set_dt, response_save_state, response_memory_norm, response_max_rate, response, response_init_elastic, response_init_ve, response_init_null, RESP_MODAL
    use fe_sle,          only: sle_solve, sle_solver, sle_result
    use fe_viscoelastic, only: scheme_order, scheme_is_implicit
    implicit none
@@ -129,7 +129,7 @@ contains
          if (present(sigma_out)) sigma_out = sig_last
          return
       end if
-      if (.not. scheme_is_implicit(resp%scheme)) then
+      if (.not. scheme_is_implicit(resp%scheme) .and. resp%kind /= RESP_MODAL) then
          ! --- explicit (forward-Euler) memory: a-priori stability sub-stepping -------
          ! The 1st-order memory carries no embedded error signal, so step-doubling is
          ! meaningless. Instead the interval is divided into equal sub-steps sized by
@@ -195,7 +195,9 @@ contains
       ! solve (no memory/time advance) gives the load consistent with it — at t=0 that
       ! is the elastic-consistent load. Without this the first step falls back to the
       ! σ_{n+1} proxy for σ_n (O(Δt) for the relaxing SLE load → 2nd order on that step).
-      if (.not. resp%sigma_primed) then
+      ! (RESP_MODAL has no trapezoidal ε_n term, so it needs no σ_0 seed — its
+      ! exact-exponential advance reads only the end-of-step load.)
+      if (.not. resp%sigma_primed .and. resp%kind /= RESP_MODAL) then
          allocate(sig0(sht%nlm))
          ice_now = ice0;  dice_now = ice0 - ice_ref
          call sle_solve(sle, sht, resp, dice_now, ice_now, topo0, rsl, C, res, &

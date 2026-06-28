@@ -201,7 +201,8 @@ module fe_response
       integer,     allocatable :: phi_off(:)     !! (nk+1) base index into phi per slot
       complex(wp), allocatable :: phi(:)         !! per-(l,m) modal amplitudes (ragged)
       complex(wp), allocatable :: phi_n(:)       !! entering-step φ (endpoint base)
-      complex(wp), allocatable :: phi_s(:)       !! controller save buffer
+      complex(wp), allocatable :: phi_s(:)       !! controller save buffer (A: φ_n)
+      complex(wp), allocatable :: phi_c(:)       !! controller coarse buffer (B: φ_coarse)
       complex(wp), allocatable :: mdrU(:), mdrN(:), mdrV(:)  !! (nk) frozen drift Σ_i C·φ
       ! Per-mode radial strain-energy weight, column = global mode spec_off(l)+i,
       ! row = radial element (Σ_e w = 1). The depth profile of each mode's relaxation
@@ -796,6 +797,7 @@ contains
       if (allocated(self%phi))       deallocate(self%phi)
       if (allocated(self%phi_n))     deallocate(self%phi_n)
       if (allocated(self%phi_s))     deallocate(self%phi_s)
+      if (allocated(self%phi_c))     deallocate(self%phi_c)
       if (allocated(self%mdrU))      deallocate(self%mdrU)
       if (allocated(self%mdrN))      deallocate(self%mdrN)
       if (allocated(self%mdrV))      deallocate(self%mdrV)
@@ -1784,6 +1786,11 @@ contains
       !! Snapshot the current memory (the coarse one-Δt τ_{n+1}) into buffer B for the
       !! step-doubling error estimate, to be compared against the fine result.
       type(response), intent(inout) :: self
+      if (self%kind == RESP_MODAL) then
+         if (.not. allocated(self%phi_c)) allocate(self%phi_c(size(self%phi)))
+         self%phi_c = self%phi
+         return
+      end if
       call ensure_state_scratch(self)
       self%Are_c = self%Are;  self%Aim_c = self%Aim
       self%Bre_c = self%Bre;  self%Bim_c = self%Bim
@@ -1796,6 +1803,11 @@ contains
       !! for the controller's scaled local-error estimate.
       type(response), intent(in)  :: self
       real(wp),           intent(out) :: err_inf, tau_inf
+      if (self%kind == RESP_MODAL) then
+         err_inf = maxval(abs(self%phi - self%phi_c))   ! ‖φ_fine − φ_coarse‖∞
+         tau_inf = maxval(abs(self%phi))
+         return
+      end if
       err_inf = max(maxval(abs(self%Are - self%Are_c)), maxval(abs(self%Aim - self%Aim_c)), &
                     maxval(abs(self%Bre - self%Bre_c)), maxval(abs(self%Bim - self%Bim_c)), &
                     maxval(abs(self%Cre - self%Cre_c)), maxval(abs(self%Cim - self%Cim_c)))
