@@ -182,8 +182,8 @@ contains
       type(radial_operator):: op
       type(ve_degree)      :: ref
       real(wp) :: dt, t, ua, va, fa, u_el, u_fl, umod, uve, swing, maxrel
-      real(wp) :: gu_err, fl_err, tdom, cdom
-      integer  :: jj, istep, nstep, k
+      real(wp) :: gu_err, fl_err, tdom, cdom, wmin, wsum_err, w_off
+      integer  :: jj, istep, nstep, k, ee
       jj = 2
       em = build_M3L70V01()
       call radial_mesh_build(mm, em)
@@ -245,6 +245,23 @@ contains
       if (gu_err > 1.0e-6_wp)  then; write(*,'(a)') '   FAIL: elastic gain /= elastic solve'; ok=.false.; end if
       if (fl_err  > 1.0e-2_wp) then; write(*,'(a)') '   FAIL: modal sum misses fluid limit';  ok=.false.; end if
       if (maxrel  > 3.0e-2_wp) then; write(*,'(a)') '   FAIL: transient off vs ve_step';      ok=.false.; end if
+
+      ! per-mode radial strain-energy weights (depth profile for lateral η): each kept
+      ! mode's column is normalized (Σ_e w=1), non-negative, and lives only in the Maxwell
+      ! mantle (zero in the elastic lithosphere and fluid core, which carry no memory).
+      wmin = minval(spec%w);  wsum_err = 0.0_wp;  w_off = 0.0_wp
+      do k = 1, spec%nmode
+         wsum_err = max(wsum_err, abs(sum(spec%w(:,k)) - 1.0_wp))
+         do ee = 1, mm%ne
+            if (em%layers(mm%elem_layer(ee))%rheology /= RHEOL_MAXWELL) &
+               w_off = max(w_off, abs(spec%w(ee,k)))
+         end do
+      end do
+      write(*,'(a,es10.3,a,es10.3,a,es10.3)') '   mode weights: min=', wmin, &
+           '  |Σ-1|max=', wsum_err, '  off-mantle max=', w_off
+      if (wmin < -1.0e-12_wp)    then; write(*,'(a)') '   FAIL: negative mode weight';       ok=.false.; end if
+      if (wsum_err > 1.0e-10_wp) then; write(*,'(a)') '   FAIL: mode weight not normalized'; ok=.false.; end if
+      if (w_off > 1.0e-12_wp)    then; write(*,'(a)') '   FAIL: mode weight leaks outside the Maxwell mantle'; ok=.false.; end if
 
       call modal_spectrum_destroy(spec)
    end subroutine part_c

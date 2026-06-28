@@ -66,10 +66,15 @@ module fe_modal
       !! the instantaneous elastic surface gains. Response to a load history is
       !! u = gu·σ + Σ_k Cu_k·φ_k (likewise N, V), φ_k the first-order lag of time
       !! constant tau(k) driven by σ.
-      integer  :: j = -1, nmode = 0
+      integer  :: j = -1, nmode = 0, ne = 0
       real(wp) :: gu = 0.0_wp, gn = 0.0_wp, gv = 0.0_wp
       real(wp), allocatable :: tau(:)
       real(wp), allocatable :: Cu(:), Cn(:), Cv(:)
+      ! Per-mode radial strain-energy weight w(e,k) over the ne radial elements
+      ! (Σ_e w = 1, zero in elastic/fluid layers): the depth profile of where mode k's
+      ! relaxation memory lives. Used to depth-weight laterally-varying viscosity into a
+      ! per-mode lateral rate factor (design-modal.md §4); irrelevant to the 1-D response.
+      real(wp), allocatable :: w(:,:)            !! (ne, nmode)
    end type modal_spectrum
 
 contains
@@ -219,9 +224,10 @@ contains
       real(wp), allocatable :: scrA(:,:), scrB(:,:), scrC(:,:)
       real(wp), allocatable :: BmA(:,:), BmB(:,:), BmC(:,:)
       real(wp), allocatable :: tau_a(:), ru_a(:), cu_a(:), cn_a(:), cv_a(:), strength(:)
+      real(wp), allocatable :: w_a(:,:)
       integer,  allocatable :: ord(:)
       logical,  allocatable :: keep(:)
-      real(wp) :: dtbe, lam, ru, rn, rv, bk, g, dtfe
+      real(wp) :: dtbe, lam, ru, rn, rv, bk, g, dtfe, wsum
       integer  :: nmreq, rank, pb, npk, p, nm, k, nkeep, kk, nout
 
       nmreq = -1;             if (present(n_modes))   nmreq = n_modes
@@ -255,15 +261,16 @@ contains
       Bhat  = matmul(transpose(Q(:,1:nm)), Bpk)
       bcoef = matmul(Whinv, Bhat)
 
-      ! per-mode τ, residues, strengths
+      ! per-mode τ, residues, strengths, radial strain-energy weight
       allocate(vk(npk), tau_a(nm), ru_a(nm), cu_a(nm), cn_a(nm), cv_a(nm), keep(nm))
+      allocate(w_a(md%ne, nm));  w_a = 0.0_wp
       do k = 1, nm
          lam = evr(k)
          keep(k) = (lam > 1.0e-12_wp .and. lam < 1.0_wp - 1.0e-12_wp)
          if (.not. keep(k)) cycle
          tau_a(k) = dtbe * lam / (1.0_wp - lam)
          vk = matmul(Q(:,1:nm), Wh(:,k))
-         call mode_residue(md, scrA, scrB, scrC, vk, g, j, ru, rn, rv)
+         call mode_residue(md, scrA, scrB, scrC, vk, g, j, ru, rn, rv, wgt=w_a(:,k))
          bk = bcoef(k)
          ru_a(k) = ru
          cu_a(k) = ru * bk * tau_a(k)
@@ -294,12 +301,19 @@ contains
       end do
 
       call elastic_gains(md, j, g, spec%gu, spec%gn, spec%gv)
-      spec%j = j;  spec%nmode = nout
+      spec%j = j;  spec%nmode = nout;  spec%ne = md%ne
       allocate(spec%tau(nout), spec%Cu(nout), spec%Cn(nout), spec%Cv(nout))
+      allocate(spec%w(md%ne, nout))
       do k = 1, nout
          kk = ord(k)
          spec%tau(k) = tau_a(kk);  spec%Cu(k) = cu_a(kk)
          spec%Cn(k)  = cn_a(kk);   spec%Cv(k) = cv_a(kk)
+         wsum = sum(w_a(:,kk))                    ! normalize the radial weight: Σ_e w = 1
+         if (wsum > 0.0_wp) then
+            spec%w(:,k) = w_a(:,kk)/wsum
+         else
+            spec%w(:,k) = 0.0_wp
+         end if
       end do
 
       call modal_degree_destroy(md)
@@ -311,7 +325,8 @@ contains
       if (allocated(spec%Cu))  deallocate(spec%Cu)
       if (allocated(spec%Cn))  deallocate(spec%Cn)
       if (allocated(spec%Cv))  deallocate(spec%Cv)
-      spec%nmode = 0;  spec%j = -1
+      if (allocated(spec%w))   deallocate(spec%w)
+      spec%nmode = 0;  spec%j = -1;  spec%ne = 0
    end subroutine modal_spectrum_destroy
 
    ! ===================================================================
@@ -369,19 +384,27 @@ contains
       call modal_degree_destroy(fe)
    end subroutine load_forcing
 
-   subroutine mode_residue(md, scrA, scrB, scrC, vk, g, j, ru, rn, rv)
+   subroutine mode_residue(md, scrA, scrB, scrC, vk, g, j, ru, rn, rv, wgt)
       !! Surface drift produced by the packed memory mode shape vk: solve
-      !! K⁻¹·(dissipative forcing) and read the surface coefficients.
+      !! K⁻¹·(dissipative forcing) and read the surface coefficients. Optionally
+      !! returns the per-element strain-energy weight of the mode shape (Σ_λ of the
+      !! squared memory coefficients in each element) for depth-weighted lateral η.
       type(modal_degree), intent(inout) :: md
       real(wp), intent(inout) :: scrA(:,:), scrB(:,:), scrC(:,:)
       real(wp), intent(in)    :: vk(:), g
       integer,  intent(in)    :: j
       real(wp), intent(out)   :: ru, rn, rv
+      real(wp), intent(out), optional :: wgt(:)   !! (ne) per-element memory energy
       real(wp), allocatable :: f(:), x(:)
-      integer :: nd
+      integer :: nd, e
       nd = ndof_of(md%nr)
       allocate(f(nd), x(nd))
       call unpack_mem(md, vk, scrA, scrB, scrC)
+      if (present(wgt)) then
+         do e = 1, md%ne
+            wgt(e) = sum(scrA(:,e)**2) + sum(scrB(:,e)**2) + sum(scrC(:,e)**2)
+         end do
+      end if
       f = 0.0_wp
       call dissipative_rhs(md%eng%ne, md%eng%r, md%eng%sa, md%eng%sb, md%eng%sc, &
                            md%eng%norm, scrA, scrB, scrC, f)

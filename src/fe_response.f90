@@ -202,6 +202,11 @@ module fe_response
       complex(wp), allocatable :: phi_n(:)       !! entering-step φ (endpoint base)
       complex(wp), allocatable :: phi_s(:)       !! controller save buffer
       complex(wp), allocatable :: mdrU(:), mdrN(:), mdrV(:)  !! (nk) frozen drift Σ_i C·φ
+      ! Per-mode radial strain-energy weight, column = global mode spec_off(l)+i,
+      ! row = radial element (Σ_e w = 1). The depth profile of each mode's relaxation
+      ! memory, used to depth-weight laterally-varying viscosity into a per-mode lateral
+      ! rate factor (design-modal.md §4). Unused by the 1-D (radial-η) response.
+      real(wp),    allocatable :: mwgt(:,:)      !! (ne, tot)
    end type response
 
 contains
@@ -490,6 +495,7 @@ contains
       call modal_response_destroy(self)
       self%kind = RESP_MODAL
       call radial_mesh_build(mesh, earth)
+      self%ne = mesh%ne                       ! radial elements (for the depth weights / lateral η)
       self%lmax = sht%lmax;  self%nlm = sht%nlm
       self%a = earth%r_earth;  self%g = earth_gravity_at(earth, earth%r_earth)
       self%dt = 0.0_wp;  self%time = 0.0_wp
@@ -540,6 +546,7 @@ contains
          tot = tot + specs(l)%nmode
       end do
       allocate(self%mtau(tot), self%mCu(tot), self%mCn(tot), self%mCv(tot))
+      allocate(self%mwgt(self%ne, tot))
       do l = 1, self%lmax
          base = self%spec_off(l)
          do i = 1, specs(l)%nmode
@@ -547,6 +554,7 @@ contains
             self%mCu(base+i)  = specs(l)%Cu(i)
             self%mCn(base+i)  = specs(l)%Cn(i)
             self%mCv(base+i)  = specs(l)%Cv(i)
+            self%mwgt(:,base+i) = specs(l)%w(:,i)
          end do
          call modal_spectrum_destroy(specs(l))
       end do
@@ -704,6 +712,7 @@ contains
       if (allocated(self%mdrU))      deallocate(self%mdrU)
       if (allocated(self%mdrN))      deallocate(self%mdrN)
       if (allocated(self%mdrV))      deallocate(self%mdrV)
+      if (allocated(self%mwgt))      deallocate(self%mwgt)
    end subroutine modal_response_destroy
 
    ! --- viscoelastic field driver ---------------------------------------------
