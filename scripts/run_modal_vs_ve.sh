@@ -25,6 +25,8 @@
 #   ./scripts/run_modal_vs_ve.sh
 #
 # Override any setting from the environment, e.g.
+#   LMAX=128 ./scripts/run_modal_vs_ve.sh                      # whole script at lmax 128
+#   LMAX_DEGLAC=128 ./scripts/run_modal_vs_ve.sh               # radial at 64, deglaciation at 128
 #   FORCING=/work/ice.nc VISC3D=/work/bagge.nc RUNME_FLAGS="-s -r" ./scripts/run_modal_vs_ve.sh
 #
 set -euo pipefail
@@ -39,7 +41,12 @@ VISC3D=${VISC3D:-/Users/alrobi001/models/isostasy_data/earth_structure/viscosity
 # ============================================================================
 # Experiment knobs.
 # ============================================================================
-LMAX=${LMAX:-64}                             # spherical-harmonic degree (ref file must match)
+# Resolution. LMAX is the one knob for the WHOLE script; LMAX_RADIAL / LMAX_DEGLAC
+# default to it but can be set independently (e.g. cheap radial benchmark at 64,
+# deglaciation at 128). The matching reference file rtopo_gauss_l<LMAX>.nc must exist.
+LMAX=${LMAX:-64}                             # spherical-harmonic degree (whole script)
+LMAX_RADIAL=${LMAX_RADIAL:-$LMAX}            # set 1 (idealized / radial)
+LMAX_DEGLAC=${LMAX_DEGLAC:-$LMAX}            # set 2 (full deglaciation)
 T0=${T0:--26000.0}                           # transient start [yr] (LGM)
 T1=${T1:-0.0}                                # transient end   [yr] (present)
 DT_COUPLE=${DT_COUPLE:-100.0}                # coupling interval [yr] (forcing cadence)
@@ -58,20 +65,26 @@ RANKS=${RANKS:-isostatic,rate,residue}       # mode_rank metric
 #   ""       stage the run dirs only (no run)
 RUNME_FLAGS=${RUNME_FLAGS--s -r}     # note: `-` not `:-`, so RUNME_FLAGS="" means stage-only
 
-REF=data/reference/rtopo_gauss_l${LMAX}.nc   # present-day reference (i_eq=1); resolved via the rundir 'data' symlink
-
 # Turning on 3-D viscosity + 1-D spin-up. runme writes booleans quoted ('true'),
 # but the model's nml reader parses 'true'/'false' as logicals, so -p is fine.
 VISC3D_ON=(fe3d.l_visc_3d=true fe3d.spinup_1d=true fe3d.visc_3d_file="$VISC3D")
 
+# Per-resolution params (lmax + the matching present-day reference, i_eq=1). The ref
+# is resolved via the rundir 'data' symlink; require it to exist up front.
+REF_RADIAL="data/reference/rtopo_gauss_l${LMAX_RADIAL}.nc"
+REF_DEGLAC="data/reference/rtopo_gauss_l${LMAX_DEGLAC}.nc"
+for r in "$REF_RADIAL" "$REF_DEGLAC"; do
+  [ -f "$r" ] || { echo "ERROR: reference file not found: $r (need rtopo_gauss_l<lmax>.nc)" >&2; exit 1; }
+done
+RES_RADIAL=(fe3d.lmax="$LMAX_RADIAL" fe3d.z_bed_ref_file="$REF_RADIAL" fe3d.h_ice_ref_file="$REF_RADIAL")
+RES_DEGLAC=(fe3d.lmax="$LMAX_DEGLAC" fe3d.z_bed_ref_file="$REF_DEGLAC" fe3d.h_ice_ref_file="$REF_DEGLAC")
+
 # Parameters common to every run (machine paths + the shared deglaciation setup).
+# Resolution (lmax + reference) is added per set from RES_RADIAL / RES_DEGLAC.
 COMMON=(
-  fe3d.lmax="$LMAX"
   fe3d.file_forcing="$FORCING"
   fe3d.name_ice=ice_thickness
   fe3d.i_eq=1
-  fe3d.z_bed_ref_file="$REF"
-  fe3d.h_ice_ref_file="$REF"
   fe3d.dt_couple="$DT_COUPLE"
   fe3d.dt_equil="$DT_EQUIL"
   fe3d.time_init="$T0"
@@ -90,21 +103,21 @@ launch() {
         -p "${COMMON[@]}" "$@"
 }
 
-echo "lmax=$LMAX  window=[$T0,$T1]  dt_couple=$DT_COUPLE  dt_equil=$DT_EQUIL  omp=$OMP"
+echo "lmax: radial=$LMAX_RADIAL deglac3d=$LMAX_DEGLAC  window=[$T0,$T1]  dt_couple=$DT_COUPLE  dt_equil=$DT_EQUIL  omp=$OMP"
 echo "exp root: $EXP    runme flags: '$RUNME_FLAGS'"
 
 # ---------------------------------------------------------------------------
 # Set 1 — idealized: 1-D (radial) viscosity. modal(n_modes=all) -> VE exactly.
 # ---------------------------------------------------------------------------
-launch "$EXP/radial/ve"        0 fe3d.earth_response=ve    fe3d.scheme=fe          fe3d.l_visc_3d=false
-launch "$EXP/radial/modal"     1 fe3d.earth_response=modal fe3d.n_modes="$N_MODES" fe3d.mode_rank="$RANKS" fe3d.l_visc_3d=false
-launch "$EXP/radial/modal_all" 0 fe3d.earth_response=modal fe3d.n_modes=-1         fe3d.l_visc_3d=false
+launch "$EXP/radial/ve"        0 "${RES_RADIAL[@]}" fe3d.earth_response=ve    fe3d.scheme=fe          fe3d.l_visc_3d=false
+launch "$EXP/radial/modal"     1 "${RES_RADIAL[@]}" fe3d.earth_response=modal fe3d.n_modes="$N_MODES" fe3d.mode_rank="$RANKS" fe3d.l_visc_3d=false
+launch "$EXP/radial/modal_all" 0 "${RES_RADIAL[@]}" fe3d.earth_response=modal fe3d.n_modes=-1         fe3d.l_visc_3d=false
 
 # ---------------------------------------------------------------------------
 # Set 2 — full deglaciation: 3-D viscosity, 1-D spin-up.
 # ---------------------------------------------------------------------------
-launch "$EXP/deglac3d/ve"        0 fe3d.earth_response=ve    fe3d.scheme=fe          "${VISC3D_ON[@]}"
-launch "$EXP/deglac3d/modal"     1 fe3d.earth_response=modal fe3d.n_modes="$N_MODES" fe3d.mode_rank="$RANKS" "${VISC3D_ON[@]}"
-launch "$EXP/deglac3d/modal_all" 0 fe3d.earth_response=modal fe3d.n_modes=-1         "${VISC3D_ON[@]}"
+launch "$EXP/deglac3d/ve"        0 "${RES_DEGLAC[@]}" fe3d.earth_response=ve    fe3d.scheme=fe          "${VISC3D_ON[@]}"
+launch "$EXP/deglac3d/modal"     1 "${RES_DEGLAC[@]}" fe3d.earth_response=modal fe3d.n_modes="$N_MODES" fe3d.mode_rank="$RANKS" "${VISC3D_ON[@]}"
+launch "$EXP/deglac3d/modal_all" 0 "${RES_DEGLAC[@]}" fe3d.earth_response=modal fe3d.n_modes=-1         "${VISC3D_ON[@]}"
 
 echo "done."
