@@ -141,6 +141,30 @@ is intrinsic to the rate-modulation ansatz (design-modal.md §4: "approximation 
 every K"). Closing it further would require leaving the ansatz (genuine harmonic
 coupling), i.e. moving toward the tensor-SH cost that modal exists to avoid.
 
+### Controlled real-field confirmation (Tarasov + Bagge)
+
+Controlled isolation on the REAL field (`runs/latcheck`, lmax 32, −8 kyr→0, all
+modes, `modal_adaptive=false`, only `lat_method` varied) — VE truth vs modal-coupled
+vs modal-lie:
+
+| at VE-peak cell over N. America | ratio modal/VE | global rms(modal−VE) |
+|---|---|---|
+| modal-lie     | 0.406 | 2.69 m |
+| modal-coupled | 0.345 | 2.98 m |
+
+COUPLED is **marginally worse** than LIE on the real field, not better; both
+under-predict ~60–65% at this resolution/window. This **confirms on real data** what
+the synthetic predicted: at the real continental contrast COUPLED ≈ LIE (slightly
+worse, from over-localization), and the ~55% N. America attenuation is the intrinsic
+rate-modulation-ansatz ceiling — neither method breaks it. COUPLED is genuinely
+active (the runs differ); its only edge over LIE is stability (no high-contrast
+rebound runaway), which does not show in this moderate-contrast metric.
+
+**Ensemble caveat (now fixed):** the re-run that "showed no improvement" also flipped
+`modal_adaptive` off (nsolve 22→1); the radial set regressed 0.34→0.89 m PD from that
+alone (lateral-independent). `run_modal_vs_ve.sh` now sets `fe3d.modal_adaptive=true`
+(knob `ADAPTIVE`) so the comparison isolates `lat_method`.
+
 ### Decision (taken)
 
 **COUPLED is now the production default** (`&fe3d lat_method = "coupled"`, type

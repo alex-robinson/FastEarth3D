@@ -62,10 +62,13 @@ EXP=${EXP:-runs/modal_vs_ve}                 # experiment root (under gitignored
 N_MODES=${N_MODES:-1,2,4,8}                  # modes kept per degree (truncated)
 RANKS=${RANKS:-isostatic,rate,residue}       # mode_rank metric
 
-# Adaptive step-doubling tolerance for the MODAL response (RESP_MODAL now sub-steps
-# each coupling interval to this rtol; VE uses scheme=fe and ignores it). Lower =
-# more accurate, more sub-steps: ~1e-4 best accuracy (~9 SLE/couple), 1e-3 a good
-# balance (~3.6 SLE/couple, ~30x better than 1-step modal). See diag_modal_sle.
+# Adaptive step-doubling for the MODAL response. modal_adaptive defaults OFF in the
+# model (1 exact-exp step/couple — fast, but a temporal-truncation error that A3
+# removes), so the ensemble must turn it ON to sub-step; otherwise RTOL is inert and
+# modal runs 1-step (radial accuracy degrades, deglac3d unaffected). RTOL is the
+# step-doubling tolerance: ~1e-4 best accuracy (~9 SLE/couple), 1e-3 a balance
+# (~3.6 SLE/couple). VE uses scheme=fe and ignores both. See diag_modal_sle.
+ADAPTIVE=${ADAPTIVE:-true}        # modal: sub-step each couple to RTOL (A3). false = 1-step
 RTOL=${RTOL:-1e-4}
 
 # How runme launches each (group) of runs:
@@ -100,6 +103,7 @@ COMMON=(
   fe3d.time_init="$T0"
   fe3d.time_end="$T1"
   fe3d.rotation=true            # real-Earth runs: rotational feedback on (both solvers)
+  fe3d.modal_adaptive="$ADAPTIVE" # modal: enable A3 sub-stepping (VE ignores it)
   fe3d.rtol="$RTOL"             # modal adaptive sub-step tolerance (VE ignores it)
   fe3d.file_out=out.nc
 )
