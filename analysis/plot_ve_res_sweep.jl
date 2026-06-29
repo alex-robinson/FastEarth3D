@@ -37,10 +37,10 @@ efloor(x) = max(x, 1e-4)                                                        
 # fig 1: accuracy and cost vs lmax (the resolution ladder, cfl=1).
 function fig_accuracy_cost(R)
     C = R["cands"]; sweep = res_sweep(C)
-    ls   = [Float64(c["lmax"]) for c in sweep]
-    cost = [c["prof"]["se"]    for c in sweep]
-    mem  = [c["prof"]["mem"]   for c in sweep]
-    dr   = [c["prof"]["drift"] for c in sweep]
+    ls   = [Float64(c["lmax"])      for c in sweep]
+    cost = [c["prof"]["se"]/1000    for c in sweep]   # ms -> s
+    mem  = [c["prof"]["mem"]/1000   for c in sweep]
+    dr   = [c["prof"]["drift"]/1000 for c in sweep]
     # accuracy: drop the reference itself (lmax_ref) — its self-error is exactly 0.
     acc  = filter(c -> c["lmax"] != R["ref_lmax"], sweep)
     als  = [Float64(c["lmax"])             for c in acc]
@@ -57,8 +57,8 @@ function fig_accuracy_cost(R)
                   linewidth = 2, linestyle = :dash, label = "max |Δrsl|")
     axislegend(ax1; position = :rt, framevisible = false)
 
-    ax2 = Axis(fig[1, 2]; xlabel = "lmax", ylabel = "cost [ms/step]",
-               title = "cost", xscale = log2, yscale = log10,
+    ax2 = Axis(fig[1, 2]; xlabel = "lmax", ylabel = "cost [s/step]",
+               title = "cost", xscale = log2,
                xticks = (ls, string.(Int.(ls))))
     scatterlines!(ax2, ls, cost; color = :black,    marker = :circle, markersize = 11,
                   linewidth = 2, label = "solid_earth_update")
@@ -77,19 +77,19 @@ end
 function fig_pareto(R)
     C = R["cands"]
     fig = Figure(size = (820, 560))
-    ax = Axis(fig[1, 1]; xlabel = "solver cost [ms/step]", ylabel = "rsl RMSE vs lmax$(R["ref_lmax"]) [m]",
+    ax = Axis(fig[1, 1]; xlabel = "solver cost [s/step]", ylabel = "rsl RMSE vs lmax$(R["ref_lmax"]) [m]",
               title = "accuracy–cost trade-off (down-left is better)",
               xscale = log10, yscale = log10)
-    refcost = R["ref_prof"]["se"]
+    refcost = R["ref_prof"]["se"]/1000   # ms -> s
     vlines!(ax, [refcost]; color = :gray, linestyle = :dash)
-    text!(ax, refcost, efloor(0.0); text = @sprintf(" ref = %.0f ms", refcost),
+    text!(ax, refcost, efloor(0.0); text = @sprintf(" ref = %.1f s", refcost),
           align = (:left, :bottom), space = :data, offset = (2, 2), rotation = pi/2,
           fontsize = 10, color = :gray40)
     for (i, c) in enumerate(C)
         col = runcolor(i)
-        scatter!(ax, [c["prof"]["se"]], [efloor(c["err"]["rsl_rmse"])];
+        scatter!(ax, [c["prof"]["se"]/1000], [efloor(c["err"]["rsl_rmse"])];
                  color = col, markersize = 14)
-        text!(ax, c["prof"]["se"], efloor(c["err"]["rsl_rmse"]); text = c["label"],
+        text!(ax, c["prof"]["se"]/1000, efloor(c["err"]["rsl_rmse"]); text = c["label"],
               align = (:left, :center), offset = (8, 0), fontsize = 10, color = col)
     end
     fn = joinpath(OUTDIR, "pareto.png"); save(fn, fig); println("wrote ", fn)
@@ -100,12 +100,12 @@ function fig_cost_breakdown(R)
     C = R["cands"]
     labels = [c["label"] for c in C]
     x = 1:length(C)
-    dr   = [c["prof"]["drift"] for c in C]
-    mem  = [c["prof"]["mem"]   for c in C]
-    rst  = [rest(c["prof"])    for c in C]
+    dr   = [c["prof"]["drift"]/1000 for c in C]   # ms -> s
+    mem  = [c["prof"]["mem"]/1000   for c in C]
+    rst  = [rest(c["prof"])/1000    for c in C]
     # stacked bars: drift (bottom) + memory + rest
     fig = Figure(size = (260 + 120 * length(C), 520))
-    ax = Axis(fig[1, 1]; ylabel = "ms / coupling step", title = "solid_earth_update cost breakdown",
+    ax = Axis(fig[1, 1]; ylabel = "s / coupling step", title = "solid_earth_update cost breakdown",
               xticks = (collect(x), labels), xticklabelrotation = pi/6)
     cols = [:darkorange, :royalblue, :gray70]
     barplot!(ax, repeat(collect(x), 3),
