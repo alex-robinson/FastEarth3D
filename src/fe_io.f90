@@ -14,7 +14,7 @@ module fe_io
    !! suggestion dt_try (so a restarted run sub-steps the same path → bit-for-bit
    !! continuation). With rotation enabled, the polar motion m and both degree-2
    !! channels' memory stress (rot_*) are persisted too. Static (written once,
-   !! checked on read): the reference state z_bed_eq, h_ice_ref. Diagnostic: h_ice,
+   !! checked on read): the reference state z_bed_eq, h_ice_eq. Diagnostic: h_ice,
    !! rsl, z_bed, C_ocean (lon,lat) — written for inspection and restored if present.
    use fe_precision,    only: wp
    use fe_constants,    only: rad2deg, sec_per_year
@@ -200,7 +200,7 @@ contains
            units="years", unlimited=.true.)
 
       call put2d(self, filename, "z_bed_eq",  self%z_bed_eq,  static=.true.)
-      call put2d(self, filename, "h_ice_ref", self%h_ice_ref, static=.true.)
+      call put2d(self, filename, "h_ice_eq", self%h_ice_eq, static=.true.)
 
       call write_visc_attrs(self, filename)
    end subroutine write_init
@@ -545,9 +545,9 @@ contains
       call nc_read(filename, "z_bed_eq", ref)
       if (maxval(abs(ref - self%z_bed_eq)) > tol) &
          error stop 'fe_restart_read: z_bed_eq does not match the initialised model'
-      call nc_read(filename, "h_ice_ref", ref)
-      if (maxval(abs(ref - self%h_ice_ref)) > tol) &
-         error stop 'fe_restart_read: h_ice_ref does not match the initialised model'
+      call nc_read(filename, "h_ice_eq", ref)
+      if (maxval(abs(ref - self%h_ice_eq)) > tol) &
+         error stop 'fe_restart_read: h_ice_eq does not match the initialised model'
    end subroutine check_reference
 
    subroutine read_diagnostics(self, filename, n, np, nl)

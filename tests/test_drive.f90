@@ -21,7 +21,7 @@ program test_drive
    character(len=*), parameter :: DEFS  = "fastearth.nml"
 
    type(sht_grid), target :: sht
-   real(wp), allocatable  :: lon_deg(:), lat_deg(:), z_bed_eq(:,:), h_ice_ref(:,:)
+   real(wp), allocatable  :: lon_deg(:), lat_deg(:), z_bed_eq(:,:), h_ice_eq(:,:)
    real(wp), allocatable  :: h_ice(:,:,:), tyr(:), zb(:,:), rsl(:,:)
    real(wp) :: thd, sub
    integer  :: i, j, k, u, jice, jocean, nout
@@ -35,20 +35,20 @@ program test_drive
    lat_deg = 90.0_wp - sht%colat*rad2deg
 
    ! --- synthetic reference state (polar land cap over deep ocean) -------------
-   allocate(z_bed_eq(sht%nphi,sht%nlat), h_ice_ref(sht%nphi,sht%nlat))
+   allocate(z_bed_eq(sht%nphi,sht%nlat), h_ice_eq(sht%nphi,sht%nlat))
    do j = 1, sht%nlat
       thd = sht%colat(j)*rad2deg
       do i = 1, sht%nphi
          z_bed_eq(i,j) = merge(500.0_wp, -4000.0_wp, thd < 50.0_wp)
       end do
    end do
-   h_ice_ref = 0.0_wp
+   h_ice_eq = 0.0_wp
 
    call nc_create(REF, overwrite=.true.)
    call nc_write_dim(REF, "lon", x=lon_deg, units="degrees_east")
    call nc_write_dim(REF, "lat", x=lat_deg, units="degrees_north")
    call nc_write(REF, "z_bed_eq",  z_bed_eq,  dim1="lon", dim2="lat")
-   call nc_write(REF, "h_ice_ref", h_ice_ref, dim1="lon", dim2="lat")
+   call nc_write(REF, "h_ice_eq", h_ice_eq, dim1="lon", dim2="lat")
 
    ! --- forcing: a grounded cap (colat<30) growing 0 -> 1 -> 2 km --------------
    allocate(h_ice(sht%nphi,sht%nlat,NT), tyr(NT))

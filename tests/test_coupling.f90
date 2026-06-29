@@ -2,7 +2,7 @@ program test_coupling
    !! CLIMBER-X coupling contract (design.md item 1): init → update → finalize.
    !! Drives the solid_earth derived type with an ice load and checks that
    !!
-   !!   (0) at the reference ice (h_ice = h_ice_ref) nothing moves: rsl ≈ 0 and
+   !!   (0) at the reference ice (h_ice = h_ice_eq) nothing moves: rsl ≈ 0 and
    !!       z_bed ≈ z_bed_eq (the supplied reference IS the relaxed state);
    !!   (1) ocean mass is conserved every internal Maxwell sub-step;
    !!   (2) a steady grounded-ice load relaxes sensibly: the bed subsides under
@@ -21,7 +21,7 @@ program test_coupling
    type(sht_grid), target :: sht
    type(fe_param_class)   :: p
    type(solid_earth)      :: se
-   real(wp), allocatable  :: z_bed_eq(:,:), h_ice_ref(:,:), h_ice(:,:)
+   real(wp), allocatable  :: z_bed_eq(:,:), h_ice_eq(:,:), h_ice(:,:)
    real(wp) :: dt_couple, bed_eq_ice, bed_prev, bed_now, d_first, d_last
    real(wp) :: ocean_rsl, worst_mass, net_subs
    integer  :: i, jice, jocean, step
@@ -30,9 +30,9 @@ program test_coupling
    ok = .true.
    call sht_grid_init(sht, LMAX, nlat=2*LMAX, nphi=4*LMAX)
 
-   allocate(z_bed_eq(sht%nphi,sht%nlat), h_ice_ref(sht%nphi,sht%nlat), &
+   allocate(z_bed_eq(sht%nphi,sht%nlat), h_ice_eq(sht%nphi,sht%nlat), &
             h_ice(sht%nphi,sht%nlat))
-   call make_reference(z_bed_eq, h_ice_ref)
+   call make_reference(z_bed_eq, h_ice_eq)
 
    ! representative latitude rows: under the ice cap (colat ~ 15°) and open ocean
    jice   = nearest_row(15.0_wp)
@@ -41,13 +41,13 @@ program test_coupling
 
    dt_couple    = 2.0_wp*kyr                        ! interval per se%update call
    p%dt_couple  = dt_couple                         ! default cadence (M3-L70-V01, default fe scheme)
-   call solid_earth_init(se, p, sht, z_bed_eq, h_ice_ref)
+   call solid_earth_init(se, p, sht, z_bed_eq, h_ice_eq)
 
    write(*,'(a,i0,a)') ' coupling: lmax=', LMAX, &
                        '  (dt_couple=2 kyr, default fe scheme)'
 
    ! --- (0) reference consistency: no ice change -> no motion -----------------
-   call solid_earth_update(se, h_ice_ref, dt_couple)
+   call solid_earth_update(se, h_ice_eq, dt_couple)
    write(*,'(a,es10.2,a,es10.2)') '   ref: max|rsl|=', maxval(abs(se%rsl)), &
                                   '   max|z_bed-z_bed_eq|=', maxval(abs(se%z_bed - z_bed_eq))
    if (maxval(abs(se%rsl)) > 1.0e-9_wp .or. maxval(abs(se%z_bed - z_bed_eq)) > 1.0e-9_wp) then
@@ -123,10 +123,10 @@ program test_coupling
 
 contains
 
-   subroutine make_reference(z_bed_eq, h_ice_ref)
+   subroutine make_reference(z_bed_eq, h_ice_eq)
       !! Reference (equilibrium) topography: a polar land cap (colat<50°, +500 m)
       !! over deep ocean (−4000 m); no reference ice.
-      real(wp), intent(out) :: z_bed_eq(:,:), h_ice_ref(:,:)
+      real(wp), intent(out) :: z_bed_eq(:,:), h_ice_eq(:,:)
       integer  :: i, j
       real(wp) :: thd
       do j = 1, sht%nlat
@@ -135,7 +135,7 @@ contains
             z_bed_eq(i,j) = merge(500.0_wp, -4000.0_wp, thd < 50.0_wp)
          end do
       end do
-      h_ice_ref = 0.0_wp
+      h_ice_eq = 0.0_wp
    end subroutine make_reference
 
    subroutine make_load(h_ice)
@@ -165,13 +165,13 @@ contains
 
       pr%dt_couple = dt_couple
       pr%rotation  = .false.
-      call solid_earth_init(se_off, pr, sht, z_bed_eq, h_ice_ref)
+      call solid_earth_init(se_off, pr, sht, z_bed_eq, h_ice_eq)
       do s = 1, NSTEP;  call solid_earth_update(se_off, h_off, dt_couple);  end do
       zoff = se_off%z_bed
       call solid_earth_finalize(se_off)
 
       pr%rotation = .true.
-      call solid_earth_init(se_on, pr, sht, z_bed_eq, h_ice_ref)
+      call solid_earth_init(se_on, pr, sht, z_bed_eq, h_ice_eq)
       wmass = 0.0_wp
       do s = 1, NSTEP
          call solid_earth_update(se_on, h_off, dt_couple)

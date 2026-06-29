@@ -15,8 +15,8 @@ module fe_drive
    !!
    !! Reference state (i_eq), mirroring CLIMBER-X i_equilibrium. RSL is measured
    !! against the relaxed reference z_bed_eq, so i_eq=1 yields rsl ~0 at present day.
-   !!   i_eq=0  start slice is the equilibrium (z_bed_eq=bed[k0], h_ice_ref=ice[k0]).
-   !!   i_eq=1  (default) present-day reference: z_bed_eq / h_ice_ref from
+   !!   i_eq=0  start slice is the equilibrium (z_bed_eq=bed[k0], h_ice_eq=ice[k0]).
+   !!   i_eq=1  (default) present-day reference: z_bed_eq / h_ice_eq from
    !!           z_bed_ref_file / h_ice_ref_file (e.g. RTopo), remapped online.
    !!   i_eq=2  equilibrium read from z_bed_eq_file / h_ice_eq_file.
    !!   i_eq=3  z_bed_eq = present-day reference bed + rsl from rsl_restart_file.
@@ -60,7 +60,7 @@ contains
       type(sht_grid), target :: sht
       type(solid_earth)      :: se
       type(ll2gauss_map)     :: rmap
-      real(wp), allocatable  :: z_bed_eq(:,:), h_ice_ref(:,:), h_ice(:,:), ice_lgm(:,:)
+      real(wp), allocatable  :: z_bed_eq(:,:), h_ice_eq(:,:), h_ice(:,:), ice_lgm(:,:)
       real(wp), allocatable  :: src(:,:), tyr(:)
       real(wp) :: t0, dt
       integer  :: nt, k, k0, k1, np, nl, nlon, nls
@@ -88,7 +88,7 @@ contains
       ! --- transform grid + work arrays -----------------------------------------
       call build_grid(p, sht)
       np = sht%nphi;  nl = sht%nlat
-      allocate(z_bed_eq(np,nl), h_ice_ref(np,nl), h_ice(np,nl), ice_lgm(np,nl))
+      allocate(z_bed_eq(np,nl), h_ice_eq(np,nl), h_ice(np,nl), ice_lgm(np,nl))
 
       ! --- build the conservative lon-lat -> Gauss map (online remap mode) -------
       remap = p%remap_input
@@ -110,9 +110,9 @@ contains
       write(*,'(a,i0,a,f0.1,a,f0.1,a)') ' fastearth: ', k1-k0+1, ' slices, t = ', &
            tyr(k0), ' -> ', tyr(k1), ' yr'
 
-      ! --- start-slice ice + reference state (z_bed_eq, h_ice_ref) per i_eq ------
+      ! --- start-slice ice + reference state (z_bed_eq, h_ice_eq) per i_eq ------
       call read_ice(p, rmap, sht, remap, k0, src, ice_lgm)      ! start-slice (LGM) ice
-      call setup_reference(p, rmap, sht, remap, k0, src, ice_lgm, z_bed_eq, h_ice_ref)
+      call setup_reference(p, rmap, sht, remap, k0, src, ice_lgm, z_bed_eq, h_ice_eq)
 
       ! --- initialise; restart resume and/or optional LGM-memory spin-up --------
       ! Restarts are written alongside the run output: <rundir>/spinup after the spin-up
@@ -122,10 +122,10 @@ contains
       if (len_trim(p%restart_in_file) > 0) then
          ! resume from a saved full state (memory + clock). init at the reference, then
          ! restore; a lower-resolution restart is interpolated up to the model grid.
-         call solid_earth_init(se, p, sht, z_bed_eq, h_ice_ref)
+         call solid_earth_init(se, p, sht, z_bed_eq, h_ice_eq)
          call fe_restart_read(se, trim(p%restart_in_file))
          if (p%dt_equil > 0.0_wp) then            ! optional further equilibration
-            call equilibrate(p, sht, se, z_bed_eq, h_ice_ref, ice_lgm, from_restart=.true.)
+            call equilibrate(p, sht, se, z_bed_eq, h_ice_eq, ice_lgm, from_restart=.true.)
             call fe_restart_write(se, se%time, folder=trim(rundir)//"/spinup")
          else
             ! seed the entering (LGM) ice and re-solve the diagnostics from the restored
@@ -134,12 +134,12 @@ contains
          end if
       else if (p%dt_equil > 0.0_wp) then
          ! spin up se to isostatic equilibrium under the start-slice (LGM) ice while
-         ! HOLDING the present-day reference (z_bed_eq, h_ice_ref) as the datum, so the
-         ! transient measures rsl/bsl against today (-> 0 as ice -> h_ice_ref).
-         call equilibrate(p, sht, se, z_bed_eq, h_ice_ref, ice_lgm, spinup_1d=p%spinup_1d)
+         ! HOLDING the present-day reference (z_bed_eq, h_ice_eq) as the datum, so the
+         ! transient measures rsl/bsl against today (-> 0 as ice -> h_ice_eq).
+         call equilibrate(p, sht, se, z_bed_eq, h_ice_eq, ice_lgm, spinup_1d=p%spinup_1d)
          call fe_restart_write(se, se%time, folder=trim(rundir)//"/spinup")
       else
-         call solid_earth_init(se, p, sht, z_bed_eq, h_ice_ref)
+         call solid_earth_init(se, p, sht, z_bed_eq, h_ice_eq)
          call solid_earth_update(se, ice_lgm, 0.0_wp)                        ! seed entering ice, no integration
       end if
       call system_clock(pc1)
@@ -214,17 +214,17 @@ contains
 
    ! --- equilibration ----------------------------------------------------------
 
-   subroutine equilibrate(p, sht, se, z_bed_eq, h_ice_ref, ice_lgm, spinup_1d, from_restart)
+   subroutine equilibrate(p, sht, se, z_bed_eq, h_ice_eq, ice_lgm, spinup_1d, from_restart)
       !! LGM-memory spin-up (i_eq=1): bring se to isostatic equilibrium under the
       !! start-slice ice ice_lgm while HOLDING the present-day reference (z_bed_eq =
-      !! observed bed, h_ice_ref = observed ice) as the fixed datum. The model is
+      !! observed bed, h_ice_eq = observed ice) as the fixed datum. The model is
       !! initialised at the reference (memory 0, rsl 0), the entering ice is set to
       !! ice_lgm, then ice_lgm is held for dt_equil per pass until the bed stops moving
       !! between passes (the slow Maxwell modes have relaxed). On return se carries the
       !! relaxed LGM deflection rsl = equilibrium response to the load anomaly
-      !! (ice_lgm - h_ice_ref) and its consistent memory state; the reference datum is
+      !! (ice_lgm - h_ice_eq) and its consistent memory state; the reference datum is
       !! UNCHANGED, so the transient that follows measures rsl/bsl against today
-      !! (rsl, bsl -> 0 as ice -> h_ice_ref).
+      !! (rsl, bsl -> 0 as ice -> h_ice_eq).
       !!
       !! spinup_1d:    run the relaxation with 1-D (radial) viscosity, then enable the
       !!               3-D field for the transient (cheap seed; ignored if not l_visc_3d).
@@ -234,7 +234,7 @@ contains
       type(sht_grid),       intent(in),   target  :: sht
       type(solid_earth),    intent(inout)         :: se
       real(wp),             intent(in)            :: z_bed_eq(:,:)   !! PD reference bed (datum, held)
-      real(wp),             intent(in)            :: h_ice_ref(:,:)  !! PD reference ice (datum, held)
+      real(wp),             intent(in)            :: h_ice_eq(:,:)  !! PD reference ice (datum, held)
       real(wp),             intent(in)            :: ice_lgm(:,:)
       logical, optional,    intent(in)            :: spinup_1d, from_restart
       real(wp), allocatable :: z_prev(:,:), resid(:,:)
@@ -251,7 +251,7 @@ contains
       write(*,'(a,a,a,es9.2,a)') ' equilibration (i_eq=1): spin up LGM memory vs PD reference', &
            merge(' [1-D]', '      ', l1d .and. p%l_visc_3d), ', dt_equil=', p%dt_equil/sec_per_year, ' yr/pass'
       if (.not. resume) &
-         call solid_earth_init(se, p, sht, z_bed_eq, h_ice_ref, defer_visc_3d=l1d)  ! reference, memory 0
+         call solid_earth_init(se, p, sht, z_bed_eq, h_ice_eq, defer_visc_3d=l1d)  ! reference, memory 0
       call solid_earth_update(se, ice_lgm, 0.0_wp)                   ! set entering ice = start (LGM) ice
       z_prev = se%z_bed
       do it = 1, MAX_EQ
@@ -299,7 +299,7 @@ contains
          call require_var(p%file_forcing, p%name_lat, 'file_forcing/name_lat')
       end if
 
-      ! relaxed reference state (z_bed_eq, h_ice_ref), per i_eq -- see read_bed /
+      ! relaxed reference state (z_bed_eq, h_ice_eq), per i_eq -- see read_bed /
       ! setup_reference for which (file, var) each case reads.
       select case (p%i_eq)
       case (0)
@@ -408,8 +408,8 @@ contains
       end if
    end subroutine read_bed
 
-   subroutine setup_reference(p, rmap, sht, remap, k0, src, ice_lgm, z_bed_eq, h_ice_ref)
-      !! Fill the relaxed reference (z_bed_eq = SLE topo0, h_ice_ref) per p%i_eq,
+   subroutine setup_reference(p, rmap, sht, remap, k0, src, ice_lgm, z_bed_eq, h_ice_eq)
+      !! Fill the relaxed reference (z_bed_eq = SLE topo0, h_ice_eq) per p%i_eq,
       !! mirroring CLIMBER-X i_equilibrium. Reference files are lon-lat and remapped
       !! online with a per-file conservative map (their grid differs from the forcing).
       type(fe_param_class), intent(in)    :: p
@@ -419,23 +419,23 @@ contains
       integer,              intent(in)    :: k0
       real(wp),             intent(inout) :: src(:,:)
       real(wp),             intent(in)    :: ice_lgm(:,:)
-      real(wp),             intent(out)   :: z_bed_eq(:,:), h_ice_ref(:,:)
+      real(wp),             intent(out)   :: z_bed_eq(:,:), h_ice_eq(:,:)
       real(wp), allocatable :: rsl_r(:,:)
       select case (p%i_eq)
       case (0)
          call read_bed(p, rmap, sht, remap, k0, src, z_bed_eq)   ! data bed at the start slice
-         h_ice_ref = ice_lgm
+         h_ice_eq = ice_lgm
       case (1)
          call read_ref2d(p, sht, remap, p%z_bed_ref_file, p%name_z_bed_ref, .false., z_bed_eq)
-         call read_ref2d(p, sht, remap, p%h_ice_ref_file, p%name_h_ice_ref, .true.,  h_ice_ref)
+         call read_ref2d(p, sht, remap, p%h_ice_ref_file, p%name_h_ice_ref, .true.,  h_ice_eq)
       case (2)
          call read_ref2d(p, sht, remap, p%z_bed_eq_file, p%name_z_bed_ref, .false., z_bed_eq)
-         call read_ref2d(p, sht, remap, p%h_ice_eq_file, p%name_h_ice_ref, .true.,  h_ice_ref)
+         call read_ref2d(p, sht, remap, p%h_ice_eq_file, p%name_h_ice_ref, .true.,  h_ice_eq)
       case (3)
          allocate(rsl_r(size(z_bed_eq,1), size(z_bed_eq,2)))
          call read_ref2d(p, sht, remap, p%z_bed_ref_file,   p%name_z_bed_ref, .false., z_bed_eq)
          call read_ref2d(p, sht, remap, p%rsl_restart_file, p%name_rsl,       .false., rsl_r)
-         call read_ref2d(p, sht, remap, p%h_ice_ref_file,   p%name_h_ice_ref, .true.,  h_ice_ref)
+         call read_ref2d(p, sht, remap, p%h_ice_ref_file,   p%name_h_ice_ref, .true.,  h_ice_eq)
          z_bed_eq = z_bed_eq + rsl_r
       case default
          error stop 'fastearth_run: i_eq must be 0, 1, 2, or 3'

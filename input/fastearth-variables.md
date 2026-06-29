@@ -8,7 +8,7 @@ the netCDF variable name, its dimensions, units, and a long_name. The time axis
 The prognostic state restored on restart depends on the response kind: the
 Maxwell memory-stress fields `tau_*` (+ `sigma_n_*`) for `RESP_VE`, or the modal
 amplitudes `phi_*` for `RESP_MODAL`; plus the adaptive controller's next-step Δt
-seed `dt_try` for both. The reference fields `z_bed_eq`/`h_ice_ref` are static
+seed `dt_try` for both. The reference fields `z_bed_eq`/`h_ice_eq` are static
 (written once) and checked on read; the rest are diagnostic.
 
 | id | variable     | dimensions    | units  | long_name                                        |
@@ -20,7 +20,7 @@ seed `dt_try` for both. The reference fields `z_bed_eq`/`h_ice_ref` are static
 |  5 | tau_c_re     | nlam, ne, nk  | Pa     | Maxwell memory stress, component C (real part)   |
 |  6 | tau_c_im     | nlam, ne, nk  | Pa     | Maxwell memory stress, component C (imag part)   |
 |  7 | z_bed_eq     | lon, lat      | m      | Reference (equilibrium) bedrock elevation        |
-|  8 | h_ice_ref    | lon, lat      | m      | Reference grounded-ice thickness                 |
+|  8 | h_ice_eq     | lon, lat      | m      | Reference (equilibrium) grounded-ice thickness   |
 |  9 | h_ice        | lon, lat      | m      | Grounded-ice thickness                           |
 | 10 | rsl          | lon, lat      | m      | Relative sea-level change (full field)           |
 | 11 | z_bed        | lon, lat      | m      | Bedrock elevation (z_bed_eq - rsl)               |

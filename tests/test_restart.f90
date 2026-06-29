@@ -24,14 +24,14 @@ program test_restart
 
    integer, parameter :: LMAX = 12, K1 = 3, K2 = 3
    type(sht_grid), target :: sht
-   real(wp), allocatable  :: z_bed_eq(:,:), h_ice_ref(:,:), h_ice(:,:)
+   real(wp), allocatable  :: z_bed_eq(:,:), h_ice_eq(:,:), h_ice(:,:)
    logical  :: ok
 
    ok = .true.
    call sht_grid_init(sht, LMAX, nlat=2*LMAX, nphi=4*LMAX)
-   allocate(z_bed_eq(sht%nphi,sht%nlat), h_ice_ref(sht%nphi,sht%nlat), &
+   allocate(z_bed_eq(sht%nphi,sht%nlat), h_ice_eq(sht%nphi,sht%nlat), &
             h_ice(sht%nphi,sht%nlat))
-   call make_fields(z_bed_eq, h_ice_ref, h_ice)
+   call make_fields(z_bed_eq, h_ice_eq, h_ice)
 
    call roundtrip("ve",    "obj/test_restart_ve.nc",    ok)
    call roundtrip("modal", "obj/test_restart_modal.nc", ok)
@@ -67,7 +67,7 @@ contains
                                           ! motion m + both channels' memory (rot_*)
 
       ! === reference run A ====================================================
-      call solid_earth_init(a, p, sht, z_bed_eq, h_ice_ref)
+      call solid_earth_init(a, p, sht, z_bed_eq, h_ice_eq)
       do step = 1, K1
          call solid_earth_update(a, h_ice, p%dt_couple)
       end do
@@ -92,7 +92,7 @@ contains
       end if
 
       ! === (1) direct state restore (default = last snapshot, t2) =============
-      call solid_earth_init(b, p, sht, z_bed_eq, h_ice_ref)
+      call solid_earth_init(b, p, sht, z_bed_eq, h_ice_eq)
       call fe_restart_read(b, file)
       d_restore = max(maxval(abs(b%z_bed - a6_zbed)), maxval(abs(b%rsl - a6_rsl)))
       write(*,'(a,es11.2)') '   (1) state restore  max|B - A|     =', d_restore
@@ -101,7 +101,7 @@ contains
       end if
 
       ! === (2) bit-for-bit continuation from the earlier snapshot (t1) =========
-      call solid_earth_init(c, p, sht, z_bed_eq, h_ice_ref)
+      call solid_earth_init(c, p, sht, z_bed_eq, h_ice_eq)
       call fe_restart_read(c, file, time=t1)                ! restore memory @ K1
       do step = 1, K2
          call solid_earth_update(c, h_ice, p%dt_couple)     ! same load, K2 steps
@@ -116,10 +116,10 @@ contains
       call solid_earth_finalize(a);  call solid_earth_finalize(b);  call solid_earth_finalize(c)
    end subroutine roundtrip
 
-   subroutine make_fields(z_bed_eq, h_ice_ref, h_ice)
+   subroutine make_fields(z_bed_eq, h_ice_eq, h_ice)
       !! Polar land cap (colat<50°, +500 m) over deep ocean (−4000 m); no
       !! reference ice; a 2 km grounded ice load on colat<30°.
-      real(wp), intent(out) :: z_bed_eq(:,:), h_ice_ref(:,:), h_ice(:,:)
+      real(wp), intent(out) :: z_bed_eq(:,:), h_ice_eq(:,:), h_ice(:,:)
       integer  :: i, j
       real(wp) :: thd
       do j = 1, sht%nlat
@@ -129,7 +129,7 @@ contains
             h_ice(i,j)    = merge(2000.0_wp, 0.0_wp,     thd < 30.0_wp)
          end do
       end do
-      h_ice_ref = 0.0_wp
+      h_ice_eq = 0.0_wp
    end subroutine make_fields
 
 end program test_restart
