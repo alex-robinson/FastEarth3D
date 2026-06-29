@@ -10,7 +10,7 @@ program test_coupling
    !!       increments toward an isostatic limit (viscoelastic relaxation), and
    !!       the ocean draws down (adding land ice removes ocean water).
    use fe_precision,       only: wp
-   use fe_constants,       only: kyr, pi
+   use fe_constants,       only: pi, sec_per_year
    use fe_params,          only: fe_param_class
    use fe_radial_fe,       only: radial_fe_finalize
    use fe_sht,             only: sht_grid, sht_grid_init, sht_grid_destroy
@@ -39,9 +39,10 @@ program test_coupling
    jocean = nearest_row(70.0_wp)
    bed_eq_ice = z_bed_eq(1,jice)
 
-   dt_couple    = 2.0_wp*kyr                        ! interval per se%update call
-   p%dt_couple  = dt_couple                         ! default cadence (M3-L70-V01, default fe scheme)
-   se%par = p; call solid_earth_init(se, sht, z_bed_eq, h_ice_eq)
+   dt_couple    = 2.0e3_wp                          ! interval per se%update call [years]
+   p%dt_couple  = dt_couple*sec_per_year            ! param seed (SI); default cadence (default fe scheme)
+   p%lmax = LMAX;  p%nlat = 2*LMAX;  p%nphi = 4*LMAX ! model builds its own grid from par (matches local sht)
+   se%par = p; call solid_earth_init(se, z_bed_eq, h_ice_eq)   ! no grid => Gauss-native (passthrough)
 
    write(*,'(a,i0,a)') ' coupling: lmax=', LMAX, &
                        '  (dt_couple=2 kyr, default fe scheme)'
@@ -164,14 +165,15 @@ contains
       call make_load_offaxis(h_off)
 
       pr%dt_couple = dt_couple
+      pr%lmax = LMAX;  pr%nlat = 2*LMAX;  pr%nphi = 4*LMAX
       pr%rotation  = .false.
-      se_off%par = pr; call solid_earth_init(se_off, sht, z_bed_eq, h_ice_eq)
+      se_off%par = pr; call solid_earth_init(se_off, z_bed_eq, h_ice_eq)
       do s = 1, NSTEP;  call solid_earth_update(se_off, h_off, dt_couple);  end do
       zoff = se_off%z_bed
       call solid_earth_finalize(se_off)
 
       pr%rotation = .true.
-      se_on%par = pr; call solid_earth_init(se_on, sht, z_bed_eq, h_ice_eq)
+      se_on%par = pr; call solid_earth_init(se_on, z_bed_eq, h_ice_eq)
       wmass = 0.0_wp
       do s = 1, NSTEP
          call solid_earth_update(se_on, h_off, dt_couple)

@@ -22,7 +22,7 @@ module fe_io
    use fe_response,     only: response_prime_sigma, response, response_init_elastic, response_init_ve, &
                               response_init_null, RESP_VE, RESP_MODAL
    use fe_rotation,     only: rotation_ne, rotation_get_memory, rotation_set_memory, ROT_NCOMP
-   use fe_coupling,     only: solid_earth
+   use fe_coupling,     only: solid_earth, solid_earth_sync_host
    use ncio
    use variable_io
    implicit none
@@ -95,8 +95,8 @@ contains
       call ensure_table()
       do_init = .true.;  if (present(init)) do_init = init
 
-      ! SI is internal; the output time axis is in YEARS (item §14a).
-      tyr = time/sec_per_year
+      ! the coupling clock (se%time) and this output time axis are both in YEARS.
+      tyr = time
 
       if (do_init) call write_init(self, filename, time)
 
@@ -196,11 +196,11 @@ contains
          call nc_write_dim(filename, "ne_rot", x=1, dx=1, nx=rotation_ne(self%rotation), units="1")
          call nc_write_dim(filename, "nrc",    x=1, dx=1, nx=ROT_NCOMP,                  units="1")
       end if
-      call nc_write_dim(filename, "time", x=time/sec_per_year, dx=1.0_wp, nx=1, &
+      call nc_write_dim(filename, "time", x=time, dx=1.0_wp, nx=1, &
            units="years", unlimited=.true.)
 
-      call put2d(self, filename, "z_bed_eq",  self%z_bed_eq,  static=.true.)
-      call put2d(self, filename, "h_ice_eq", self%h_ice_eq, static=.true.)
+      call put2d(self, filename, "z_bed_eq",  self%gg%z_bed_eq,  static=.true.)
+      call put2d(self, filename, "h_ice_eq", self%gg%h_ice_eq, static=.true.)
 
       call write_visc_attrs(self, filename)
    end subroutine write_init
@@ -249,10 +249,10 @@ contains
       case ("tau_b_im"); call put3d(self, filename, name, self%resp%Bim, n, ncid)
       case ("tau_c_re"); call put3d(self, filename, name, self%resp%Cre, n, ncid)
       case ("tau_c_im"); call put3d(self, filename, name, self%resp%Cim, n, ncid)
-      case ("h_ice");    call put2d(self, filename, name, self%h_ice, n=n, ncid=ncid)
-      case ("rsl");      call put2d(self, filename, name, self%rsl,   n=n, ncid=ncid)
-      case ("z_bed");    call put2d(self, filename, name, self%z_bed, n=n, ncid=ncid)
-      case ("C_ocean");  call put2d(self, filename, name, self%C,     n=n, ncid=ncid)
+      case ("h_ice");    call put2d(self, filename, name, self%gg%h_ice, n=n, ncid=ncid)
+      case ("rsl");      call put2d(self, filename, name, self%gg%rsl,   n=n, ncid=ncid)
+      case ("z_bed");    call put2d(self, filename, name, self%gg%z_bed, n=n, ncid=ncid)
+      case ("C_ocean");  call put2d(self, filename, name, self%gg%C,     n=n, ncid=ncid)
       case ("bsl");      call put_scalar(filename, name, self%bsl, n, ncid)
       case ("dt_try");   call put_scalar(filename, name, self%stepper%dt_try/sec_per_year, n, ncid)
       case ("sigma_n_re"); call put_sigma(self, filename, name, want_re=.true.,  n=n, ncid=ncid)
@@ -390,11 +390,10 @@ contains
 
       np = self%sht%nphi;  nl = self%sht%nlat
 
-      ! select the time slice. The file stores YEARS (item §14a); convert to SI
-      ! seconds immediately so the clock/comparison stay internally consistent.
+      ! select the time slice. The file stores YEARS, matching the coupling clock
+      ! self%time and the `time` selector argument.
       nt = nc_size(filename, "time")
       allocate(tvals(nt));  call nc_read(filename, "time", tvals)
-      tvals = tvals*sec_per_year
       if (present(time)) then
          n = minloc(abs(tvals - time), dim=1)
          if (abs(tvals(n) - time) > 1.0e-6_wp*max(abs(time), 1.0_wp)) &
@@ -410,8 +409,9 @@ contains
       case default;      call read_diagnostics(self, filename, n, np, nl)  ! memoryless
       end select
 
-      ! restore the clock and the adaptive controller's step-size seed
-      self%resp%time = tvals(n)
+      ! restore the clock and the adaptive controller's step-size seed. self%time is
+      ! in years (file units); the response's internal clock is in SI seconds.
+      self%resp%time = tvals(n)*sec_per_year
       self%time      = tvals(n)
       call nc_read(filename, "dt_try", self%stepper%dt_try, start=[n], count=[1])
       self%stepper%dt_try = self%stepper%dt_try*sec_per_year   ! file stores years
@@ -420,6 +420,10 @@ contains
       ! it (an older, rotation-off restart lacks the rot_* vars → cold-start rotation)
       if (self%rotation%enabled .and. nc_exists_var(filename, "rot_m_re")) &
          call read_rotation(self, filename, n)
+
+      ! the restart restores the Gauss-grid state (gg) + memory; re-derive the
+      ! host-grid outputs (rsl, z_bed) from it so the host reads a consistent state.
+      call solid_earth_sync_host(self)
    end subroutine fe_restart_read
 
    subroutine read_rotation(self, filename, n)
@@ -543,10 +547,10 @@ contains
       real(wp), parameter :: tol = 1.0e-3_wp
       allocate(ref(np,nl))
       call nc_read(filename, "z_bed_eq", ref)
-      if (maxval(abs(ref - self%z_bed_eq)) > tol) &
+      if (maxval(abs(ref - self%gg%z_bed_eq)) > tol) &
          error stop 'fe_restart_read: z_bed_eq does not match the initialised model'
       call nc_read(filename, "h_ice_eq", ref)
-      if (maxval(abs(ref - self%h_ice_eq)) > tol) &
+      if (maxval(abs(ref - self%gg%h_ice_eq)) > tol) &
          error stop 'fe_restart_read: h_ice_eq does not match the initialised model'
    end subroutine check_reference
 
@@ -556,10 +560,10 @@ contains
       type(solid_earth), intent(inout) :: self
       character(len=*),   intent(in)    :: filename
       integer,            intent(in)    :: n, np, nl
-      call get2d(filename, "h_ice",   self%h_ice, np, nl, n)
-      call get2d(filename, "rsl",     self%rsl,   np, nl, n)
-      call get2d(filename, "z_bed",   self%z_bed, np, nl, n)
-      call get2d(filename, "C_ocean", self%C,     np, nl, n)
+      call get2d(filename, "h_ice",   self%gg%h_ice, np, nl, n)
+      call get2d(filename, "rsl",     self%gg%rsl,   np, nl, n)
+      call get2d(filename, "z_bed",   self%gg%z_bed, np, nl, n)
+      call get2d(filename, "C_ocean", self%gg%C,     np, nl, n)
    end subroutine read_diagnostics
 
    subroutine restore_sigma(self, filename, n)

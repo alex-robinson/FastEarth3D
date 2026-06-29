@@ -122,7 +122,7 @@ contains
       if (len_trim(p%restart_in_file) > 0) then
          ! resume from a saved full state (memory + clock). init at the reference, then
          ! restore; a lower-resolution restart is interpolated up to the model grid.
-         se%par = p; call solid_earth_init(se, sht, z_bed_eq, h_ice_eq)
+         se%par = p; call solid_earth_init(se, z_bed_eq, h_ice_eq)
          call fe_restart_read(se, trim(p%restart_in_file))
          if (p%dt_equil > 0.0_wp) then            ! optional further equilibration
             call equilibrate(p, sht, se, z_bed_eq, h_ice_eq, ice_lgm, from_restart=.true.)
@@ -139,7 +139,7 @@ contains
          call equilibrate(p, sht, se, z_bed_eq, h_ice_eq, ice_lgm, spinup_1d=p%spinup_1d)
          call fe_restart_write(se, se%time, folder=trim(rundir)//"/spinup")
       else
-         se%par = p; call solid_earth_init(se, sht, z_bed_eq, h_ice_eq)
+         se%par = p; call solid_earth_init(se, z_bed_eq, h_ice_eq)
          call solid_earth_update(se, ice_lgm, 0.0_wp)                        ! seed entering ice, no integration
       end if
       call system_clock(pc1)
@@ -160,13 +160,13 @@ contains
 
       ! --- march the transient --------------------------------------------------
       t0 = tyr(k0)*sec_per_year
-      se%time = t0;  se%resp%time = t0
+      se%time = tyr(k0);  se%resp%time = t0          ! coupling clock in years; response clock in SI
       call fe_write_step(se, p%file_out, se%time, nms=OUT_VARS, init=.true.)
 
       se%resp%t_drift = 0.0_wp;  se%resp%t_mem = 0.0_wp   ! PROFILE: time the transient only
       se%resp%n_drift = 0;       se%resp%n_mem = 0
       do k = k0, k1-1
-         dt = (tyr(k+1) - tyr(k))*sec_per_year
+         dt = tyr(k+1) - tyr(k)                    ! coupling interval [years]
          call system_clock(pc0, prate)
          call read_ice(p, rmap, sht, remap, k+1, src, h_ice)
          call system_clock(pc1);  t_read = t_read + real(pc1-pc0,wp)/prate
@@ -177,7 +177,7 @@ contains
          call fe_write_step(se, p%file_out, se%time, nms=OUT_VARS, init=.false.)
          call system_clock(pc1);  t_wrt = t_wrt + real(pc1-pc0,wp)/prate
          nstep = nstep + 1
-         write(*,'(a,f12.2,a,es10.2,a,es9.2)') '   t=', se%time/sec_per_year, &
+         write(*,'(a,f12.2,a,es10.2,a,es9.2)') '   t=', se%time, &
               ' yr   max|rsl|=', maxval(abs(se%rsl)), '   mass_resid=', se%worst_mass_resid
       end do
 
@@ -252,12 +252,12 @@ contains
            merge(' [1-D]', '      ', l1d .and. p%l_visc_3d), ', dt_equil=', p%dt_equil/sec_per_year, ' yr/pass'
       if (.not. resume) then
          se%par = p
-         call solid_earth_init(se, sht, z_bed_eq, h_ice_eq, defer_visc_3d=l1d)  ! reference, memory 0
+         call solid_earth_init(se, z_bed_eq, h_ice_eq, defer_visc_3d=l1d)  ! reference, memory 0
       end if
       call solid_earth_update(se, ice_lgm, 0.0_wp)                   ! set entering ice = start (LGM) ice
       z_prev = se%z_bed
       do it = 1, MAX_EQ
-         call solid_earth_update(se, ice_lgm, p%dt_equil)            ! hold LGM ice -> relax further
+         call solid_earth_update(se, ice_lgm, p%dt_equil/sec_per_year)  ! hold LGM ice -> relax further [years]
          resid = se%z_bed - z_prev                                   ! bed motion since the previous pass
          rmean = sht_grid_surface_integral(sht, abs(resid))/fourpi
          rmax  = maxval(abs(resid))

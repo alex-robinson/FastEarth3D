@@ -13,7 +13,7 @@ program test_restart
    !!   (3) multi-snapshot file — two snapshots at different times coexist, and a
    !!       specific earlier time can be selected on read.
    use fe_precision,       only: wp
-   use fe_constants,       only: kyr, pi
+   use fe_constants,       only: pi, sec_per_year
    use fe_params,          only: fe_param_class
    use fe_radial_fe,       only: radial_fe_finalize
    use fe_sht,             only: sht_grid, sht_grid_init, sht_grid_destroy
@@ -58,31 +58,33 @@ contains
       type(fe_param_class) :: p
       type(solid_earth)    :: a, b, c
       real(wp), allocatable :: a6_zbed(:,:), a6_rsl(:,:)
-      real(wp) :: t1, t2, d_restore, d_continue
+      real(wp) :: t1, t2, d_restore, d_continue, dt_yr
       integer  :: step, nt
 
-      p%dt_couple     = 1.0_wp*kyr        ! interval per update; M3-L70-V01
+      dt_yr           = 1.0e3_wp          ! interval per update [years]
+      p%dt_couple     = dt_yr*sec_per_year! param seed (SI); M3-L70-V01
+      p%lmax = LMAX;  p%nlat = 2*LMAX;  p%nphi = 4*LMAX  ! model builds its own grid from par
       p%earth_response = resp             ! "ve" (memory tensor) or "modal" (φ amplitudes)
       p%rotation      = .true.            ! rotation on: also round-trips the polar
                                           ! motion m + both channels' memory (rot_*)
 
       ! === reference run A ====================================================
-      a%par = p; call solid_earth_init(a, sht, z_bed_eq, h_ice_eq)
+      a%par = p; call solid_earth_init(a, z_bed_eq, h_ice_eq)
       do step = 1, K1
-         call solid_earth_update(a, h_ice, p%dt_couple)
+         call solid_earth_update(a, h_ice, dt_yr)
       end do
       t1 = a%time
       call fe_restart_write(a, t1, filename=file, init=.true.)   ! snapshot 1 (memory @ K1)
 
       do step = 1, K2
-         call solid_earth_update(a, h_ice, p%dt_couple)
+         call solid_earth_update(a, h_ice, dt_yr)
       end do
       t2 = a%time
       call fe_restart_write(a, t2, filename=file, init=.false.)  ! snapshot 2 (state @ K1+K2)
       a6_zbed = a%z_bed;  a6_rsl = a%rsl
 
       write(*,'(a,a,a,i0,a,f6.2,a,f6.2)') ' restart [', trim(resp), ']: lmax=', LMAX, &
-           '   t1=', t1/kyr, ' kyr   t2=', t2/kyr
+           '   t1=', t1*1.0e-3_wp, ' kyr   t2=', t2*1.0e-3_wp
 
       ! === (3) multi-snapshot file ===========================================
       nt = nc_size(file, "time")
@@ -92,7 +94,7 @@ contains
       end if
 
       ! === (1) direct state restore (default = last snapshot, t2) =============
-      b%par = p; call solid_earth_init(b, sht, z_bed_eq, h_ice_eq)
+      b%par = p; call solid_earth_init(b, z_bed_eq, h_ice_eq)
       call fe_restart_read(b, file)
       d_restore = max(maxval(abs(b%z_bed - a6_zbed)), maxval(abs(b%rsl - a6_rsl)))
       write(*,'(a,es11.2)') '   (1) state restore  max|B - A|     =', d_restore
@@ -101,10 +103,10 @@ contains
       end if
 
       ! === (2) bit-for-bit continuation from the earlier snapshot (t1) =========
-      c%par = p; call solid_earth_init(c, sht, z_bed_eq, h_ice_eq)
+      c%par = p; call solid_earth_init(c, z_bed_eq, h_ice_eq)
       call fe_restart_read(c, file, time=t1)                ! restore memory @ K1
       do step = 1, K2
-         call solid_earth_update(c, h_ice, p%dt_couple)     ! same load, K2 steps
+         call solid_earth_update(c, h_ice, dt_yr)     ! same load, K2 steps
       end do
       d_continue = max(maxval(abs(c%z_bed - a6_zbed)), maxval(abs(c%rsl - a6_rsl)))
       write(*,'(a,es11.2)') '   (2) continuation   max|C - A|     =', d_continue
