@@ -41,7 +41,7 @@ VISC3D=${VISC3D:-${ISOSTASY_DATA}/earth_structure/viscosity/bagge2021.nc}   # lo
 # Resolution sweep. LMAX_REF is the production resolution and the error reference;
 # it MUST appear in LMAX_LIST. Each lmax needs its matching present-day reference
 # data/reference/rtopo_gauss_l<lmax>.nc (i_eq=1); missing files fail loudly below.
-LMAX_LIST=${LMAX_LIST:-32 64 128}         # spherical-harmonic degrees to sweep
+LMAX_LIST=${LMAX_LIST:-32 64 96 128}        # spherical-harmonic degrees to sweep
 LMAX_REF=${LMAX_REF:-128}                    # production target + error reference
 
 # Sub-step probe at the reference resolution: extra cfl values (the Maxwell-number
@@ -52,6 +52,14 @@ LMAX_REF=${LMAX_REF:-128}                    # production target + error referen
 # theoretical edge and cfl=2.5 is expected to break down (NaN) — included on purpose
 # to bracket the limit. The analysis tolerates blown-up runs (NaN errors).
 CFL_PROBE=${CFL_PROBE:-0.5 1.5 2.0 2.5}
+
+# 3-D-split probe at the reference resolution: extra visc3d_tol values [dex]. An
+# element advances on the expensive dyadic SHT path only if its lateral log10(eta)
+# spread exceeds visc3d_tol; raising it demotes weakly-3-D elements to their lateral-
+# mean 1-D rate, cutting ne3d and the memory-advance cost (~90% of the total) at the
+# price of approximating mild lateral structure. Default (1e-3 dex) IS the reference;
+# these add coarser splits. Set empty to skip.
+VTOL_PROBE=${VTOL_PROBE:-0.1 0.3 1.0}
 
 T0=${T0:--26000.0}                           # transient start [yr] (LGM)
 T1=${T1:-0.0}                                # transient end   [yr] (present)
@@ -102,7 +110,7 @@ launch() {
 # LMAX_REF must be one of the swept resolutions (it is the error reference).
 case " $LMAX_LIST " in *" $LMAX_REF "*) ;; *) echo "ERROR: LMAX_REF=$LMAX_REF not in LMAX_LIST='$LMAX_LIST'" >&2; exit 1;; esac
 
-echo "lmax sweep: $LMAX_LIST   ref=$LMAX_REF   cfl-probe@ref: ${CFL_PROBE:-(none)}"
+echo "lmax sweep: $LMAX_LIST   ref=$LMAX_REF   cfl-probe@ref: ${CFL_PROBE:-(none)}   vtol-probe@ref: ${VTOL_PROBE:-(none)}"
 echo "window=[$T0,$T1]  dt_couple=$DT_COUPLE  dt_equil=$DT_EQUIL  omp=$OMP"
 echo "exp root: $EXP    runme flags: '$RUNME_FLAGS'"
 
@@ -118,6 +126,13 @@ done
 # ---------------------------------------------------------------------------
 for C in ${CFL_PROBE:-}; do
   launch "$EXP/lmax.$LMAX_REF.cfl$C" "$LMAX_REF" fe3d.cfl="$C"
+done
+
+# ---------------------------------------------------------------------------
+# 3-D-split probe at the reference resolution: extra visc3d_tol values (default done).
+# ---------------------------------------------------------------------------
+for V in ${VTOL_PROBE:-}; do
+  launch "$EXP/lmax.$LMAX_REF.vtol$V" "$LMAX_REF" fe3d.cfl=1.0 fe3d.visc3d_tol="$V"
 done
 
 echo "done."

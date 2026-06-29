@@ -23,14 +23,19 @@ using Printf
 const JLD2_IN = length(ARGS) >= 1 ? ARGS[1] : "analysis/ve_res_sweep_results.jld2"
 const OUTDIR  = "analysis/figs/ve_res_sweep"
 
-# Distinct colour per run label (resolution sweep + cfl probes).
-const PALETTE = [:firebrick, :darkorange, :goldenrod, :seagreen, :teal,
-                 :royalblue, :purple, :magenta, :brown, :black]
+# Distinct colour per run label (resolution sweep + cfl + visc3d_tol probes).
+const PALETTE = [:firebrick, :darkorange, :goldenrod, :olive, :seagreen, :teal,
+                 :royalblue, :navy, :purple, :magenta, :brown, :black]
 runcolor(i) = PALETTE[mod1(i, length(PALETTE))]
+const VTOL_REF = 1e-3                            # default 3-D-split threshold [dex]
+vtol(c) = get(c, "vtol", VTOL_REF)               # tolerate older jld2 without the key
 
 cand_by_label(C, lbl) = (i = findfirst(c -> c["label"] == lbl, C); i === nothing ? nothing : C[i])
-res_sweep(C)  = sort(filter(c -> c["cfl"] == 1.0, C), by = c -> c["lmax"])      # cfl=1 lmax ladder
-cfl_probes(C, ref) = sort(filter(c -> c["lmax"] == ref && c["cfl"] != 1.0, C), by = c -> c["cfl"])
+# resolution ladder: cfl=1 AND default vtol (so the cfl/vtol probes don't leak in)
+res_sweep(C)  = sort(filter(c -> c["cfl"] == 1.0 && vtol(c) == VTOL_REF, C), by = c -> c["lmax"])
+cfl_probes(C, ref)  = sort(filter(c -> c["lmax"] == ref && c["cfl"] != 1.0, C), by = c -> c["cfl"])
+vtol_probes(C, ref) = sort(filter(c -> c["lmax"] == ref && c["cfl"] == 1.0 && vtol(c) != VTOL_REF, C),
+                           by = c -> vtol(c))
 rest(p) = max(p["se"] - p["drift"] - p["mem"], 0.0)                              # SLE + coupling
 efloor(x) = max(x, 1e-4)                                                         # log-axis floor
 
@@ -218,6 +223,47 @@ function fig_rsl_panels(R)
     end
 end
 
+# fig 7: visc3d_tol axis — accuracy + cost (with ne3d) vs the 3-D-split threshold.
+function fig_visc3d_tol(R)
+    C = R["cands"]; ref = R["ref_lmax"]
+    probes = vtol_probes(C, ref)
+    isempty(probes) && return                         # no vtol axis (e.g. older jld2)
+    refc = cand_by_label(C, "lmax.$ref")
+    sweep = sort(refc === nothing ? probes : vcat([refc], probes), by = c -> vtol(c))
+    vs   = [vtol(c)             for c in sweep]
+    cost = [c["prof"]["se"]/1000  for c in sweep]
+    mem  = [c["prof"]["mem"]/1000 for c in sweep]
+    ne3d = [c["prof"]["ne3d"]     for c in sweep]
+    acc  = filter(c -> vtol(c) != VTOL_REF, sweep)    # drop the reference (error 0)
+    avs  = [vtol(c)                        for c in acc]
+    rmse = [efloor(c["err"]["rsl_rmse"])   for c in acc]
+    mx   = [efloor(c["err"]["rsl_maxabs"]) for c in acc]
+
+    fig = Figure(size = (1100, 470))
+    ax1 = Axis(fig[1, 1]; xlabel = "visc3d_tol [dex]", ylabel = "rsl error vs reference [m]",
+               title = "accuracy", xscale = log10, yscale = log10)
+    scatterlines!(ax1, avs, rmse; color = :seagreen, marker = :circle, markersize = 11,
+                  linewidth = 2, label = "area-weighted RMSE")
+    scatterlines!(ax1, avs, mx; color = :firebrick, marker = :rect, markersize = 11,
+                  linewidth = 2, linestyle = :dash, label = "max |Δrsl|")
+    axislegend(ax1; position = :lt, framevisible = false)
+
+    ax2 = Axis(fig[1, 2]; xlabel = "visc3d_tol [dex]", ylabel = "cost [s/step]",
+               title = "cost (ne3d labelled)", xscale = log10)
+    scatterlines!(ax2, vs, cost; color = :black, marker = :circle, markersize = 11,
+                  linewidth = 2, label = "solid_earth_update")
+    scatterlines!(ax2, vs, mem; color = :royalblue, marker = :utriangle, markersize = 11,
+                  linewidth = 2, label = "memory advance")
+    for (x, y, n) in zip(vs, cost, ne3d)
+        text!(ax2, x, y; text = @sprintf("ne3d=%.0f", n), offset = (6, 4), fontsize = 9, color = :gray30)
+    end
+    axislegend(ax2; position = :rt, framevisible = false)
+
+    Label(fig[0, 1:2], "VE solver vs visc3d_tol (lmax$ref, cfl=1; higher tol → fewer 3-D elements)";
+          fontsize = 16, font = :bold)
+    fn = joinpath(OUTDIR, "visc3d_tol.png"); save(fn, fig); println("wrote ", fn)
+end
+
 # ---------------------------------------------------------------------------
 function main()
     mkpath(OUTDIR)
@@ -225,6 +271,7 @@ function main()
     fig_accuracy_cost(R)
     fig_pareto(R)
     fig_cost_breakdown(R)
+    fig_visc3d_tol(R)
     fig_bsl(R)
     fig_resid_maps(R)
     fig_rsl_panels(R)

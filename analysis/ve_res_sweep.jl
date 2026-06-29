@@ -26,6 +26,8 @@ const EXP       = length(ARGS) >= 1 ? ARGS[1] : "runs/ve_res_sweep"
 const LMAX_LIST = [32, 64, 96, 128]
 const LMAX_REF  = 128
 const CFL_PROBE  = ["0.5", "1.5", "2.0", "2.5"] # extra cfl points at LMAX_REF (cfl=1 is the ref)
+const VTOL_PROBE = ["0.1", "0.3", "1.0"]        # extra visc3d_tol [dex] at LMAX_REF (1e-3 is the ref)
+const VTOL_REF   = 1.0e-3                        # reference 3-D-split threshold [dex]
 const TIMES_KA  = [0.0, -10.0, -20.0, -26.0]    # residual-map snapshots [ka]
 const JLD2_OUT  = "analysis/ve_res_sweep_results.jld2"
 const MD_OUT    = "analysis/ve_res_sweep_summary.md"
@@ -37,17 +39,22 @@ struct Cand
     label::String
     lmax::Int
     cfl::Float64
+    vtol::Float64
     dir::String
 end
 
 function candidates()
     cs = Cand[]
     for L in LMAX_LIST
-        push!(cs, Cand("lmax.$L", L, 1.0, joinpath(EXP, "lmax.$L")))
+        push!(cs, Cand("lmax.$L", L, 1.0, VTOL_REF, joinpath(EXP, "lmax.$L")))
     end
     for c in CFL_PROBE
-        push!(cs, Cand("lmax.$LMAX_REF.cfl$c", LMAX_REF, parse(Float64, c),
+        push!(cs, Cand("lmax.$LMAX_REF.cfl$c", LMAX_REF, parse(Float64, c), VTOL_REF,
                        joinpath(EXP, "lmax.$LMAX_REF.cfl$c")))
+    end
+    for v in VTOL_PROBE
+        push!(cs, Cand("lmax.$LMAX_REF.vtol$v", LMAX_REF, 1.0, parse(Float64, v),
+                       joinpath(EXP, "lmax.$LMAX_REF.vtol$v")))
     end
     return cs
 end
@@ -57,10 +64,10 @@ refdir() = joinpath(EXP, "lmax.$LMAX_REF")
 # ---------------------------------------------------------------------------
 # Cost: parse the [PROFILE] block of out.out (incl. the solid_earth_update split)
 # ---------------------------------------------------------------------------
-"Return Dict(se,drift,mem,read,write,nsolve) ms/step (NaN if absent) from out.out."
+"Return Dict(se,drift,mem,read,write,nsolve,ne3d,ne) from out.out (NaN if absent)."
 function read_profile(dir)
     f = joinpath(dir, "out.out")
-    se = dr = mm = rd = wr = ns = NaN
+    se = dr = mm = rd = wr = ns = n3 = ne = NaN
     if isfile(f)
         for ln in eachline(f)
             m = match(r"solid_earth_update\s*=\s*([\d.]+)\s*ms", ln); m !== nothing && (se = parse(Float64, m[1]))
@@ -69,9 +76,12 @@ function read_profile(dir)
             m = match(r"read_ice.*?=\s*([\d.]+)\s*ms", ln);           m !== nothing && (rd = parse(Float64, m[1]))
             m = match(r"fe_write_step.*?=\s*([\d.]+)\s*ms", ln);      m !== nothing && (wr = parse(Float64, m[1]))
             m = match(r"n_solve=\s*([\d.]+)", ln);                    m !== nothing && (ns = parse(Float64, m[1]))
+            m = match(r"visc3d split:\s*(\d+)\s+of\s+(\d+)", ln)
+            m !== nothing && (n3 = parse(Float64, m[1]); ne = parse(Float64, m[2]))
         end
     end
-    return Dict("se" => se, "drift" => dr, "mem" => mm, "read" => rd, "write" => wr, "nsolve" => ns)
+    return Dict("se" => se, "drift" => dr, "mem" => mm, "read" => rd, "write" => wr,
+                "nsolve" => ns, "ne3d" => n3, "ne" => ne)
 end
 
 # ---------------------------------------------------------------------------
@@ -181,7 +191,7 @@ function gather()
         err, bsl, resid = compare(refnc, nc, lon_r, lat_r, w, pl, pt, tidx)
         prof = read_profile(c.dir)
         push!(cands, Dict("label" => c.label, "lmax" => c.lmax, "cfl" => c.cfl,
-                          "err" => err, "prof" => prof,
+                          "vtol" => c.vtol, "err" => err, "prof" => prof,
                           "speedup" => ref_prof["se"] / prof["se"],
                           "bsl" => bsl, "resid" => resid))
         @printf("  %-18s rsl_rmse=%7.3f m  max=%7.2f m  cost=%7.1f ms  speedup=%5.2fx\n",
@@ -206,13 +216,13 @@ function table_md(S)
             vp["se"], vp["drift"], vp["mem"], vp["nsolve"])
     @printf(io, "Reference scales: |rsl|max(PD) = %.1f m, BSL min = %.1f m, BSL(PD) = %.2f m\n\n",
             sc["rsl_pd_absmax"], sc["bsl_min"], sc["bsl_pd"])
-    println(io, "| run | lmax | cfl | rsl RMSE | rsl PD | rsl max | bsl PD | cost | drift | mem | nsolve | speedup |")
-    println(io, "|---|---|---|---|---|---|---|---|---|---|---|---|")
+    println(io, "| run | lmax | cfl | vtol | ne3d | rsl RMSE | rsl PD | rsl max | bsl PD | cost | mem | nsolve | speedup |")
+    println(io, "|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for r in S["cands"]
         e = r["err"]; p = r["prof"]
-        @printf(io, "| %s | %d | %.2g | %.3f m | %.3f m | %.3f m | %.3f m | %.1f ms | %.1f | %.1f | %.1f | %.2fx |\n",
-            r["label"], r["lmax"], r["cfl"], e["rsl_rmse"], e["rsl_rmse_pd"], e["rsl_maxabs"],
-            e["bsl_pd_err"], p["se"], p["drift"], p["mem"], p["nsolve"], r["speedup"])
+        @printf(io, "| %s | %d | %.2g | %.0e | %.0f | %.3f m | %.3f m | %.3f m | %.3f m | %.1f ms | %.1f | %.1f | %.2fx |\n",
+            r["label"], r["lmax"], r["cfl"], r["vtol"], p["ne3d"], e["rsl_rmse"], e["rsl_rmse_pd"], e["rsl_maxabs"],
+            e["bsl_pd_err"], p["se"], p["mem"], p["nsolve"], r["speedup"])
     end
     println(io)
     return String(take!(io))
