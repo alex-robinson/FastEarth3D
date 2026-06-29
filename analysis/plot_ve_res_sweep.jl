@@ -82,14 +82,14 @@ end
 # fig 2: Pareto — cost (ms/step) vs rsl RMSE, every run. Reference cost marked.
 function fig_pareto(R)
     C = R["cands"]
-    fig = Figure(size = (960, 560))
+    fig = Figure(size = (760, 560))
     ax = Axis(fig[1, 1]; xlabel = "solver cost [s/step]", ylabel = "rsl RMSE vs lmax$(R["ref_lmax"]) [m]",
               title = "accuracy–cost trade-off (down-left is better)",
-              yscale = log10)   # linear cost axis, log RMSE
+              yscale = log10, xticks = 0:3:15)   # linear cost axis (plain numbers), log RMSE
     refcost = R["ref_prof"]["se"]/1000   # ms -> s
     vlines!(ax, [refcost]; color = :gray, linestyle = :dash)
-    text!(ax, refcost, efloor(0.0); text = @sprintf(" ref = %.1f s", refcost),
-          align = (:left, :bottom), space = :data, offset = (2, 2), rotation = pi/2,
+    text!(ax, refcost, 1.0; text = @sprintf("ref = %.1f s", refcost),   # up into empty space, nudged left
+          align = (:center, :center), space = :data, offset = (-9, 0), rotation = pi/2,
           fontsize = 10, color = :gray40)
     # dots in candidate order (stable colours)
     for (i, c) in enumerate(C)
@@ -107,7 +107,7 @@ function fig_pareto(R)
     # pad both axes so the right-side / edge labels fit
     costs = [c["prof"]["se"]/1000 for c in C]
     errs  = [efloor(c["err"]["rsl_rmse"]) for c in C]
-    xlims!(ax, 0, maximum(costs) * 1.45)             # linear cost axis, room for right labels
+    xlims!(ax, 0, 15)                                # matches xticks 0:3:15
     ylims!(ax, minimum(errs) * 0.4,  maximum(errs) * 3)
     fn = joinpath(OUTDIR, "pareto.png"); save(fn, fig); println("wrote ", fn)
 end
