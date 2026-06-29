@@ -31,7 +31,8 @@ module fe_coupling
    use fe_viscoelastic,    only: scheme_from_name
    use fe_response,        only: response_destroy, response_enable_lateral_visc_from_nodes, response, &
                                  response_init_elastic, response_init_ve, response_init_null, response_init_modal, &
-                                 response_enable_lateral_visc_modal_from_nodes, RESP_VE, RESP_MODAL
+                                 response_enable_lateral_visc_modal_from_nodes, RESP_VE, RESP_MODAL, &
+                                 lat_method_from_name
    use fe_modal,           only: rank_from_name
    use fe_sle,             only: sle_solver, sle_result, ocean_function
    use fe_timestep,        only: stepper_advance, adaptive_stepper
@@ -115,6 +116,7 @@ contains
                                   p_block=p%n_krylov)
          self%resp%max_couple_iter = p%max_couple_iter
          self%resp%modal_adaptive  = p%modal_adaptive   ! A3 sub-stepping (off by default)
+         self%resp%lat_method      = lat_method_from_name(p%lat_method)  ! lateral-η treatment
       case ("elastic")
          call response_init_elastic(self%resp, self%earth, sht%lmax)
       case ("null")

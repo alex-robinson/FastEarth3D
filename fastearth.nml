@@ -43,6 +43,7 @@
     earth_response  = "ve"     ! ve | modal | elastic | null  (ve = full Martinec FE, default)
     n_modes         = -1       ! modal: # relaxation modes per degree (<=0 => all above tol)
     mode_rank       = "isostatic" ! modal rank metric: isostatic | rate | residue
+    lat_method      = "coupled" ! modal lateral-η: coupled (default, stable) | lie | strang
     dt_be           = 1000.0   ! modal eigensolve backward-Euler Δt [years]
     n_krylov        = 20       ! modal: Arnoldi/Krylov block size (caps modes/degree found; raise so all->VE)
     modal_adaptive  = .false.  ! modal: sub-step each interval to rtol (A3). false=1 exact step/interval (fast); only helps 1-D temporal accuracy, not 3-D

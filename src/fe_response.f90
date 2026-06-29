@@ -38,7 +38,7 @@ module fe_response
    private
 
    public :: response, RESP_NULL, RESP_ELASTIC, RESP_VE, RESP_MODAL
-   public :: LAT_LIE_CHAR, LAT_STRANG_CHAR, LAT_COUPLED
+   public :: LAT_LIE_CHAR, LAT_STRANG_CHAR, LAT_COUPLED, lat_method_from_name
    public :: response_init_null, response_init_elastic, response_init_ve, response_init_modal
    public :: response_apply, response_horizontal, response_destroy
    public :: response_begin_step, response_commit_step
@@ -247,7 +247,7 @@ module fe_response
       !   minvtau(:,i)   — 1/τ_i(l) laid out over the (l,m) coefficients, zero outside the
       !                    rank-i subspace (degrees with ≥ i modes) — folds D_τ^{-1} + proj_i.
       !   rank_active(i) — rank i carries non-trivial lateral structure (mirrors rank3d).
-      integer :: lat_method = LAT_LIE_CHAR
+      integer :: lat_method = LAT_COUPLED        !! production default (stable; no rebound runaway)
       integer :: m_krylov_lat = 12               !! Krylov subspace size for the COUPLED exp
       real(wp),    allocatable :: mRfield(:,:,:)  !! (nphi,nlat,maxmode) full per-rank rate field
       real(wp),    allocatable :: minvtau(:,:)    !! (nlm, maxmode) 1/τ_i(l) over coeffs, 0 off-subspace
@@ -268,6 +268,18 @@ contains
       type(response), intent(out) :: self
       self%kind = RESP_NULL
    end subroutine response_init_null
+
+   pure integer function lat_method_from_name(name) result(m)
+      !! Map the namelist lat_method string to its LAT_* code (mirrors rank_from_name).
+      !! Selects the RESP_MODAL lateral-viscosity treatment. Unknown names stop clearly.
+      character(len=*), intent(in) :: name
+      select case (trim(adjustl(name)))
+      case ("coupled"); m = LAT_COUPLED
+      case ("lie");     m = LAT_LIE_CHAR
+      case ("strang");  m = LAT_STRANG_CHAR
+      case default;     error stop "lat_method_from_name: unknown lat_method (use coupled|lie|strang)"
+      end select
+   end function lat_method_from_name
 
    subroutine response_apply(self, sht, sigma_lm, u_lm, n_lm)
       type(response), intent(inout) :: self

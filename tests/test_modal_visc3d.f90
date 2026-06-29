@@ -18,7 +18,7 @@ program test_modal_visc3d
    use fe_response,        only: response, response_init_modal, response_set_dt, &
                                  response_begin_step, response_apply, response_commit_step, &
                                  response_destroy, response_enable_lateral_visc_modal, &
-                                 LAT_COUPLED
+                                 LAT_LIE_CHAR, LAT_COUPLED
    use fe_sht,             only: sht_grid, sht_grid_init, sht_grid_destroy, sht_grid_lmidx
    implicit none
 
@@ -44,6 +44,7 @@ program test_modal_visc3d
    call response_init_modal(latA, e, sht, n_modes=-1, mode_rank=1, dt_be=5.0_wp*kyr)
    call response_set_dt(latA, dt)
    allocate(pert(sht%nphi, sht%nlat, latA%ne));  pert = 0.0_wp
+   latA%lat_method = LAT_LIE_CHAR                               ! cases A–C exercise the LIE split path
    latA%visc3d_tol = -1.0_wp                                    ! force the anomaly SHT path
    call response_enable_lateral_visc_modal(latA, sht, pert)
    call drive_compare(refA, latA, dzero)
@@ -54,6 +55,7 @@ program test_modal_visc3d
    call response_init_modal(latB, e, sht, n_modes=-1, mode_rank=1, dt_be=5.0_wp*kyr)
    call response_set_dt(latB, dt)
    pert = p
+   latB%lat_method = LAT_LIE_CHAR
    latB%visc3d_tol = -1.0_wp
    call response_enable_lateral_visc_modal(latB, sht, pert)
    call drive_compare(refB, latB, dscaled)
@@ -64,6 +66,7 @@ program test_modal_visc3d
    call response_init_modal(latC, e, sht, n_modes=-1, mode_rank=1, dt_be=5.0_wp*kyr)
    call response_set_dt(latC, dt)
    call make_pert_nonuniform(sht, latC%ne, pert)
+   latC%lat_method = LAT_LIE_CHAR
    call response_enable_lateral_visc_modal(latC, sht, pert)     ! default tol -> selects active ranks
    call drive_compare(refC, latC, dnon)
 
