@@ -31,7 +31,7 @@ module fe_drive
    use fe_coupling,  only: solid_earth_finalize, solid_earth_update, solid_earth_init, solid_earth, &
                            solid_earth_enable_visc_3d
    use fe_response,  only: RESP_MODAL
-   use fe_remap,     only: ll2gauss_map, ll2gauss_init, ll2gauss_apply
+   use fe_remap,     only: remap_ll_gauss, remap_init, remap_to_gauss
    use fe_io,        only: fe_write_step, fe_restart_write, fe_restart_read
    use ncio,         only: nc_read, nc_size, nc_exists_var
    use iso_fortran_env, only: error_unit
@@ -59,7 +59,7 @@ contains
       type(fe_param_class)   :: p
       type(sht_grid), target :: sht
       type(solid_earth)      :: se
-      type(ll2gauss_map)     :: rmap
+      type(remap_ll_gauss)     :: rmap
       real(wp), allocatable  :: z_bed_eq(:,:), h_ice_eq(:,:), h_ice(:,:), ice_lgm(:,:)
       real(wp), allocatable  :: src(:,:), tyr(:)
       real(wp) :: t0, dt
@@ -358,7 +358,7 @@ contains
       !! lon-lat -> Gauss map. Returns the source dimensions for the work buffer.
       type(fe_param_class), intent(in)    :: p
       type(sht_grid),       intent(in)    :: sht
-      type(ll2gauss_map),   intent(out)   :: rmap
+      type(remap_ll_gauss),   intent(out)   :: rmap
       integer,              intent(out)   :: nlon, nls
       real(wp), allocatable :: lon_s(:), lat_s(:)
       nlon = nc_size(p%file_forcing, trim(p%name_lon))
@@ -366,14 +366,14 @@ contains
       allocate(lon_s(nlon), lat_s(nls))
       call nc_read(p%file_forcing, trim(p%name_lon), lon_s)
       call nc_read(p%file_forcing, trim(p%name_lat), lat_s)
-      call ll2gauss_init(rmap, sht, lon_s, lat_s)
+      call remap_init(rmap, sht, lon_s, lat_s)
    end subroutine build_remap
 
    subroutine read_ice(p, rmap, sht, remap, k, src, h_ice)
       !! Read ice slice k onto the Gauss grid. remap: read lon-lat then conservatively
       !! remap (mass-conserving); else read the Gauss-grid slice directly.
       type(fe_param_class), intent(in)    :: p
-      type(ll2gauss_map),   intent(in)    :: rmap
+      type(remap_ll_gauss),   intent(in)    :: rmap
       type(sht_grid),       intent(in)    :: sht
       logical,              intent(in)    :: remap
       integer,              intent(in)    :: k
@@ -382,7 +382,7 @@ contains
       if (remap) then
          call nc_read(p%file_forcing, trim(p%name_ice), src, &
                       start=[1,1,k], count=[size(src,1), size(src,2), 1])
-         call ll2gauss_apply(rmap, sht, src, h_ice, conserve_mass=.true.)
+         call remap_to_gauss(rmap, sht, src, h_ice, conserve_mass=.true.)
       else
          call nc_read(p%file_forcing, trim(p%name_ice), h_ice, &
                       start=[1,1,k], count=[size(h_ice,1), size(h_ice,2), 1])
@@ -394,7 +394,7 @@ contains
       !! file (lon-lat-time), remapped (no mass rescale -- bed is geometry, not mass).
       !! else: the 2D name_zbed_eq from file_ref (legacy Gauss-grid reference file).
       type(fe_param_class), intent(in)    :: p
-      type(ll2gauss_map),   intent(in)    :: rmap
+      type(remap_ll_gauss),   intent(in)    :: rmap
       type(sht_grid),       intent(in)    :: sht
       logical,              intent(in)    :: remap
       integer,              intent(in)    :: k
@@ -403,7 +403,7 @@ contains
       if (remap) then
          call nc_read(p%file_forcing, trim(p%name_zbed_eq), src, &
                       start=[1,1,k], count=[size(src,1), size(src,2), 1])
-         call ll2gauss_apply(rmap, sht, src, z_bed, conserve_mass=.false.)
+         call remap_to_gauss(rmap, sht, src, z_bed, conserve_mass=.false.)
       else
          if (len_trim(p%file_ref) == 0) error stop 'fastearth_run: file_ref not set (remap_input=.false.)'
          call nc_read(p%file_ref, trim(p%name_zbed_eq), z_bed)
@@ -415,7 +415,7 @@ contains
       !! mirroring CLIMBER-X i_equilibrium. Reference files are lon-lat and remapped
       !! online with a per-file conservative map (their grid differs from the forcing).
       type(fe_param_class), intent(in)    :: p
-      type(ll2gauss_map),   intent(in)    :: rmap
+      type(remap_ll_gauss),   intent(in)    :: rmap
       type(sht_grid),       intent(in)    :: sht
       logical,              intent(in)    :: remap
       integer,              intent(in)    :: k0
@@ -456,7 +456,7 @@ contains
       logical,              intent(in)  :: remap, conserve
       character(len=*),     intent(in)  :: file, varname
       real(wp),             intent(out) :: field(:,:)
-      type(ll2gauss_map)    :: m
+      type(remap_ll_gauss)    :: m
       real(wp), allocatable :: lon_s(:), lat_s(:), buf(:,:)
       integer :: nlon, nls
       if (len_trim(file) == 0) &
@@ -471,8 +471,8 @@ contains
          call nc_read(file, trim(p%name_lon), lon_s)
          call nc_read(file, trim(p%name_lat), lat_s)
          call nc_read(file, trim(varname),    buf)
-         call ll2gauss_init(m, sht, lon_s, lat_s)
-         call ll2gauss_apply(m, sht, buf, field, conserve_mass=conserve)
+         call remap_init(m, sht, lon_s, lat_s)
+         call remap_to_gauss(m, sht, buf, field, conserve_mass=conserve)
       else
          call nc_read(file, trim(varname), field)
       end if

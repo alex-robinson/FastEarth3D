@@ -14,7 +14,7 @@ program fastearth_mkref
    use fe_precision, only: wp
    use fe_params,    only: fe_param_class, fe_par_load
    use fe_sht,       only: sht_grid, sht_grid_init, sht_grid_destroy
-   use fe_remap,     only: ll2gauss_map, ll2gauss_init, ll2gauss_apply
+   use fe_remap,     only: remap_ll_gauss, remap_init, remap_to_gauss
    use ncio,         only: nc_read, nc_size, nc_create, nc_write_dim, nc_write
    implicit none
 
@@ -22,7 +22,7 @@ program fastearth_mkref
    character(len=512)  :: cfg, defs
    type(fe_param_class) :: p
    type(sht_grid)       :: sht
-   type(ll2gauss_map)   :: rmap
+   type(remap_ll_gauss)   :: rmap
    real(wp), allocatable :: lon_s(:), lat_s(:), buf(:,:), bed(:,:), ice(:,:)
    real(wp), allocatable :: lon_g(:), lat_g(:)
    integer :: nlon, nls, np, nl, k, nlat, nphi
@@ -56,12 +56,12 @@ program fastearth_mkref
    call nc_read(p%z_bed_ref_file, trim(p%name_lat), lat_s)
    write(*,'(a,i0,a,i0,a,i0,a,i0,a)') ' fastearth_mkref: ', nlon, 'x', nls, &
         ' lon-lat -> ', np, 'x', nl, ' Gauss (building conservative map)'
-   call ll2gauss_init(rmap, sht, lon_s, lat_s)
+   call remap_init(rmap, sht, lon_s, lat_s)
 
    call nc_read(p%z_bed_ref_file, trim(p%name_z_bed_ref), buf)
-   call ll2gauss_apply(rmap, sht, buf, bed, conserve_mass=.false.)
+   call remap_to_gauss(rmap, sht, buf, bed, conserve_mass=.false.)
    call nc_read(p%h_ice_ref_file, trim(p%name_h_ice_ref), buf)
-   call ll2gauss_apply(rmap, sht, buf, ice, conserve_mass=.true.)
+   call remap_to_gauss(rmap, sht, buf, ice, conserve_mass=.true.)
 
    ! --- Gauss output ---------------------------------------------------------
    allocate(lon_g(np), lat_g(nl))
