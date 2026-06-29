@@ -41,7 +41,7 @@ VISC3D=${VISC3D:-${ISOSTASY_DATA}/earth_structure/viscosity/bagge2021.nc}   # lo
 # Resolution sweep. LMAX_REF is the production resolution and the error reference;
 # it MUST appear in LMAX_LIST. Each lmax needs its matching present-day reference
 # data/reference/rtopo_gauss_l<lmax>.nc (i_eq=1); missing files fail loudly below.
-LMAX_LIST=${LMAX_LIST:-32 64 96 128}         # spherical-harmonic degrees to sweep
+LMAX_LIST=${LMAX_LIST:-32 64 128}         # spherical-harmonic degrees to sweep
 LMAX_REF=${LMAX_REF:-128}                    # production target + error reference
 
 # Sub-step probe at the reference resolution: extra cfl values (the Maxwell-number
