@@ -122,7 +122,7 @@ contains
       if (len_trim(p%restart_in_file) > 0) then
          ! resume from a saved full state (memory + clock). init at the reference, then
          ! restore; a lower-resolution restart is interpolated up to the model grid.
-         call solid_earth_init(se, p, sht, z_bed_eq, h_ice_eq)
+         se%par = p; call solid_earth_init(se, sht, z_bed_eq, h_ice_eq)
          call fe_restart_read(se, trim(p%restart_in_file))
          if (p%dt_equil > 0.0_wp) then            ! optional further equilibration
             call equilibrate(p, sht, se, z_bed_eq, h_ice_eq, ice_lgm, from_restart=.true.)
@@ -139,7 +139,7 @@ contains
          call equilibrate(p, sht, se, z_bed_eq, h_ice_eq, ice_lgm, spinup_1d=p%spinup_1d)
          call fe_restart_write(se, se%time, folder=trim(rundir)//"/spinup")
       else
-         call solid_earth_init(se, p, sht, z_bed_eq, h_ice_eq)
+         se%par = p; call solid_earth_init(se, sht, z_bed_eq, h_ice_eq)
          call solid_earth_update(se, ice_lgm, 0.0_wp)                        ! seed entering ice, no integration
       end if
       call system_clock(pc1)
@@ -250,8 +250,10 @@ contains
 
       write(*,'(a,a,a,es9.2,a)') ' equilibration (i_eq=1): spin up LGM memory vs PD reference', &
            merge(' [1-D]', '      ', l1d .and. p%l_visc_3d), ', dt_equil=', p%dt_equil/sec_per_year, ' yr/pass'
-      if (.not. resume) &
-         call solid_earth_init(se, p, sht, z_bed_eq, h_ice_eq, defer_visc_3d=l1d)  ! reference, memory 0
+      if (.not. resume) then
+         se%par = p
+         call solid_earth_init(se, sht, z_bed_eq, h_ice_eq, defer_visc_3d=l1d)  ! reference, memory 0
+      end if
       call solid_earth_update(se, ice_lgm, 0.0_wp)                   ! set entering ice = start (LGM) ice
       z_prev = se%z_bed
       do it = 1, MAX_EQ
@@ -267,7 +269,7 @@ contains
 
       ! spinup_1d: the relaxation ran 1-D; enable the 3-D field for the transient,
       ! preserving the spun-up memory as the seed.
-      if (l1d .and. p%l_visc_3d) call solid_earth_enable_visc_3d(se, p, sht)
+      if (l1d .and. p%l_visc_3d) call solid_earth_enable_visc_3d(se, sht)
    end subroutine equilibrate
 
    pure function dir_of(path) result(d)

@@ -41,7 +41,7 @@ program test_coupling
 
    dt_couple    = 2.0_wp*kyr                        ! interval per se%update call
    p%dt_couple  = dt_couple                         ! default cadence (M3-L70-V01, default fe scheme)
-   call solid_earth_init(se, p, sht, z_bed_eq, h_ice_eq)
+   se%par = p; call solid_earth_init(se, sht, z_bed_eq, h_ice_eq)
 
    write(*,'(a,i0,a)') ' coupling: lmax=', LMAX, &
                        '  (dt_couple=2 kyr, default fe scheme)'
@@ -165,13 +165,13 @@ contains
 
       pr%dt_couple = dt_couple
       pr%rotation  = .false.
-      call solid_earth_init(se_off, pr, sht, z_bed_eq, h_ice_eq)
+      se_off%par = pr; call solid_earth_init(se_off, sht, z_bed_eq, h_ice_eq)
       do s = 1, NSTEP;  call solid_earth_update(se_off, h_off, dt_couple);  end do
       zoff = se_off%z_bed
       call solid_earth_finalize(se_off)
 
       pr%rotation = .true.
-      call solid_earth_init(se_on, pr, sht, z_bed_eq, h_ice_eq)
+      se_on%par = pr; call solid_earth_init(se_on, sht, z_bed_eq, h_ice_eq)
       wmass = 0.0_wp
       do s = 1, NSTEP
          call solid_earth_update(se_on, h_off, dt_couple)

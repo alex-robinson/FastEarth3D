@@ -67,7 +67,7 @@ contains
                                           ! motion m + both channels' memory (rot_*)
 
       ! === reference run A ====================================================
-      call solid_earth_init(a, p, sht, z_bed_eq, h_ice_eq)
+      a%par = p; call solid_earth_init(a, sht, z_bed_eq, h_ice_eq)
       do step = 1, K1
          call solid_earth_update(a, h_ice, p%dt_couple)
       end do
@@ -92,7 +92,7 @@ contains
       end if
 
       ! === (1) direct state restore (default = last snapshot, t2) =============
-      call solid_earth_init(b, p, sht, z_bed_eq, h_ice_eq)
+      b%par = p; call solid_earth_init(b, sht, z_bed_eq, h_ice_eq)
       call fe_restart_read(b, file)
       d_restore = max(maxval(abs(b%z_bed - a6_zbed)), maxval(abs(b%rsl - a6_rsl)))
       write(*,'(a,es11.2)') '   (1) state restore  max|B - A|     =', d_restore
@@ -101,7 +101,7 @@ contains
       end if
 
       ! === (2) bit-for-bit continuation from the earlier snapshot (t1) =========
-      call solid_earth_init(c, p, sht, z_bed_eq, h_ice_eq)
+      c%par = p; call solid_earth_init(c, sht, z_bed_eq, h_ice_eq)
       call fe_restart_read(c, file, time=t1)                ! restore memory @ K1
       do step = 1, K2
          call solid_earth_update(c, h_ice, p%dt_couple)     ! same load, K2 steps

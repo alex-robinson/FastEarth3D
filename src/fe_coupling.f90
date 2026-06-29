@@ -4,7 +4,7 @@ module fe_coupling
    !! CLIMBER-X (src/geo/vilma.F90): ice thickness goes in, relative sea level
    !! and bedrock elevation come out, on the model's own Gauss-Legendre grid.
    !!
-   !!   call solid_earth_init(se, p, sht, z_bed_eq, h_ice_eq)   ! p = fe_param_class (one &fe3d group)
+   !!   se%par = p; call solid_earth_init(se, sht, z_bed_eq, h_ice_eq)   ! p = fe_param_class (one &fe3d group)
    !!   ...
    !!   call solid_earth_update(se, h_ice, dt)   ! advance time -> time+dt; mutates se%rsl, se%z_bed
    !!   ...
@@ -45,6 +45,7 @@ module fe_coupling
    public :: solid_earth_enable_visc_3d
 
    type :: solid_earth
+      type(fe_param_class)     :: par       !! configuration record (one &fe3d group); set by the host before init
       type(sht_grid), pointer  :: sht => null()  !! transform grid (borrowed, host-owned)
       type(earth_model)        :: earth     !! radial (+ optional 3D) structure
       type(response)        :: resp      !! viscoelastic field driver (load → u, N)
@@ -69,15 +70,15 @@ module fe_coupling
 
 contains
 
-   subroutine solid_earth_init(self, p, sht, z_bed_eq, h_ice_eq, defer_visc_3d)
-      !! Build the model from the parameter record and wire it to a (host-owned)
-      !! transform grid, setting the reference state. The earth structure is built
-      !! from p (named built-in or custom layers); the SLE, adaptive-Δt and memory-
-      !! scheme knobs are distributed from p to the sub-solvers. The grid is
-      !! borrowed by pointer — the host keeps it alive for the model's lifetime and
-      !! is responsible for destroying it.
+   subroutine solid_earth_init(self, sht, z_bed_eq, h_ice_eq, defer_visc_3d)
+      !! Build the model from the parameter record (self%par, set by the host
+      !! before this call) and wire it to a (host-owned) transform grid, setting
+      !! the reference state. The earth structure is built from self%par (named
+      !! built-in or custom layers); the SLE, adaptive-Δt and memory-scheme knobs
+      !! are distributed from self%par to the sub-solvers. The grid is borrowed by
+      !! pointer — the host keeps it alive for the model's lifetime and is
+      !! responsible for destroying it.
       type(solid_earth),   intent(inout)        :: self
-      type(fe_param_class), intent(in)           :: p
       type(sht_grid),       intent(in),   target :: sht
       real(wp),             intent(in)           :: z_bed_eq(:,:)   !! (nphi,nlat) [m]
       real(wp),             intent(in)           :: h_ice_eq(:,:)  !! (nphi,nlat) [m]
@@ -96,27 +97,27 @@ contains
          error stop 'solid_earth_init: reference fields do not match the grid'
 
       self%sht   => sht
-      self%earth = build_earth(p)
+      self%earth = build_earth(self%par)
       self%time  = 0.0_wp
 
       ! viscoelastic driver: operators assembled + factored once, memory zeroed.
       ! Δt enters only through Mk = (μ/η)Δt, which the adaptive stepper rescales
       ! per sub-step (resp%set_dt) — so the init Δt is just a nominal seed.
-      dt0 = p%dt_init;  if (dt0 <= 0.0_wp) dt0 = p%dt_couple
-      select case (trim(p%earth_response))
+      dt0 = self%par%dt_init;  if (dt0 <= 0.0_wp) dt0 = self%par%dt_couple
+      select case (trim(self%par%earth_response))
       case ("ve")
          call response_init_ve(self%resp, self%earth, sht, dt0)
-         self%resp%scheme          = scheme_from_name(p%scheme)
-         self%resp%max_couple_iter = p%max_couple_iter
+         self%resp%scheme          = scheme_from_name(self%par%scheme)
+         self%resp%max_couple_iter = self%par%max_couple_iter
       case ("modal")
          ! Reduced modal response: scheme is forced FE internally (exact exponential
          ! advance, unconditionally stable). dt_be is the eigensolve BE shift Δt.
-         call response_init_modal(self%resp, self%earth, sht, n_modes=p%n_modes, &
-                                  mode_rank=rank_from_name(p%mode_rank), dt_be=p%dt_be, &
-                                  p_block=p%n_krylov)
-         self%resp%max_couple_iter = p%max_couple_iter
-         self%resp%modal_adaptive  = p%modal_adaptive   ! A3 sub-stepping (off by default)
-         self%resp%lat_method      = lat_method_from_name(p%lat_method)  ! lateral-η treatment
+         call response_init_modal(self%resp, self%earth, sht, n_modes=self%par%n_modes, &
+                                  mode_rank=rank_from_name(self%par%mode_rank), dt_be=self%par%dt_be, &
+                                  p_block=self%par%n_krylov)
+         self%resp%max_couple_iter = self%par%max_couple_iter
+         self%resp%modal_adaptive  = self%par%modal_adaptive   ! A3 sub-stepping (off by default)
+         self%resp%lat_method      = lat_method_from_name(self%par%lat_method)  ! lateral-η treatment
       case ("elastic")
          call response_init_elastic(self%resp, self%earth, sht%lmax)
       case ("null")
@@ -124,46 +125,46 @@ contains
       case default
          error stop "solid_earth_init: unknown earth_response (use ve|modal|elastic|null)"
       end select
-      self%resp%visc3d_tol = p%visc3d_tol   ! 3-D split threshold (read before any enable below)
+      self%resp%visc3d_tol = self%par%visc3d_tol   ! 3-D split threshold (read before any enable below)
 
       ! optional laterally-varying (3D) viscosity (rung 6c), unless deferred (spinup_1d).
-      do_visc_3d = p%l_visc_3d
+      do_visc_3d = self%par%l_visc_3d
       if (present(defer_visc_3d)) then
          if (defer_visc_3d) do_visc_3d = .false.
       end if
-      if (do_visc_3d) call solid_earth_enable_visc_3d(self, p, sht)
+      if (do_visc_3d) call solid_earth_enable_visc_3d(self, sht)
 
       ! sea-level equation knobs. Warm-start the fixed point across steps: self%rsl
       ! persists (seeded to 0 below), and between adjacent steps the coastline
       ! barely moves, so the previous solution is a near-converged seed — sharply
       ! cutting the inner iteration count (the dominant per-step cost is the SLE's
       ! spherical-harmonic transforms, ~linear in that count).
-      self%sle%n_outer      = p%sle_n_outer
-      self%sle%n_inner      = p%sle_n_inner
-      self%sle%tol          = p%sle_tol
-      self%sle%max_mem_iter = p%sle_max_mem_iter
-      self%sle%fixed_ocean  = p%sle_fixed_ocean
-      self%sle%subgrid      = p%sle_subgrid
+      self%sle%n_outer      = self%par%sle_n_outer
+      self%sle%n_inner      = self%par%sle_n_inner
+      self%sle%tol          = self%par%sle_tol
+      self%sle%max_mem_iter = self%par%sle_max_mem_iter
+      self%sle%fixed_ocean  = self%par%sle_fixed_ocean
+      self%sle%subgrid      = self%par%sle_subgrid
       self%sle%warm_start   = .true.
 
       ! adaptive-Δt controller (fe_timestep)
-      self%stepper%rtol       = p%rtol
-      self%stepper%atol       = p%atol
-      self%stepper%safety     = p%safety
-      self%stepper%grow_max   = p%grow_max
-      self%stepper%shrink_min = p%shrink_min
-      self%stepper%dt_min     = p%dt_min
-      self%stepper%dt_max     = p%dt_max
-      self%stepper%cfl        = p%cfl           ! explicit (fe) sub-step Maxwell ceiling
-      self%stepper%dt_try     = p%dt_init       ! 0 => first guess = whole interval
+      self%stepper%rtol       = self%par%rtol
+      self%stepper%atol       = self%par%atol
+      self%stepper%safety     = self%par%safety
+      self%stepper%grow_max   = self%par%grow_max
+      self%stepper%shrink_min = self%par%shrink_min
+      self%stepper%dt_min     = self%par%dt_min
+      self%stepper%dt_max     = self%par%dt_max
+      self%stepper%cfl        = self%par%cfl           ! explicit (fe) sub-step Maxwell ceiling
+      self%stepper%dt_try     = self%par%dt_init       ! 0 => first guess = whole interval
 
       ! rotational feedback (degree-2 Liouville polar motion → centrifugal potential
       ! fed back into the SLE; fe_rotation). When enabled, build the two degree-2 VE
       ! channels and the secular Love number. k_s defaults to the model fluid limit
       ! (k^T_f); for deep time the observed-flattening value rotation%k_s_flat is the
       ! recommended override (avoids the lithosphere-thickness paradox).
-      self%rotation%enabled = p%rotation
-      if (p%rotation) then
+      self%rotation%enabled = self%par%rotation
+      if (self%par%rotation) then
          call rotation_init(self%rotation, self%earth, sht, dt0)
          self%rotation%enabled = .true.          ! init clears it; turn back on
          allocate(self%s_rot(np,nl), source=0.0_wp)
@@ -183,16 +184,15 @@ contains
       call ocean_function(self%z_bed_eq, self%h_ice_eq, self%C)
    end subroutine solid_earth_init
 
-   subroutine solid_earth_enable_visc_3d(self, p, sht)
+   subroutine solid_earth_enable_visc_3d(self, sht)
       !! Read the lon-lat-r log10(eta) field (load_visc_3d) and enable the tensor-
       !! correct lateral-viscosity (3-D) memory advance. The Maxwell memory state is
       !! preserved, so this can be called either at init or AFTER a 1-D spin-up
-      !! (spinup_1d) to switch the transient onto the 3-D path from the 1-D seed.
+      !! (pre_spinup_1d) to switch the transient onto the 3-D path from the 1-D seed.
       type(solid_earth),    intent(inout)       :: self
-      type(fe_param_class), intent(in)          :: p
       type(sht_grid),       intent(in), target  :: sht
       real(wp), allocatable :: visc_node(:,:)
-      call load_visc_3d(p, sht, self%resp%r, visc_node)
+      call load_visc_3d(self%par, sht, self%resp%r, visc_node)
       select case (self%resp%kind)
       case (RESP_VE);    call response_enable_lateral_visc_from_nodes(self%resp, sht, visc_node)
       case (RESP_MODAL); call response_enable_lateral_visc_modal_from_nodes(self%resp, sht, visc_node)
