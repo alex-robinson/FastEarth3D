@@ -184,19 +184,35 @@ function gather()
     close(ref)
     ref_prof = read_profile(refdir())
 
-    cands = Dict[]
+    # Process each candidate, tolerating runs that are missing, still in progress
+    # (fewer time slices than the reference), or otherwise unreadable — skip with a
+    # warning so the analysis still distils whatever has finished.
+    cands = Dict[];  skipped = String[];  nref = length(time)
     for c in candidates()
         nc = joinpath(c.dir, "out.nc")
-        isfile(nc) || (@warn "missing out.nc, skipping" dir=c.dir; continue)
-        err, bsl, resid = compare(refnc, nc, lon_r, lat_r, w, pl, pt, tidx)
-        prof = read_profile(c.dir)
-        push!(cands, Dict("label" => c.label, "lmax" => c.lmax, "cfl" => c.cfl,
-                          "vtol" => c.vtol, "err" => err, "prof" => prof,
-                          "speedup" => ref_prof["se"] / prof["se"],
-                          "bsl" => bsl, "resid" => resid))
-        @printf("  %-18s rsl_rmse=%7.3f m  max=%7.2f m  cost=%7.1f ms  speedup=%5.2fx\n",
-                c.label, err["rsl_rmse"], err["rsl_maxabs"], prof["se"], ref_prof["se"] / prof["se"])
+        if !isfile(nc)
+            push!(skipped, c.label);  @warn "no out.nc — skipping" label=c.label;  continue
+        end
+        try
+            ntc = NCDataset(ds -> length(ds["time"][:]), nc)   # current slice count
+            if ntc < nref
+                push!(skipped, c.label)
+                @warn "incomplete run — skipping" label=c.label slices="$ntc/$nref"
+                continue
+            end
+            err, bsl, resid = compare(refnc, nc, lon_r, lat_r, w, pl, pt, tidx)
+            prof = read_profile(c.dir)
+            push!(cands, Dict("label" => c.label, "lmax" => c.lmax, "cfl" => c.cfl,
+                              "vtol" => c.vtol, "err" => err, "prof" => prof,
+                              "speedup" => ref_prof["se"] / prof["se"],
+                              "bsl" => bsl, "resid" => resid))
+            @printf("  %-18s rsl_rmse=%7.3f m  max=%7.2f m  cost=%7.1f ms  speedup=%5.2fx\n",
+                    c.label, err["rsl_rmse"], err["rsl_maxabs"], prof["se"], ref_prof["se"] / prof["se"])
+        catch e
+            push!(skipped, c.label);  @warn "could not process — skipping" label=c.label exception=e
+        end
     end
+    isempty(skipped) || @info "skipped $(length(skipped)) run(s) (incomplete/missing): $(join(skipped, \", \"))"
 
     return Dict("lon" => lon, "lat" => lat, "time" => time, "times_ka" => TIMES_KA,
                 "tidx" => tidx, "ref_prof" => ref_prof, "scales" => scales,
