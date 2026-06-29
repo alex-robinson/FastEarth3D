@@ -82,7 +82,7 @@ end
 # fig 2: Pareto — cost (ms/step) vs rsl RMSE, every run. Reference cost marked.
 function fig_pareto(R)
     C = R["cands"]
-    fig = Figure(size = (820, 560))
+    fig = Figure(size = (960, 560))
     ax = Axis(fig[1, 1]; xlabel = "solver cost [s/step]", ylabel = "rsl RMSE vs lmax$(R["ref_lmax"]) [m]",
               title = "accuracy–cost trade-off (down-left is better)",
               xscale = log10, yscale = log10)
@@ -91,13 +91,24 @@ function fig_pareto(R)
     text!(ax, refcost, efloor(0.0); text = @sprintf(" ref = %.1f s", refcost),
           align = (:left, :bottom), space = :data, offset = (2, 2), rotation = pi/2,
           fontsize = 10, color = :gray40)
+    # dots in candidate order (stable colours)
     for (i, c) in enumerate(C)
-        col = runcolor(i)
         scatter!(ax, [c["prof"]["se"]/1000], [efloor(c["err"]["rsl_rmse"])];
-                 color = col, markersize = 14)
-        text!(ax, c["prof"]["se"]/1000, efloor(c["err"]["rsl_rmse"]); text = c["label"],
-              align = (:left, :center), offset = (8, 0), fontsize = 10, color = col)
+                 color = runcolor(i), markersize = 14)
     end
+    # labels in cost order with an alternating vertical nudge so points at a similar RMSE
+    # (e.g. cfl1.5 / cfl2.0 / vtol1.0 ~0.08 m) don't overprint; drop the common "lmax." prefix.
+    for (rank, i) in enumerate(sortperm([c["prof"]["se"] for c in C]))
+        c = C[i]
+        text!(ax, c["prof"]["se"]/1000, efloor(c["err"]["rsl_rmse"]);
+              text = replace(c["label"], "lmax." => ""), align = (:left, :center),
+              offset = (8, isodd(rank) ? 9 : -9), fontsize = 10, color = runcolor(i))
+    end
+    # pad both axes so the right-side / edge labels fit
+    costs = [c["prof"]["se"]/1000 for c in C]
+    errs  = [efloor(c["err"]["rsl_rmse"]) for c in C]
+    xlims!(ax, minimum(costs) * 0.5, maximum(costs) * 2.8)
+    ylims!(ax, minimum(errs) * 0.4,  maximum(errs) * 3)
     fn = joinpath(OUTDIR, "pareto.png"); save(fn, fig); println("wrote ", fn)
 end
 
