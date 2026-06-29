@@ -38,6 +38,7 @@ module fe_response
    private
 
    public :: response, RESP_NULL, RESP_ELASTIC, RESP_VE, RESP_MODAL
+   public :: LAT_LIE_CHAR, LAT_STRANG_CHAR, LAT_COUPLED
    public :: response_init_null, response_init_elastic, response_init_ve, response_init_modal
    public :: response_apply, response_horizontal, response_destroy
    public :: response_begin_step, response_commit_step
@@ -50,6 +51,13 @@ module fe_response
    public :: response_enable_lateral_visc_modal, response_enable_lateral_visc_modal_from_nodes
 
    integer, parameter :: RESP_NULL = 0, RESP_ELASTIC = 1, RESP_VE = 2, RESP_MODAL = 3
+
+   ! RESP_MODAL lateral-viscosity treatment (design-modal.md §4). LIE_CHAR is the
+   ! original split-operator (1st-order Lie split, rank-characteristic τ̂); STRANG_CHAR
+   ! is the symmetric 2nd-order split (same τ̂); COUPLED applies the per-rank coupled
+   ! rate operator exp(−Δt·L_i) directly (no split, per-degree-exact τ, spatial coupling
+   ! to Krylov order) — the accurate path. See modal_advance / modal_lateral_coupled.
+   integer, parameter :: LAT_LIE_CHAR = 0, LAT_STRANG_CHAR = 1, LAT_COUPLED = 2
 
    type :: response
       !! Surface-load response operator as a tagged union. `kind` selects the
@@ -231,6 +239,19 @@ module fe_response
       real(wp),    allocatable :: mlatRate(:,:,:)!! (nphi,nlat,maxmode) rank rate anomaly
       integer,     allocatable :: rank3d(:)      !! (nrank3d) ranks with non-trivial anomaly
       integer :: maxmode = 0, nrank3d = 0
+      ! Lateral-viscosity method selector + the COUPLED-path precompute. For active
+      ! ranks the COUPLED path applies exp(−Δt·L_i) on the rank-i SH field, where the
+      ! grid rate operator is  L_i h = synth[ minvtau_i · proj_i · analyse[ mRfield_i · h ] ].
+      !   mRfield(:,:,i) — FULL per-rank depth-weighted local rate factor R_i(θ,φ)
+      !                    = Σ_e ŵ_i(e)·ρ(e,θ,φ) (the mean is INCLUDED, unlike mlatRate).
+      !   minvtau(:,i)   — 1/τ_i(l) laid out over the (l,m) coefficients, zero outside the
+      !                    rank-i subspace (degrees with ≥ i modes) — folds D_τ^{-1} + proj_i.
+      !   rank_active(i) — rank i carries non-trivial lateral structure (mirrors rank3d).
+      integer :: lat_method = LAT_LIE_CHAR
+      integer :: m_krylov_lat = 12               !! Krylov subspace size for the COUPLED exp
+      real(wp),    allocatable :: mRfield(:,:,:)  !! (nphi,nlat,maxmode) full per-rank rate field
+      real(wp),    allocatable :: minvtau(:,:)    !! (nlm, maxmode) 1/τ_i(l) over coeffs, 0 off-subspace
+      logical,     allocatable :: rank_active(:)  !! (maxmode) rank has lateral structure
    end type response
 
 contains
@@ -681,15 +702,47 @@ contains
       !! step): φ_{k,i} ← e^{−Δt/τ_i}·φ⁰_{k,i} + (1−e^{−Δt/τ_i})·σ_lm, exact. The
       !! base φ⁰ is the entering snapshot phi_n when from_n, else the current φ.
       !!
-      !! With laterally-varying viscosity (lat_visc, §4) this is the split-operator step:
-      !! (1) the MEAN modulation rescales the rate by the degree-exact per-mode factor
-      !! mrbar (spectral, here); (2) the zero-mean spatial ANOMALY is applied in real
-      !! space by modal_lateral_anomaly. A uniform field has mrbar const, no active
-      !! anomaly ranks → this reduces to the 1-D advance above exactly.
+      !! Radial (1-D) η → a single spectral mean step (no anomaly). Lateral η (§4) is
+      !! handled by lat_method:
+      !!   LAT_LIE_CHAR    — 1st-order Lie split: spectral MEAN modulation (mrbar) then
+      !!                     the real-space zero-mean ANOMALY (modal_lateral_anomaly).
+      !!   LAT_STRANG_CHAR — symmetric 2nd-order split: half-mean, anomaly, half-mean.
+      !!   LAT_COUPLED     — per-rank coupled rate operator exp(−Δt·L_i) on the active
+      !!                     ranks (modal_lateral_coupled, no split, per-degree-exact τ);
+      !!                     inactive ranks take the cheap spectral mean step.
+      !! A uniform (even uniformly-scaled) field reduces to the 1-D advance in every case.
       type(response), intent(inout) :: self
       type(sht_grid), intent(in)    :: sht
       logical,        intent(in)    :: from_n
       complex(wp),    intent(in)    :: sigma_lm(:)
+      if (.not. self%lat_visc) then
+         call modal_mean_step(self, from_n, sigma_lm, 1.0_wp, .false.)
+         return
+      end if
+      select case (self%lat_method)
+      case (LAT_STRANG_CHAR)
+         call modal_mean_step(self, from_n, sigma_lm, 0.5_wp, .false.)
+         if (self%nrank3d > 0) call modal_lateral_anomaly(self, sht, sigma_lm)
+         call modal_mean_step(self, .false.,  sigma_lm, 0.5_wp, .false.)
+      case (LAT_COUPLED)
+         call modal_mean_step(self, from_n, sigma_lm, 1.0_wp, .true.)   ! inactive ranks only
+         if (self%nrank3d > 0) call modal_lateral_coupled(self, sht, from_n, sigma_lm)
+      case default  ! LAT_LIE_CHAR
+         call modal_mean_step(self, from_n, sigma_lm, 1.0_wp, .false.)
+         if (self%nrank3d > 0) call modal_lateral_anomaly(self, sht, sigma_lm)
+      end select
+   end subroutine modal_advance
+
+   subroutine modal_mean_step(self, from_n, sigma_lm, frac, skip_active)
+      !! Spectral per-mode exact relaxation toward σ over a fraction `frac` of the step:
+      !! φ ← e·φ⁰ + (1−e)·σ, e = exp(−frac·Δt·R̄/τ_i(l)). R̄ = mrbar(g) when lateral, else
+      !! 1. φ⁰ = phi_n when from_n, else the current φ. When skip_active (COUPLED path),
+      !! modes whose within-degree rank carries lateral structure are left untouched —
+      !! modal_lateral_coupled advances them via the full rate operator instead.
+      type(response), intent(inout) :: self
+      logical,        intent(in)    :: from_n, skip_active
+      complex(wp),    intent(in)    :: sigma_lm(:)
+      real(wp),       intent(in)    :: frac
       real(wp) :: ex, rfac
       integer  :: k, l, lm, base, poff, i
       logical  :: lateral
@@ -698,8 +751,11 @@ contains
          l = self%kdeg(k);  lm = self%k2lm(k)
          base = self%spec_off(l);  poff = self%phi_off(k)
          do i = 1, self%nmode_deg(l)
-            rfac = 1.0_wp;  if (lateral) rfac = self%mrbar(base+i)   ! mean rate modulation
-            ex = exp(-self%dt*rfac/self%mtau(base+i))
+            if (skip_active) then
+               if (self%rank_active(i)) cycle
+            end if
+            rfac = 1.0_wp;  if (lateral) rfac = self%mrbar(base+i)
+            ex = exp(-frac*self%dt*rfac/self%mtau(base+i))
             if (from_n) then
                self%phi(poff+i) = ex*self%phi_n(poff+i) + (1.0_wp-ex)*sigma_lm(lm)
             else
@@ -707,8 +763,7 @@ contains
             end if
          end do
       end do
-      if (lateral .and. self%nrank3d > 0) call modal_lateral_anomaly(self, sht, sigma_lm)
-   end subroutine modal_advance
+   end subroutine modal_mean_step
 
    subroutine modal_lateral_anomaly(self, sht, sigma_lm)
       !! Real-space spatial-anomaly substep of the modal lateral-viscosity split-operator.
@@ -747,6 +802,151 @@ contains
       end do
       deallocate(pvec, svec, gphi, gsig, E2)
    end subroutine modal_lateral_anomaly
+
+   subroutine modal_lateral_coupled(self, sht, from_n, sigma_lm)
+      !! Accurate lateral substep (design-modal.md §4, COUPLED path): for each active
+      !! within-degree rank i, advance the rank-i amplitude SH field by the FULL coupled
+      !! rate operator, φ_i ← σ + exp(−Δt·L_i)·(φ_i − σ), where
+      !!   L_i h = synth[ minvtau_i · analyse[ mRfield_i · h ] ]
+      !! is the depth-weighted local relaxation rate (per-degree-exact τ_i(l), full lateral
+      !! coupling). exp(−Δt·L_i) is applied matrix-free by grid-space Arnoldi. No
+      !! operator split, so none of the Lie/τ̂ errors of the *_anomaly path; reduces to the
+      !! spectral mean step for a laterally-uniform rank.
+      type(response), intent(inout) :: self
+      type(sht_grid), intent(in)    :: sht
+      logical,        intent(in)    :: from_n
+      complex(wp),    intent(in)    :: sigma_lm(:)
+      complex(wp), allocatable :: pvec(:), svec(:)
+      real(wp),    allocatable :: gcur(:,:), gsig(:,:), gdev(:,:), gres(:,:)
+      integer :: r, i, k, lm0
+      allocate(pvec(self%nlm), svec(self%nlm))
+      allocate(gcur(sht%nphi,sht%nlat), gsig(sht%nphi,sht%nlat), &
+               gdev(sht%nphi,sht%nlat), gres(sht%nphi,sht%nlat))
+      svec = sigma_lm;  lm0 = sht_grid_lmidx(sht, 0, 0);  svec(lm0) = (0.0_wp, 0.0_wp)
+      call sht_grid_synthesis(sht, svec, gsig)
+      do r = 1, self%nrank3d
+         i = self%rank3d(r)
+         pvec = (0.0_wp, 0.0_wp)
+         do k = 1, self%nk
+            if (self%nmode_deg(self%kdeg(k)) < i) cycle
+            if (from_n) then
+               pvec(self%k2lm(k)) = self%phi_n(self%phi_off(k)+i)
+            else
+               pvec(self%k2lm(k)) = self%phi(self%phi_off(k)+i)
+            end if
+         end do
+         call sht_grid_synthesis(sht, pvec, gcur)
+         gdev = gcur - gsig                                   ! deviation to relax
+         call modal_coupled_expaction(self, sht, i, gdev, gres)
+         gcur = gsig + gres                                   ! φ_i field after the step
+         call sht_grid_analysis(sht, gcur, pvec)              ! NB: analysis overwrites gcur
+         do k = 1, self%nk
+            if (self%nmode_deg(self%kdeg(k)) < i) cycle
+            self%phi(self%phi_off(k)+i) = pvec(self%k2lm(k))
+         end do
+      end do
+      deallocate(pvec, svec, gcur, gsig, gdev, gres)
+   end subroutine modal_lateral_coupled
+
+   subroutine modal_coupled_rateop(self, sht, i, h, z)
+      !! Apply the rank-i grid rate operator z = L_i h =
+      !! synth[ minvtau_i · analyse[ mRfield_i · h ] ]: real-space multiply by the local
+      !! rate field, transform to coefficients, scale by 1/τ_i(l) (with the rank-i
+      !! projection folded into minvtau), transform back. One analysis + one synthesis.
+      type(response), intent(inout) :: self
+      type(sht_grid), intent(in)    :: sht
+      integer,        intent(in)    :: i
+      real(wp),       intent(in)    :: h(:,:)
+      real(wp),       intent(out)   :: z(:,:)
+      complex(wp) :: c(self%nlm)
+      real(wp)    :: tmp(sht%nphi, sht%nlat)
+      tmp = self%mRfield(:,:,i) * h
+      call sht_grid_analysis(sht, tmp, c)        ! NB: overwrites tmp (unused after)
+      c = c * self%minvtau(:,i)                  ! 1/τ_i(l) + rank-i projection (zeros off-subspace)
+      call sht_grid_synthesis(sht, c, z)
+   end subroutine modal_coupled_rateop
+
+   subroutine modal_coupled_expaction(self, sht, i, v, w)
+      !! w = exp(−Δt·L_i)·v for a real grid field v, by m-step Arnoldi on the rank-i rate
+      !! operator (modal_coupled_rateop): build an orthonormal Krylov basis, take the small
+      !! Hessenberg matrix exponential, and recombine. Early-exits on Krylov breakdown.
+      type(response), intent(inout) :: self
+      type(sht_grid), intent(in)    :: sht
+      integer,        intent(in)    :: i
+      real(wp),       intent(in)    :: v(:,:)
+      real(wp),       intent(out)   :: w(:,:)
+      integer  :: m, j, kk, mused
+      real(wp) :: beta, hnext, znorm
+      real(wp), allocatable :: Q(:,:,:), z(:,:), H(:,:), E(:,:)
+      m = max(1, self%m_krylov_lat)
+      beta = sqrt(sum(v*v))
+      if (beta <= 0.0_wp) then
+         w = 0.0_wp;  return
+      end if
+      allocate(Q(sht%nphi, sht%nlat, m+1), z(sht%nphi, sht%nlat))
+      allocate(H(m+1, m));  H = 0.0_wp
+      Q(:,:,1) = v/beta
+      mused = m
+      do j = 1, m
+         call modal_coupled_rateop(self, sht, i, Q(:,:,j), z)
+         znorm = sqrt(sum(z*z))                 ! ‖L_i q_j‖ — sets the operator scale
+         do kk = 1, j
+            H(kk,j) = sum(Q(:,:,kk)*z)
+            z = z - H(kk,j)*Q(:,:,kk)
+         end do
+         hnext = sqrt(sum(z*z))
+         H(j+1,j) = hnext
+         ! Lucky breakdown: the new Krylov direction is (numerically) already spanned —
+         ! relative to the matvec norm, NOT to beta (the rates are O(1/τ) in 1/s, so the
+         ! whole operator — hence hnext — is tiny in absolute terms but not degenerate).
+         if (hnext <= 1.0e-12_wp*max(znorm, tiny(1.0_wp)) .or. j == m) then
+            mused = j;  exit
+         end if
+         Q(:,:,j+1) = z/hnext
+      end do
+      allocate(E(mused, mused))
+      call expm_small(-self%dt * H(1:mused,1:mused), E)
+      w = 0.0_wp
+      do j = 1, mused
+         w = w + (beta*E(j,1))*Q(:,:,j)
+      end do
+      deallocate(Q, z, H, E)
+   end subroutine modal_coupled_expaction
+
+   subroutine expm_small(A, E)
+      !! Dense matrix exponential E = exp(A) of a small (≤ ~20) real matrix, by
+      !! scaling-and-squaring with a Taylor core. Used for the tiny Arnoldi Hessenberg
+      !! block in modal_coupled_expaction.
+      real(wp), intent(in)  :: A(:,:)
+      real(wp), intent(out) :: E(:,:)
+      integer, parameter :: TORDER = 12
+      real(wp), allocatable :: As(:,:), term(:,:), tmp(:,:)
+      real(wp) :: nrm
+      integer  :: n, s, k, p
+      n = size(A,1)
+      allocate(As(n,n), term(n,n), tmp(n,n))
+      nrm = maxval(sum(abs(A), dim=2))            ! inf-norm (max abs row sum)
+      s = 0
+      do while (nrm > 0.5_wp)
+         nrm = 0.5_wp*nrm;  s = s + 1
+      end do
+      As = A / real(2**s, wp)
+      ! Taylor: E = I + As + As^2/2! + ... (term accumulates As^k/k!)
+      E = 0.0_wp;  term = 0.0_wp
+      do k = 1, n
+         E(k,k) = 1.0_wp;  term(k,k) = 1.0_wp
+      end do
+      do k = 1, TORDER
+         tmp = matmul(term, As) / real(k, wp)
+         term = tmp
+         E = E + term
+      end do
+      ! square s times: E = E^(2^s)
+      do p = 1, s
+         tmp = matmul(E, E);  E = tmp
+      end do
+      deallocate(As, term, tmp)
+   end subroutine expm_small
 
    subroutine modal_response_commit(self, sht, sigma_lm)
       !! Non-SLE (forced/1-D) path: advance φ from the current state with the held
@@ -812,6 +1012,9 @@ contains
       if (allocated(self%mrbar))     deallocate(self%mrbar)
       if (allocated(self%mlatRate))  deallocate(self%mlatRate)
       if (allocated(self%rank3d))    deallocate(self%rank3d)
+      if (allocated(self%mRfield))   deallocate(self%mRfield)
+      if (allocated(self%minvtau))   deallocate(self%minvtau)
+      if (allocated(self%rank_active)) deallocate(self%rank_active)
       self%maxmode = 0;  self%nrank3d = 0;  self%lat_visc = .false.
    end subroutine modal_response_destroy
 
@@ -1323,9 +1526,67 @@ contains
          allocate(self%rank3d(na));  self%rank3d = active(1:na)
          self%nrank3d = na
       end block
+
+      ! --- COUPLED-path precompute (used only when lat_method == LAT_COUPLED) ------
+      ! Per active rank: the FULL rate field R_i(θ,φ) (mean included) and the per-(l,m)
+      ! 1/τ_i(l) coefficient mask. Inactive ranks fall back to the spectral mean step,
+      ! so they need no field. Built here so the method can be switched without re-enable.
+      call build_coupled_operator(self, sht, rho)
+
       self%lat_visc = .true.
       deallocate(rho, rhobar, what, Ri)
    end subroutine response_enable_lateral_visc_modal
+
+   subroutine build_coupled_operator(self, sht, rho)
+      !! Precompute the COUPLED lateral-viscosity operator data (design-modal.md §4,
+      !! accurate path): for each active rank i, the full depth-weighted rate field
+      !! mRfield(:,:,i) = Σ_e ŵ_i(e)·ρ(e,θ,φ) (ŵ_i the |C^u|-weighted strain weight, as
+      !! in the anomaly) and the coefficient-space factor minvtau(:,i) = 1/τ_i(l) on the
+      !! rank-i subspace (degrees with ≥ i modes), zero elsewhere — together these define
+      !! the matrix-free rate operator L_i applied in modal_lateral_coupled.
+      type(response), intent(inout) :: self
+      type(sht_grid), intent(in)    :: sht
+      real(wp),       intent(in)    :: rho(:,:,:)   !! (nphi,nlat,ne) local rate ratio η_ref/η_local
+      real(wp), allocatable :: what(:)
+      real(wp) :: wt, wsum
+      integer  :: i, l, m, e, g, lm
+      if (allocated(self%mRfield))     deallocate(self%mRfield)
+      if (allocated(self%minvtau))     deallocate(self%minvtau)
+      if (allocated(self%rank_active)) deallocate(self%rank_active)
+      allocate(self%mRfield(sht%nphi, sht%nlat, self%maxmode));  self%mRfield = 0.0_wp
+      allocate(self%minvtau(self%nlm, self%maxmode));            self%minvtau = 0.0_wp
+      allocate(self%rank_active(self%maxmode));                  self%rank_active = .false.
+      do i = 1, self%nrank3d
+         self%rank_active(self%rank3d(i)) = .true.
+      end do
+      allocate(what(self%ne))
+      do i = 1, self%maxmode
+         if (.not. self%rank_active(i)) cycle
+         ! characteristic depth weight ŵ_i (|C^u|-weighted over degrees carrying rank i),
+         ! identical to the anomaly's; Σ_e ŵ_i = 1.
+         what = 0.0_wp;  wsum = 0.0_wp
+         do l = 1, self%lmax
+            if (self%nmode_deg(l) < i) cycle
+            g  = self%spec_off(l) + i;  wt = abs(self%mCu(g))
+            what = what + wt*self%mwgt(:,g);  wsum = wsum + wt
+         end do
+         if (wsum <= 0.0_wp) cycle
+         what = what/wsum
+         do e = 1, self%ne
+            if (what(e) /= 0.0_wp) self%mRfield(:,:,i) = self%mRfield(:,:,i) + what(e)*rho(:,:,e)
+         end do
+         ! coefficient-space 1/τ_i(l) with the rank-i projection folded in
+         do l = 1, self%lmax
+            if (self%nmode_deg(l) < i) cycle
+            g = self%spec_off(l) + i
+            do m = 0, min(l, sht%mmax*sht%mres), sht%mres
+               lm = sht_grid_lmidx(sht, l, m)
+               self%minvtau(lm, i) = 1.0_wp/self%mtau(g)
+            end do
+         end do
+      end do
+      deallocate(what)
+   end subroutine build_coupled_operator
 
    subroutine response_enable_lateral_visc_modal_from_nodes(self, sht, visc_node)
       !! RESP_MODAL analogue of response_enable_lateral_visc_from_nodes: bridge the

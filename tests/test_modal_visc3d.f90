@@ -17,17 +17,18 @@ program test_modal_visc3d
    use fe_radial_fe,       only: radial_fe_finalize
    use fe_response,        only: response, response_init_modal, response_set_dt, &
                                  response_begin_step, response_apply, response_commit_step, &
-                                 response_destroy, response_enable_lateral_visc_modal
+                                 response_destroy, response_enable_lateral_visc_modal, &
+                                 LAT_COUPLED
    use fe_sht,             only: sht_grid, sht_grid_init, sht_grid_destroy, sht_grid_lmidx
    implicit none
 
    integer, parameter :: LMAX = 8, NSTEP = 200
    type(sht_grid)    :: sht
    type(earth_model) :: e
-   type(response)    :: refA, latA, refB, latB, refC, latC
+   type(response)    :: refA, latA, refB, latB, refC, latC, refD, latD
    complex(wp), allocatable :: slm(:)
    real(wp), allocatable    :: pert(:,:,:)
-   real(wp) :: dt, p, dzero, dscaled, dnon
+   real(wp) :: dt, p, dzero, dscaled, dnon, dcoup
    logical  :: ok
 
    ok = .true.
@@ -66,20 +67,36 @@ program test_modal_visc3d
    call response_enable_lateral_visc_modal(latC, sht, pert)     ! default tol -> selects active ranks
    call drive_compare(refC, latC, dnon)
 
+   ! (D) COUPLED path, uniform η×10^p forced active: the per-rank coupled rate operator
+   !     exp(−Δt·L_i) (Arnoldi) must reduce to the 1-D advance at Δt·10^(−p), to ~SHT
+   !     precision — exercises modal_lateral_coupled / expm_small under a known answer.
+   call response_init_modal(refD, e, sht, n_modes=-1, mode_rank=1, dt_be=5.0_wp*kyr)
+   call response_set_dt(refD, dt*10.0_wp**(-p))
+   call response_init_modal(latD, e, sht, n_modes=-1, mode_rank=1, dt_be=5.0_wp*kyr)
+   call response_set_dt(latD, dt)
+   latD%lat_method = LAT_COUPLED
+   latD%visc3d_tol = -1.0_wp                                    ! force all ranks active (coupled)
+   pert = p
+   call response_enable_lateral_visc_modal(latD, sht, pert)
+   call drive_compare(refD, latD, dcoup)
+
    write(*,'(a)')        ' RESP_MODAL lateral viscosity (split-operator, M3-L70-V01)'
    write(*,'(a,i0)')     '   active anomaly ranks (case C)   = ', latC%nrank3d
    write(*,'(a,es10.3)') '   (A) uniform η=0,  |lat - 1D|    = ', dzero
    write(*,'(a,es10.3)') '   (B) uniform η×10^p vs Δt-scaled = ', dscaled
    write(*,'(a,es10.3)') '   (C) non-uniform, |lat - 1D|     = ', dnon
+   write(*,'(a,es10.3)') '   (D) COUPLED uniform vs Δt-scaled= ', dcoup
 
    if (dzero   > 1.0e-9_wp) then; write(*,'(a)') '   FAIL: uniform-zero lateral /= 1-D (SHT identity)'; ok=.false.; end if
    if (dscaled > 1.0e-9_wp) then; write(*,'(a)') '   FAIL: uniform-scaled lateral /= Δt-scaled 1-D';   ok=.false.; end if
    if (latC%nrank3d < 1)    then; write(*,'(a)') '   FAIL: non-uniform field activated no anomaly ranks'; ok=.false.; end if
    if (dnon    < 1.0e-3_wp) then; write(*,'(a)') '   FAIL: non-uniform lateral has no effect on the response'; ok=.false.; end if
+   if (dcoup   > 1.0e-7_wp) then; write(*,'(a)') '   FAIL: COUPLED uniform /= Δt-scaled 1-D (operator/expm)'; ok=.false.; end if
 
    call response_destroy(refA);  call response_destroy(latA)
    call response_destroy(refB);  call response_destroy(latB)
    call response_destroy(refC);  call response_destroy(latC)
+   call response_destroy(refD);  call response_destroy(latD)
    call sht_grid_destroy(sht);    call radial_fe_finalize()
 
    write(*,'(a)') ''
