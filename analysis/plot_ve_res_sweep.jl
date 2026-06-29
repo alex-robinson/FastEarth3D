@@ -91,11 +91,13 @@ function fig_pareto(R)
     text!(ax, refcost, efloor(0.0); text = @sprintf(" ref = %.1f s", refcost),
           align = (:left, :bottom), space = :data, offset = (2, 2), rotation = pi/2,
           fontsize = 10, color = :gray40)
+    phys = 10 * R["scales"]["rsl_pd_absmax"]            # rmse beyond this ⇒ a diverged run
     for (i, c) in enumerate(C)
+        r = c["err"]["rsl_rmse"]
+        (isfinite(r) && r <= phys) || continue          # skip blow-ups (off the chart)
         col = runcolor(i)
-        scatter!(ax, [c["prof"]["se"]/1000], [efloor(c["err"]["rsl_rmse"])];
-                 color = col, markersize = 14)
-        text!(ax, c["prof"]["se"]/1000, efloor(c["err"]["rsl_rmse"]); text = c["label"],
+        scatter!(ax, [c["prof"]["se"]/1000], [efloor(r)]; color = col, markersize = 14)
+        text!(ax, c["prof"]["se"]/1000, efloor(r); text = c["label"],
               align = (:left, :center), offset = (8, 0), fontsize = 10, color = col)
     end
     fn = joinpath(OUTDIR, "pareto.png"); save(fn, fig); println("wrote ", fn)
@@ -143,21 +145,26 @@ end
 # fig 5: residual maps — one figure per snapshot time, all runs.
 function fig_resid_maps(R)
     C = R["cands"]; lon = R["lon"]; lat = R["lat"]
+    phys = 10 * R["scales"]["rsl_pd_absmax"]            # |resid| beyond this ⇒ a diverged run
     for (k, tka) in enumerate(R["times_ka"])
-        # robust symmetric range: 99th pct of |resid| across runs at this time, ≥5 m.
-        allabs = sort(vcat([vec(abs.(Float64.(c["resid"][:, :, k]))) for c in C]...))
-        p99 = allabs[clamp(round(Int, 0.99 * length(allabs)), 1, length(allabs))]
+        # robust symmetric range: 99th pct of the PHYSICAL |resid| (drop NaN/blow-ups so a
+        # diverged run — e.g. cfl past the stability limit — can't set an absurd scale), ≥5 m.
+        pooled = sort(filter(x -> isfinite(x) && x <= phys,
+                             vcat([vec(abs.(Float64.(c["resid"][:, :, k]))) for c in C]...)))
+        p99 = isempty(pooled) ? 30.0 : pooled[clamp(round(Int, 0.99 * length(pooled)), 1, length(pooled))]
         cap = max(5.0, ceil(p99 / 5) * 5); crange = (-cap, cap)
         ncol = 3; nrow = cld(length(C), ncol)
         fig = Figure(size = (380 * ncol + 120, 240 * nrow + 70))
         local hm
         for (i, c) in enumerate(C)
             d = Float64.(c["resid"][:, :, k])
+            mx = maximum(abs, d)
+            tstr = isfinite(mx) && mx <= phys ? @sprintf("max %.1f m", mx) : "BLEW UP"
             ax = Axis(fig[cld(i, ncol), mod1(i, ncol)]; aspect = DataAspect(),
-                      title = @sprintf("%s  (max %.1f m)", c["label"], maximum(abs, d)),
-                      titlesize = 11)
+                      title = "$(c["label"])  ($tstr)", titlesize = 11)
             limits!(ax, -180, 180, -90, 90); hidedecorations!(ax)
-            hm = heatmap!(ax, lon, lat, d; colormap = :balance, colorrange = crange)
+            # clamp display so a blown-up run saturates rather than wrecking the axis
+            hm = heatmap!(ax, lon, lat, clamp.(d, -cap, cap); colormap = :balance, colorrange = crange)
         end
         Colorbar(fig[1:nrow, ncol + 1], hm; label = "rsl(run) − rsl(ref) [m]")
         Label(fig[0, 1:ncol], @sprintf("residual maps vs lmax%d at %.0f ka", R["ref_lmax"], tka);
