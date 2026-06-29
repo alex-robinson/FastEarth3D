@@ -85,7 +85,7 @@ function fig_pareto(R)
     fig = Figure(size = (960, 560))
     ax = Axis(fig[1, 1]; xlabel = "solver cost [s/step]", ylabel = "rsl RMSE vs lmax$(R["ref_lmax"]) [m]",
               title = "accuracy–cost trade-off (down-left is better)",
-              xscale = log10, yscale = log10)
+              yscale = log10)   # linear cost axis, log RMSE
     refcost = R["ref_prof"]["se"]/1000   # ms -> s
     vlines!(ax, [refcost]; color = :gray, linestyle = :dash)
     text!(ax, refcost, efloor(0.0); text = @sprintf(" ref = %.1f s", refcost),
@@ -107,7 +107,7 @@ function fig_pareto(R)
     # pad both axes so the right-side / edge labels fit
     costs = [c["prof"]["se"]/1000 for c in C]
     errs  = [efloor(c["err"]["rsl_rmse"]) for c in C]
-    xlims!(ax, minimum(costs) * 0.5, maximum(costs) * 2.8)
+    xlims!(ax, 0, maximum(costs) * 1.45)             # linear cost axis, room for right labels
     ylims!(ax, minimum(errs) * 0.4,  maximum(errs) * 3)
     fn = joinpath(OUTDIR, "pareto.png"); save(fn, fig); println("wrote ", fn)
 end
