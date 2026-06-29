@@ -212,7 +212,7 @@ function gather()
             push!(skipped, c.label);  @warn "could not process — skipping" label=c.label exception=e
         end
     end
-    isempty(skipped) || @info "skipped $(length(skipped)) run(s) (incomplete/missing): $(join(skipped, \", \"))"
+    isempty(skipped) || @info "skipped $(length(skipped)) run(s) (incomplete/missing): " * join(skipped, ", ")
 
     return Dict("lon" => lon, "lat" => lat, "time" => time, "times_ka" => TIMES_KA,
                 "tidx" => tidx, "ref_prof" => ref_prof, "scales" => scales,
