@@ -91,32 +91,64 @@ there), while the local peak/field error over the cap is O(50–100%). This
 diagnostic measures the local error directly (`grms/pk` normalized by the cap peak)
 and recovers the large values.
 
-## Candidate fixes (NOT yet implemented — for discussion)
+## Attribution (lmax 48; `logs/latvisc_attrib_lmax48.log`)
 
-Ordered roughly by effort/return. The split-operator's three error sources map to
-distinct fixes:
+Three modal lateral methods now exist (`&fe3d` / `response%lat_method`), driven
+against the same VE+LV truth:
 
-1. **Per-degree anomaly rate** (target: τ̂ mismatch). Apply the real-space anomaly
-   with the actual `τ_i(l)` instead of one rank-characteristic `τ̂_i`. The localized
-   cap's structure lives at high l where `τ_i(l)` ≪ the low-l-weighted `τ̂_i`, so the
-   anomaly currently relaxes at the wrong rate. Cost: anomaly SHTs per degree-group
-   instead of per-rank (more transforms, still ≪ tensor-SH).
-2. **Strang (2nd-order) split** (target: Lie non-commutation). Half mean → full
-   anomaly → half mean. Cheap; halves the splitting error order. Does **not** fix
-   the amplification or τ̂ mismatch.
-3. **Guarantee contraction** (target: E2>1 amplification). The current anomaly can
-   be non-contractive (`E2>1`) for stiff caps → unphysical growth in free rebound.
-   A clamp is a band-aid; the proper cure is (1)+(4) which keep the combined rate
-   physical by construction.
-4. **Krylov / Chebyshev exponential of the coupled rate operator** (the "proper"
-   fix). Don't split at all: apply `exp(−Δt·L_i)` where `L_i: φ ↦ R(θ,φ) ⊙ (1/τ_i(l))·φ`
-   (spatial ⊙ spectral) directly, via a few matrix-free applications on the **K
-   scalar** fields. This is what tensor-SH does for the 6-tensor memory, but on K
-   scalars — much cheaper than tensor-SH, far more accurate than 1st-order split.
-   Largest effort; most faithful; preserves the modal philosophy (cheap, tunable,
-   converges to VE as the Krylov order grows).
+- **LIE** — original 1st-order Lie split, rank-characteristic τ̂ (production default).
+- **STRANG** — symmetric 2nd-order split, same τ̂.
+- **COUPLED** — per-rank coupled rate operator `exp(−Δt·L_i)`, no split,
+  per-degree-exact τ, full lateral coupling; matrix-free grid Arnoldi. Reduces to
+  the spectral mean step for a uniform rank (test_modal_visc3d case D, 9.5e-15).
 
-A focused **attribution experiment** (variants of the diagnostic: Lie vs Strang;
-characteristic-τ̂ vs per-degree; vs the full coupled exponential) would quantify how
-much of the gap each source owns before committing to a fix. Recommend running that
-first.
+End-glaciation modal/VE cap-peak ratio | field error grms/pk | rebound ratio @20 kyr:
+
+| Δ, 40° cap | LIE | STRANG | COUPLED |
+|---|---|---|---|
+| 0.5 | 0.77 / 0.085 / 0.60 | 0.77 / 0.084 / 0.59 | 0.71 / 0.114 / **0.80** |
+| 1.0 | 0.91 / 0.189 / **3.12** | 0.91 / 0.188 / 3.09 | 0.56 / 0.194 / **0.71** |
+| 1.5 | 1.09 / 0.265 / **4.92** | 1.10 / 0.263 / 4.88 | 0.51 / 0.237 / **0.81** |
+| 2.0 | 1.24 / 0.311 / **6.00** | 1.24 / 0.308 / 5.96 | 0.51 / 0.259 / **0.92** |
+
+Three conclusions:
+
+1. **The split-ORDER error is negligible.** STRANG ≈ LIE to 3 digits everywhere.
+   The Lie 1st-order splitting is not the problem.
+2. **COUPLED is converged, not approximate-by-truncation.** m_krylov = 12 and 64
+   give bit-identical results (`logs` m=12 vs m=64), so COUPLED solves its operator
+   exactly; its deviation from VE is the **rate-modulation ANSATZ itself**, not
+   numerics. (Arnoldi reaches lucky breakdown in a handful of vectors, so cost is
+   modest and m-independent.)
+3. **COUPLED's real win is STABILITY.** It removes LIE's catastrophic rebound
+   runaway — the E2>1 amplification drives LIE to 3–6× over-prediction during free
+   rebound at continental scale + realistic contrast, whereas COUPLED stays bounded
+   at 0.71–0.92. For the deglaciation (rebound-dominated) this is the regime that
+   matters.
+
+### Why neither closes the gap — the ansatz limit
+
+At MILD contrast where the modal-LV ansatz should be near-exact (10°/Δ0.5), LIE
+gives 0.98 (≈ VE) but **COUPLED gives 0.81** — COUPLED is *further* from VE despite
+solving its operator exactly. Interpretation: the exact pointwise ansatz applies the
+*local* rate `R(θ,φ)/τ`, but the true (VE) response is **non-local** (deformation
+wavelength ~ hundreds of km), so for caps near/below that scale COUPLED
+**over-localizes** the slowdown and under-predicts. LIE's degree-exact mean
+modulation accidentally supplies that spatial dilution at small scales (and blows up
+at large scale). So the two methods trade which regime they handle well; **neither
+brings the continental-scale + realistic-contrast gap below ~20–50%** — that residual
+is intrinsic to the rate-modulation ansatz (design-modal.md §4: "approximation at
+every K"). Closing it further would require leaving the ansatz (genuine harmonic
+coupling), i.e. moving toward the tensor-SH cost that modal exists to avoid.
+
+### Recommendation (decision pending)
+
+- **Adopt COUPLED as the production lateral default** for its stability (no rebound
+  runaway) — it is strictly safer than LIE for deglaciation at realistic contrast,
+  even though it does not eliminate the ansatz residual. Keep LIE/STRANG selectable.
+- Accept the ~20–50% modal-LV ceiling at strong continental contrast as the
+  documented limit, OR investigate a beyond-ansatz scheme (a small amount of true
+  harmonic coupling on top of the rate modulation) if higher fidelity is required —
+  a larger research step.
+- Cost of COUPLED vs LIE not yet precisely benchmarked (both ≪ VE); measure before
+  flipping the default.
