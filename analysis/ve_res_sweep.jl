@@ -25,7 +25,7 @@ using Statistics
 const EXP       = length(ARGS) >= 1 ? ARGS[1] : "runs/ve_res_sweep"
 const LMAX_LIST = [32, 64, 96, 128]
 const LMAX_REF  = 128
-const CFL_PROBE  = ["0.5", "1.5"]               # extra cfl points at LMAX_REF (cfl=1 is the ref)
+const CFL_PROBE  = ["0.5", "1.5", "2.0", "2.5"] # extra cfl points at LMAX_REF (cfl=1 is the ref)
 const TIMES_KA  = [0.0, -10.0, -20.0, -26.0]    # residual-map snapshots [ka]
 const JLD2_OUT  = "analysis/ve_res_sweep_results.jld2"
 const MD_OUT    = "analysis/ve_res_sweep_summary.md"

@@ -48,8 +48,10 @@ LMAX_REF=${LMAX_REF:-128}                    # production target + error referen
 # ceiling M=μΔt/η of the explicit fe scheme; n_sub = ceil(span·max(μ/η)/cfl)). The
 # baseline cfl=1.0 IS the LMAX_REF reference run; these add finer (cfl<1, an
 # accuracy/convergence check) and coarser (cfl>1, fewer sub-steps) points. Set empty
-# to skip. cfl ≳ 2 approaches the explicit stability limit and may blow up.
-CFL_PROBE=${CFL_PROBE:-0.5 1.5}
+# to skip. The explicit Maxwell update is stable for M≤2, so cfl=2.0 sits at the
+# theoretical edge and cfl=2.5 is expected to break down (NaN) — included on purpose
+# to bracket the limit. The analysis tolerates blown-up runs (NaN errors).
+CFL_PROBE=${CFL_PROBE:-0.5 1.5 2.0 2.5}
 
 T0=${T0:--26000.0}                           # transient start [yr] (LGM)
 T1=${T1:-0.0}                                # transient end   [yr] (present)

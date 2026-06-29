@@ -24,7 +24,8 @@ const JLD2_IN = length(ARGS) >= 1 ? ARGS[1] : "analysis/ve_res_sweep_results.jld
 const OUTDIR  = "analysis/figs/ve_res_sweep"
 
 # Distinct colour per run label (resolution sweep + cfl probes).
-const PALETTE = [:firebrick, :darkorange, :seagreen, :royalblue, :purple, :brown, :black]
+const PALETTE = [:firebrick, :darkorange, :goldenrod, :seagreen, :teal,
+                 :royalblue, :purple, :magenta, :brown, :black]
 runcolor(i) = PALETTE[mod1(i, length(PALETTE))]
 
 cand_by_label(C, lbl) = (i = findfirst(c -> c["label"] == lbl, C); i === nothing ? nothing : C[i])
