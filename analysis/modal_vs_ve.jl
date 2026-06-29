@@ -60,7 +60,7 @@ function read_profile(dir)
     se = rd = wr = ns = NaN
     if isfile(f)
         for ln in eachline(f)
-            m = match(r"se%update.*?=\s*([\d.]+)\s*ms", ln);     m !== nothing && (se = parse(Float64, m[1]))
+            m = match(r"solid_earth_update\s*=\s*([\d.]+)\s*ms", ln); m !== nothing && (se = parse(Float64, m[1]))
             m = match(r"read_ice.*?=\s*([\d.]+)\s*ms", ln);      m !== nothing && (rd = parse(Float64, m[1]))
             m = match(r"fe_write_step.*?=\s*([\d.]+)\s*ms", ln); m !== nothing && (wr = parse(Float64, m[1]))
             m = match(r"n_solve=\s*([\d.]+)", ln);               m !== nothing && (ns = parse(Float64, m[1]))

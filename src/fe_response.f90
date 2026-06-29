@@ -159,6 +159,14 @@ module fe_response
       integer  :: max_couple_iter = 1        !! coupling-iteration cap for implicit schemes
       real(wp) :: couple_tol = 1.0e-6_wp     !! relative surface-drift change to stop iterating
       integer  :: couple_iters_last = 0      !! iterations taken last commit (diagnostic)
+      ! PROFILE: phase wall-clock [s] + call counts, cumulative. The host (fe_drive)
+      ! zeroes these at the start of the transient so the reported per-step breakdown
+      ! covers the transient only. t_drift = solve_drift (per-degree band LU);
+      ! t_mem = the memory advance (fe_advance / trapezoid_advance_all, which in the
+      ! 3-D case is dominated by the dyadic SHT round-trip). The remainder of the
+      ! solid_earth_update cost (SLE iteration, load/geoid SHTs) is t_upd - t_drift - t_mem.
+      real(wp) :: t_drift = 0.0_wp, t_mem = 0.0_wp
+      integer  :: n_drift = 0,      n_mem = 0
       ! Co-convergence state for the SLE driver's σ<->τ fixed point (§3c 3b). Each
       ! advance_endpoint does ONE trapezoid pass and refreshes the report drift to
       ! the new τ_{n+1}; the driver re-converges σ against it and repeats until done.
@@ -1177,6 +1185,8 @@ contains
       real(wp), allocatable :: fre(:), fim(:), xre(:), xim(:)
       integer :: k, l, node, e, mm
       real(wp) :: thr, mk
+      integer(kind=8) :: pc0, pc1, prate           ! PROFILE: drift-solve wall-clock
+      call system_clock(pc0, prate)
 
       ! Refresh the per-slot memory magnitude from the current memory (a cheap pass
       ! vs the solves) so it is always consistent — including after a restart, which
@@ -1242,6 +1252,8 @@ contains
       !$omp end do
       deallocate(fre, fim, xre, xim)
       !$omp end parallel
+      call system_clock(pc1)
+      self%t_drift = self%t_drift + real(pc1-pc0,wp)/prate;  self%n_drift = self%n_drift + 1
    end subroutine solve_drift
 
    subroutine ve_response_apply(self, sht, sigma_lm, u_lm, n_lm)
@@ -1342,6 +1354,8 @@ contains
       real(wp), allocatable :: Ure(:), Uim(:), Vre(:), Vim(:)
       real(wp) :: sre, sim
       integer  :: k, l, lm, node
+      integer(kind=8) :: pc0, pc1, prate           ! PROFILE: memory-advance wall-clock
+      call system_clock(pc0, prate)
 
       ! 3-D elements first (no-op when ne3d == 0, i.e. 1-D or laterally-uniform field).
       if (self%lat_visc) call advance_memory_3d(self, sht, sigma_lm)
@@ -1367,6 +1381,8 @@ contains
       !$omp end do
       deallocate(Ure, Uim, Vre, Vim)
       !$omp end parallel
+      call system_clock(pc1)
+      self%t_mem = self%t_mem + real(pc1-pc0,wp)/prate;  self%n_mem = self%n_mem + 1
    end subroutine fe_advance
 
    subroutine response_enable_lateral_visc(self, sht, pert_elem)
@@ -1888,6 +1904,8 @@ contains
       real(wp), allocatable :: Ure_n(:), Uim_n(:), Vre_n(:), Vim_n(:)
       real(wp) :: sre, sim, srn, sin
       integer  :: k, l, lm, node
+      integer(kind=8) :: pc0, pc1, prate           ! PROFILE: memory-advance wall-clock
+      call system_clock(pc0, prate)
 
       ! Spectral trapezoid over the 1-D-effective elements FIRST (masked by active1d).
       ! The per-k reset writes τ_n to every element, including the 3-D ones, so the
@@ -1934,6 +1952,8 @@ contains
 
       ! genuinely-3-D elements last, reading the intact τ_n snapshot (Are0 …)
       if (self%lat_visc) call advance_memory_3d_trap(self, sht, sigma_lm)
+      call system_clock(pc1)
+      self%t_mem = self%t_mem + real(pc1-pc0,wp)/prate;  self%n_mem = self%n_mem + 1
    end subroutine trapezoid_advance_all
 
    subroutine ve_response_prepare_endpoint(self, sht)

@@ -68,6 +68,7 @@ contains
       character(len=:), allocatable :: rundir
       integer(kind=8) :: pc0, pc1, prate          ! PROFILE: per-step phase timers
       real(wp) :: t_read = 0.0_wp, t_upd = 0.0_wp, t_wrt = 0.0_wp
+      real(wp) :: t_dr, t_mm                      ! PROFILE: solid_earth_update sub-phases
       integer  :: nstep = 0
 
       ! --- configuration --------------------------------------------------------
@@ -162,6 +163,8 @@ contains
       se%time = t0;  se%resp%time = t0
       call fe_write_step(se, p%file_out, se%time, nms=OUT_VARS, init=.true.)
 
+      se%resp%t_drift = 0.0_wp;  se%resp%t_mem = 0.0_wp   ! PROFILE: time the transient only
+      se%resp%n_drift = 0;       se%resp%n_mem = 0
       do k = k0, k1-1
          dt = (tyr(k+1) - tyr(k))*sec_per_year
          call system_clock(pc0, prate)
@@ -182,10 +185,24 @@ contains
          ' [PROFILE] per coupling step (mean over ', nstep, ' steps):', &
          '   read_ice (remap+IO) =', 1.0e3_wp*t_read/nstep, ' ms (', &
             100.0_wp*t_read/(t_read+t_upd+t_wrt), ' %)', &
-         '   se%update (SLE+adv) =', 1.0e3_wp*t_upd /nstep, ' ms (', &
+         '   solid_earth_update  =', 1.0e3_wp*t_upd /nstep, ' ms (', &
             100.0_wp*t_upd /(t_read+t_upd+t_wrt), ' %)', &
          '   fe_write_step (out) =', 1.0e3_wp*t_wrt /nstep, ' ms (', &
             100.0_wp*t_wrt /(t_read+t_upd+t_wrt), ' %)'
+      ! solid_earth_update internal split (wall-clock, accumulated in the response).
+      ! drift = per-degree band LU; memory advance = the Maxwell update (3-D dyadic SHT
+      ! round-trip when laterally 3-D); rest = SLE iteration + load/geoid SHTs.
+      if (nstep > 0) then
+         t_dr = se%resp%t_drift;  t_mm = se%resp%t_mem
+         write(*,'(a,/,3(a,f8.1,a,f5.1,a,/))') &
+            ' [PROFILE] solid_earth_update breakdown (per step, wall-clock):', &
+            '   drift solve (band LU) =', 1.0e3_wp*t_dr/nstep, ' ms (', &
+               100.0_wp*t_dr/max(t_upd,tiny(1.0_wp)), ' % of update)', &
+            '   memory advance        =', 1.0e3_wp*t_mm/nstep, ' ms (', &
+               100.0_wp*t_mm/max(t_upd,tiny(1.0_wp)), ' % of update)', &
+            '   SLE + coupling (rest) =', 1.0e3_wp*(t_upd-t_dr-t_mm)/nstep, ' ms (', &
+               100.0_wp*(t_upd-t_dr-t_mm)/max(t_upd,tiny(1.0_wp)), ' % of update)'
+      end if
       if (nstep > 0) write(*,'(a,f7.1,a,f7.1,a)') &
          '   sub-steps/interval: n_accept=', real(se%stepper%n_accept,wp)/nstep, &
          '  n_solve=', real(se%stepper%n_solve,wp)/nstep, '  (per coupling step)'
