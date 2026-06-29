@@ -143,6 +143,10 @@ module fe_params
       real(wp) :: f_visc_rel     = 0.1_wp   !! relative sigma = f_visc_rel*log10(eta) when no sd var
       real(wp) :: visc_log10_min = 19.5_wp  !! floor on log10(eta) after read + perturbation [dex]
       real(wp) :: visc_log10_max = 30.0_wp  !! ceiling on log10(eta) after read + perturbation [dex]
+      real(wp) :: visc3d_tol     = 1.0e-3_wp !! lateral log10(eta) spread [dex] above which a radial
+         !! element is treated as genuinely 3-D (pays the dyadic SHT round-trip); below it the
+         !! element collapses to its lateral-mean scalar rate (cheap degree-diagonal path). Raising
+         !! it demotes weakly-3-D elements to 1-D and cuts the memory-advance cost (the dominant cost).
    end type fe_param_class
 
 contains
@@ -271,6 +275,7 @@ contains
       ! 3D viscosity + uncertainty
       call nml_read(filename, g, "l_visc_3d",      p%l_visc_3d,      defaults_file=df)
       call nml_read(filename, g, "visc_3d_file",   p%visc_3d_file,   defaults_file=df)
+      call nml_read(filename, g, "visc3d_tol",     p%visc3d_tol,     defaults_file=df)
       call nml_read(filename, g, "name_visc",      p%name_visc,      defaults_file=df)
       call nml_read(filename, g, "name_visc_lon",  p%name_visc_lon,  defaults_file=df)
       call nml_read(filename, g, "name_visc_lat",  p%name_visc_lat,  defaults_file=df)
@@ -322,6 +327,7 @@ contains
          write(u,'(a,f6.2,a,f6.2,a,f5.2,a,f5.2,a)') &
               '            f_visc_sd=', p%f_visc_sd, '  f_visc_rel=', p%f_visc_rel, &
               '  clamp=[', p%visc_log10_min, ',', p%visc_log10_max, ']'
+         write(u,'(a,es9.2,a)') '            visc3d_tol=', p%visc3d_tol, ' dex (3-D split)'
       end if
    end subroutine fe_par_print
 

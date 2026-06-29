@@ -124,6 +124,7 @@ contains
       case default
          error stop "solid_earth_init: unknown earth_response (use ve|modal|elastic|null)"
       end select
+      self%resp%visc3d_tol = p%visc3d_tol   ! 3-D split threshold (read before any enable below)
 
       ! optional laterally-varying (3D) viscosity (rung 6c), unless deferred (spinup_1d).
       do_visc_3d = p%l_visc_3d
