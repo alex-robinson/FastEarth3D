@@ -141,14 +141,21 @@ is intrinsic to the rate-modulation ansatz (design-modal.md §4: "approximation 
 every K"). Closing it further would require leaving the ansatz (genuine harmonic
 coupling), i.e. moving toward the tensor-SH cost that modal exists to avoid.
 
-### Recommendation (decision pending)
+### Decision (taken)
 
-- **Adopt COUPLED as the production lateral default** for its stability (no rebound
-  runaway) — it is strictly safer than LIE for deglaciation at realistic contrast,
-  even though it does not eliminate the ansatz residual. Keep LIE/STRANG selectable.
-- Accept the ~20–50% modal-LV ceiling at strong continental contrast as the
-  documented limit, OR investigate a beyond-ansatz scheme (a small amount of true
-  harmonic coupling on top of the rate modulation) if higher fidelity is required —
-  a larger research step.
-- Cost of COUPLED vs LIE not yet precisely benchmarked (both ≪ VE); measure before
-  flipping the default.
+**COUPLED is now the production default** (`&fe3d lat_method = "coupled"`, type
+default `LAT_COUPLED`) — chosen for stability (no rebound runaway), strictly safer
+than LIE for deglaciation at realistic contrast. LIE and STRANG remain selectable
+(`lat_method = "lie" | "strang"`) so the ensemble can sweep them. The ensemble will
+be re-run with COUPLED.
+
+Open / accepted:
+- The ~20–50% modal-LV ceiling at strong continental contrast is the documented
+  intrinsic limit of the rate-modulation ansatz (design §4). Going below it needs a
+  beyond-ansatz scheme (a little true harmonic coupling) — a larger research step,
+  deferred.
+- COUPLED-vs-LIE wall-cost not yet precisely benchmarked (both ≪ VE; Arnoldi breaks
+  down in a few vectors so the overhead is small and m-independent). Measure on the
+  ensemble re-run.
+- Confirmation on the real Tarasov+Bagge field (lmax 32–48) still deferred (synthetic
+  only so far) — the ensemble re-run covers this.
