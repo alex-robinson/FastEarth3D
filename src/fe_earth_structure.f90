@@ -20,13 +20,14 @@ module fe_earth_structure
    private
 
    real(wp), parameter :: DEG2RAD_ = acos(-1.0_wp)/180.0_wp
+   real(wp), parameter :: R_PREM   = 6371.0e3_wp   !! PREM reference surface radius [m]
 
    ! Rheology of a layer.
    integer, parameter, public :: RHEOL_ELASTIC = 0   !! elastic (viscosity -> inf)
    integer, parameter, public :: RHEOL_MAXWELL = 1   !! Maxwell viscoelastic
    integer, parameter, public :: RHEOL_FLUID   = 2   !! inviscid fluid (mu = 0)
 
-   public :: earth_layer, earth_model, build_M3L70V01, build_earth
+   public :: earth_layer, earth_model, build_M3L70V01, build_earth, prem_rho_mu
    public :: fe_read_visc_3d, load_visc_3d
    public :: earth_n_layers, earth_rho_at, earth_mu_at, earth_eta_at, earth_mass_below, earth_total_mass, earth_gravity_at, earth_moi, earth_is_3d
 
@@ -59,31 +60,157 @@ contains
    ! --- Construction ----------------------------------------------------------
 
    function build_earth(p) result(em)
-      !! Build the earth model selected by p%earth: a named built-in, or "custom"
-      !! assembled from the per-layer arrays (surface-first) in the parameter record.
+      !! Build the earth model selected by p%earth: a named built-in, "custom"
+      !! assembled verbatim from the per-layer arrays (surface-first), or "PREM"
+      !! — the same layer geometry/viscosity arrays, but with density and shear
+      !! modulus auto-filled from the incompressible-PREM profile (see build_layered).
       type(fe_param_class), intent(in) :: p
       type(earth_model) :: em
-      integer :: k, n
 
       select case (trim(p%earth))
       case ("M3-L70-V01")
          em = build_M3L70V01()
       case ("custom")
-         n = p%n_layer
-         if (n < 1 .or. n > MAX_LAYER) &
-            error stop 'build_earth: n_layer out of range for a custom earth model'
-         em%name    = "custom"
-         em%r_earth = p%r_earth
-         em%r_core  = p%r_core
-         allocate(em%layers(n))
-         do k = 1, n
-            em%layers(k) = earth_layer(p%r_bot(k), p%r_top(k), p%rho(k), &
-                                       p%mu(k), p%eta(k), p%rheology(k))
-         end do
+         em = build_layered(p, use_prem=.false.)
+      case ("PREM")
+         em = build_layered(p, use_prem=.true.)
       case default
          error stop 'build_earth: unknown earth model "'//trim(p%earth)//'"'
       end select
    end function build_earth
+
+   function build_layered(p, use_prem) result(em)
+      !! Assemble a layered model from the surface-first parameter arrays
+      !! (n_layer, r_bot, r_top, eta, rheology). With use_prem=.false. ("custom")
+      !! every property — including rho and mu — is taken verbatim from the arrays.
+      !! With use_prem=.true. ("PREM") the per-layer density and shear modulus are
+      !! instead the r^2-weighted (mass-consistent) shell average of the
+      !! incompressible-PREM profile over each layer (prem_shell_avg), so the rho/mu
+      !! arrays are ignored; viscosity and rheology still come from the eta/rheology
+      !! arrays (PREM defines no viscosity — this mirrors VILMA, where PREM supplies
+      !! the elastic+density structure and a separate profile/3-D field supplies η).
+      !! Fluid layers keep mu = 0.
+      type(fe_param_class), intent(in) :: p
+      logical,              intent(in) :: use_prem
+      type(earth_model) :: em
+      integer  :: k, n
+      real(wp) :: rho_k, mu_k
+
+      n = p%n_layer
+      if (n < 1 .or. n > MAX_LAYER) &
+         error stop 'build_layered: n_layer out of range for a layered earth model'
+      if (use_prem) then; em%name = "PREM"; else; em%name = "custom"; end if
+      em%r_earth = p%r_earth
+      em%r_core  = p%r_core
+      allocate(em%layers(n))
+      do k = 1, n
+         rho_k = p%rho(k)
+         mu_k  = p%mu(k)
+         if (use_prem) then
+            call prem_shell_avg(p%r_bot(k), p%r_top(k), rho_k, mu_k)
+            if (p%rheology(k) == RHEOL_FLUID) mu_k = 0.0_wp
+         end if
+         em%layers(k) = earth_layer(p%r_bot(k), p%r_top(k), rho_k, &
+                                    mu_k, p%eta(k), p%rheology(k))
+      end do
+   end function build_layered
+
+   pure subroutine prem_rho_mu(r, rho, mu)
+      !! Incompressible-PREM density and shear modulus at radius r [m]
+      !! (Dziewonski & Anderson 1981), as realized by VILMA's mod_polyprem.f90 —
+      !! coefficients copied verbatim for parity; the canonical D&A-1981 Table I
+      !! differs only in a few digits (e.g. the 5600-5701 km region). Returns
+      !! rho [kg m^-3] and the shear modulus mu = rho*Vs^2 [Pa]; the incompressible
+      !! model needs no bulk modulus, so Vp is not evaluated. The normalized radius
+      !! is x = r / R_PREM with R_PREM = 6371 km (PREM's reference surface), keeping
+      !! the polynomials true to PREM regardless of the model's r_earth. The values
+      !! returned in the fluid core (r <= 3480 km) follow VILMA's fixed mu; callers
+      !! set mu = 0 for fluid layers, so only rho is used there.
+      real(wp), intent(in)  :: r
+      real(wp), intent(out) :: rho, mu
+      real(wp) :: x, vs
+
+      x = r / R_PREM
+      if (r <= 1221.5e3_wp) then              ! inner core
+         rho = 13088.5_wp - 8838.1_wp*x**2
+         mu  = 7.0363e10_wp
+      else if (r <= 3480.0e3_wp) then         ! outer core (fluid)
+         rho = 12581.5_wp - 1263.8_wp*x - 3642.6_wp*x**2 - 5528.1_wp*x**3
+         mu  = 7.0363e10_wp
+      else if (r <= 3630.0e3_wp) then         ! lowermost mantle (D'')
+         vs  = 6925.4_wp + 1467.2_wp*x - 2083.4_wp*x**2 + 978.3_wp*x**3
+         rho = 7956.5_wp - 6476.1_wp*x + 5528.3_wp*x**2 - 3080.7_wp*x**3
+         mu  = vs*vs*rho
+      else if (r <= 5600.0e3_wp) then         ! lower mantle
+         vs  = 11167.1_wp - 13781.8_wp*x + 17457.5_wp*x**2 - 9277.7_wp*x**3
+         rho = 7956.5_wp - 6476.1_wp*x + 5528.3_wp*x**2 - 3080.7_wp*x**3
+         mu  = vs*vs*rho
+      else if (r <= 5701.0e3_wp) then         ! lower mantle, just above 5600 km
+         vs  = 22345.9_wp - 17247.3_wp*x - 2083.4_wp*x**2 + 978.3_wp*x**3
+         rho = 7956.5_wp - 6476.1_wp*x + 5528.3_wp*x**2 - 3080.7_wp*x**3
+         mu  = vs*vs*rho
+      else if (r <= 5771.0e3_wp) then         ! transition zone (660-600 km)
+         vs  = 9983.9_wp - 4932.4_wp*x
+         rho = 5319.7_wp - 1483.6_wp*x
+         mu  = vs*vs*rho
+      else if (r <= 5971.0e3_wp) then         ! transition zone (600-400 km)
+         vs  = 22351.2_wp - 18585.6_wp*x
+         rho = 11249.4_wp - 8029.8_wp*x
+         mu  = vs*vs*rho
+      else if (r <= 6151.0e3_wp) then         ! upper mantle (400-220 km)
+         vs  = 8949.6_wp - 4459.7_wp*x
+         rho = 7108.9_wp - 3804.5_wp*x
+         mu  = vs*vs*rho
+      else if (r <= 6346.6e3_wp) then         ! upper mantle/lid (220 km-Moho), isotropic Vs
+         vs  = 2151.9_wp + 2348.1_wp*x
+         rho = 2691.0_wp + 692.4_wp*x
+         mu  = vs*vs*rho
+      else if (r <= 6356.0e3_wp) then         ! lower crust
+         vs  = 3900.0_wp
+         rho = 2900.0_wp
+         mu  = vs*vs*rho
+      else                                    ! upper crust (PREM ocean replaced by crust)
+         vs  = 3200.0_wp
+         rho = 2600.0_wp
+         mu  = vs*vs*rho
+      end if
+   end subroutine prem_rho_mu
+
+   pure subroutine prem_shell_avg(r_bot, r_top, rho, mu)
+      !! r^2-weighted (volume) average of the incompressible-PREM density and shear
+      !! modulus over the spherical shell [r_bot, r_top]: rho = layer mass / layer
+      !! volume = ∫ rho(r) r^2 dr / ∫ r^2 dr (and likewise mu). This is the
+      !! mass-consistent way to collapse the continuous PREM profile onto a finite
+      !! layer (the SELEN/TABOO/ALMA3 convention) — at coarse layer counts it avoids
+      !! the few-percent mass/gravity bias of midpoint sampling. Evaluated by
+      !! composite Simpson quadrature; the profile is piecewise-polynomial, so with
+      !! layer boundaries on the PREM discontinuities this is effectively exact.
+      real(wp), intent(in)  :: r_bot, r_top
+      real(wp), intent(out) :: rho, mu
+      integer, parameter :: n = 200      ! Simpson sub-intervals (even)
+      integer  :: i
+      real(wp) :: h, r, w, ww, rho_i, mu_i, num_rho, num_mu, den
+
+      h = (r_top - r_bot) / real(n, wp)
+      num_rho = 0.0_wp;  num_mu = 0.0_wp;  den = 0.0_wp
+      do i = 0, n
+         if (i == 0 .or. i == n) then
+            w = 1.0_wp
+         else if (mod(i,2) == 1) then
+            w = 4.0_wp
+         else
+            w = 2.0_wp
+         end if
+         r  = r_bot + real(i, wp)*h
+         ww = w*r*r
+         call prem_rho_mu(r, rho_i, mu_i)
+         num_rho = num_rho + ww*rho_i
+         num_mu  = num_mu  + ww*mu_i
+         den     = den     + ww
+      end do
+      rho = num_rho / den
+      mu  = num_mu  / den
+   end subroutine prem_shell_avg
 
    function build_M3L70V01() result(em)
       !! Benchmark Earth model M3-L70-V01 (Spada et al. 2011, GJI 185:106,

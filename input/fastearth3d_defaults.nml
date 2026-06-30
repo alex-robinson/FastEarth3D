@@ -27,10 +27,13 @@
     eps_polar = -1.0        ! polar-optimization threshold (<0 => library default)
 
     ! --- earth structure (fe_earth_structure) -------------------------
-    ! earth = a named built-in model, or "custom" to assemble from the
-    ! surface-first layer arrays below (rheology: 0=elastic 1=Maxwell 2=fluid).
-    ! The arrays here are the M3-L70-V01 layers, shown as a worked example;
-    ! they are inert unless earth = "custom".
+    ! earth = a named built-in model ("M3-L70-V01", "PREM"), or "custom" to
+    ! assemble from the surface-first layer arrays below (rheology: 0=elastic
+    ! 1=Maxwell 2=fluid). The arrays here are the M3-L70-V01 layers, shown as a
+    ! worked example; they are inert unless earth = "custom" or "PREM".
+    !   "PREM" reuses the same n_layer/r_bot/r_top/eta/rheology arrays, but fills
+    !   rho and mu from the r^2-weighted shell average of incompressible PREM
+    !   (Dziewonski & Anderson 1981) — see the ready-to-use PREM block below.
     earth    = "M3-L70-V01"
     n_layer  = 5
     r_earth  = 6371.0e3
@@ -41,6 +44,23 @@
     mu       = 5.0605e10, 7.0363e10, 1.0549e11, 2.2834e11, 0.0
     eta      = 1.0e40,    1.0e21,    1.0e21,    2.0e21,    0.0
     rheology = 0, 1, 1, 1, 2
+
+    ! --- PREM (incompressible) — to use, set earth = "PREM" and copy this -----
+    ! block over the arrays above. 11 layers: 80 km elastic lithosphere + 9
+    ! Maxwell mantle layers + inviscid fluid core, with boundaries on the major
+    ! PREM discontinuities. rho/mu are AUTO-FILLED from the r^2-weighted shell
+    ! average of PREM (the values shown are for reference only and are ignored);
+    ! only the geometry, eta, and rheology are read. The eta column is the
+    ! CLIMBER-X/VILMA "Clemens" 1-D radial reference (lower mantle 1e22, upper
+    ! mantle 4e20, elastic lithosphere); for production overlay the Bagge 3-D
+    ! field via l_visc_3d below — exactly as CLIMBER-X runs VILMA.
+    !   n_layer  = 11
+    !   r_bot    = 6291.0e3, 6151.0e3, 5971.0e3, 5771.0e3, 5701.0e3, 5600.0e3, 4943.0e3, 4287.0e3, 3630.0e3, 3480.0e3,    0.0
+    !   r_top    = 6371.0e3, 6291.0e3, 6151.0e3, 5971.0e3, 5771.0e3, 5701.0e3, 5600.0e3, 4943.0e3, 4287.0e3, 3630.0e3, 3480.0e3
+    !   rho      =   3175.1,   3367.3,   3489.4,   3848.4,   3984.9,   4411.9,   4628.0,   4986.1,   5318.7,   5538.8,  10987.2   ! auto-filled; ignored
+    !   mu       = 5.727e10, 6.655e10, 7.732e10, 1.051e11, 1.225e11, 1.638e11, 1.926e11, 2.313e11, 2.690e11, 2.913e11,      0.0   ! auto-filled; ignored
+    !   eta      = 1.0e40,   4.0e20,   4.0e20,   4.0e20,   4.0e20,   1.0e22,   1.0e22,   1.0e22,   1.0e22,   1.0e22,      0.0
+    !   rheology = 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2
 
     ! --- viscoelastic memory scheme (fe_response) ---------------------
     scheme          = "fe"     ! fe | etd1 | trap | be  (fe = 1st-order explicit, default; trap = 2nd-order adaptive)
