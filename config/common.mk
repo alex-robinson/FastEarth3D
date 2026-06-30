@@ -15,8 +15,9 @@
 #
 # SHTns (spherical-harmonic transforms) is built into fesm-utils with:
 #     cd fesm-utils && ./build.py -m <machine> -c <compiler> --component shtns
-# It links FFTW, which fesm-utils also builds. Serial variants are used by
-# default; `make openmp=1` swaps in the OpenMP variants below.
+# It links FFTW, which fesm-utils also builds. The OpenMP dependency variants
+# are used by default (openmp=1); `make openmp=0` swaps in the serial variants.
+# The swap is driven by the openmp= switch in the OpenMP section below.
 
 # --- fesm-utils helper library (ncio, nml, mapping_scrip, ...) ---------------
 FESMUTILSROOT = fesm-utils/utils
@@ -40,14 +41,29 @@ LIB_SHTNS = -L$(SHTNSROOT)/lib -lshtns
 INC_LIS =
 LIB_LIS =
 
-# --- OpenMP ------------------------------------------------------------------
-# `make openmp=1` adds -fopenmp (via config/Makefile, appended to FFLAGS) to thread
-# the per-degree loop in fe_response (begin_step / commit_step). The dependency
-# libraries deliberately stay SERIAL: we thread over independent per-degree systems
-# ourselves, each solved by the re-entrant banded LU (fe_band); SHTns/FFTW are
-# called only outside the parallel regions. There is no LIS to reconcile — the
-# iterative solver was removed in favour of the direct banded LU, which is also why
-# this build no longer depends on a serial-vs-OpenMP LIS variant at all.
+# --- OpenMP build (make openmp=1) --------------------------------------------
+# Two things happen for an OpenMP build:
+#   1. The serial dependency builds above are swapped for their OpenMP variants
+#      (done here): include-omp for fesm-utils, fftw-omp (-lfftw3_omp -lfftw3),
+#      and shtns-omp (libshtns_omp.a, i.e. -lshtns_omp).
+#   2. The compiler's OpenMP flag (-fopenmp / FFLAGS_OPENMP) is appended to
+#      FFLAGS by config/Makefile, which also threads the per-degree loop in
+#      fe_response (begin_step / commit_step) over independent per-degree systems,
+#      each solved by the re-entrant banded LU (fe_band).
+# (There is no LIS variant to reconcile: the iterative solver was removed in
+# favour of the direct banded LU.)
+ifeq ($(openmp),1)
+	INC_FESMUTILS = -I$(FESMUTILSROOT)/include-omp
+	LIB_FESMUTILS = -L$(FESMUTILSROOT)/include-omp -lfesmutils
+
+	FFTWROOT = fesm-utils/fftw-omp
+	INC_FFTW = -I$(FFTWROOT)/include
+	LIB_FFTW = -L$(FFTWROOT)/lib -lfftw3_omp -lfftw3 -lm
+
+	SHTNSROOT = fesm-utils/shtns-omp
+	INC_SHTNS = -I$(SHTNSROOT)/include
+	LIB_SHTNS = -L$(SHTNSROOT)/lib -lshtns_omp
+endif
 
 # --- Final flag sets ---------------------------------------------------------
 # MODFLAGS (-I/-J objdir) and FFLAGS_BASE come from the compiler fragment.
