@@ -73,7 +73,7 @@ VTOL_PROBE=${VTOL_PROBE:-0.1 0.3 1.0}
 T0=${T0:--26000.0}                           # transient start [yr] (LGM)
 T1=${T1:-0.0}                                # transient end   [yr] (present)
 DT_COUPLE=${DT_COUPLE:-100.0}                # coupling interval [yr] (forcing cadence)
-TIME_EQUIL_MAX=${TIME_EQUIL_MAX:-100000.0}   # LGM-memory spin-up cap [yr]
+TIME_EQUIL_MAX=${TIME_EQUIL_MAX:-10000.0}    # LGM-memory spin-up cap [yr]
 OMP=${OMP:-8}                                # OpenMP threads per run
 EXP=${EXP:-runs/ve_res_sweep}                # experiment root (under gitignored runs/)
 
