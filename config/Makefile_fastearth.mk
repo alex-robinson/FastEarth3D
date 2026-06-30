@@ -95,7 +95,7 @@ fastearth_remap: fastearth-static | $(bindir)
 		-o $(bindir)/fastearth_remap.x $(objdir)/libfastearth.a $(LFLAGS)
 	@echo "    $(bindir)/fastearth_remap.x is ready."
 
-# --- Offline reference (bed + ice) prebake onto the Gauss grid ---------------
+# --- Offline reference (bed + ice) generation onto the Gauss grid ------------
 fastearth_mkref: fastearth-static | $(bindir)
 	$(FC) $(DFLAGS) $(CPPFLAGS) $(FFLAGS) $(srcdir)/fastearth_mkref_main.f90 \
 		-o $(bindir)/fastearth_mkref.x $(objdir)/libfastearth.a $(LFLAGS)

@@ -1,16 +1,16 @@
 program fastearth_mkref
-   !! Offline prebake of the 2D reference state (bedrock + ice) onto the model
-   !! Gauss grid. Reads a &fe3d config (grid knobs lmax/nlat/nphi, the reference
-   !! source z_bed_ref_file / h_ice_ref_file + name_z_bed_ref / name_h_ice_ref /
-   !! name_lon / name_lat, and file_out), conservatively remaps bed (as-is) and ice
-   !! (mass-conserving) once, and writes a small Gauss-grid reference file.
+   !! Offline reference generation: write the 2D reference state (bedrock + ice) onto
+   !! a chosen Gauss grid. Reads a &fe3d config (grid knobs lmax/nlat/nphi, the
+   !! reference source z_bed_ref_file / h_ice_ref_file + name_z_bed_ref /
+   !! name_h_ice_ref / name_lon / name_lat, and file_out), conservatively remaps bed
+   !! (as-is) and ice (mass-conserving) once, and writes a Gauss-grid reference file.
    !!
-   !!   ./bin/fastearth_mkref.x prebake.nml [defaults.nml]
+   !!   ./bin/fastearth_mkref.x mkref_l128.nml [defaults.nml]
    !!
-   !! The driver (fe_drive, i_eq=1/2/3) reads such a file directly — its lon/lat
-   !! dims match the Gauss grid, so read_ref2d skips the conservative-map build. The
-   !! same fe_remap engine is used here, so the prebaked field is identical to the
-   !! online remap. Both reference vars are assumed on a common source grid (RTopo).
+   !! Used to generate the canonical reference data/reference/rtopo_gauss_l128.nc from
+   !! the 0.5-deg source. Runs at other resolutions remap that canonical reference
+   !! online (cached), so regenerating per-resolution files is no longer needed. Both
+   !! reference vars are assumed on a common source grid (RTopo).
    use fe_precision, only: wp
    use fe_params,    only: fe_param_class, fe_par_load
    use fe_sht,       only: sht_grid, sht_grid_init, sht_grid_destroy

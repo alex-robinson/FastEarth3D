@@ -39,8 +39,8 @@ VISC3D=${VISC3D:-${ISOSTASY_DATA}/earth_structure/viscosity/bagge2021.nc}   # lo
 # Experiment knobs.
 # ============================================================================
 # Resolution sweep. LMAX_REF is the production resolution and the error reference;
-# it MUST appear in LMAX_LIST. Each lmax needs its matching present-day reference
-# data/reference/rtopo_gauss_l<lmax>.nc (i_eq=1); missing files fail loudly below.
+# it MUST appear in LMAX_LIST. Every run uses the one canonical reference
+# data/reference/rtopo_gauss_l128.nc (i_eq=1), remapped to its lmax online (cached).
 LMAX_LIST=${LMAX_LIST:-32 64 96 128}        # spherical-harmonic degrees to sweep
 LMAX_REF=${LMAX_REF:-128}                    # production target + error reference
 
@@ -64,7 +64,7 @@ VTOL_PROBE=${VTOL_PROBE:-0.1 0.3 1.0}
 T0=${T0:--26000.0}                           # transient start [yr] (LGM)
 T1=${T1:-0.0}                                # transient end   [yr] (present)
 DT_COUPLE=${DT_COUPLE:-100.0}                # coupling interval [yr] (forcing cadence)
-DT_EQUIL=${DT_EQUIL:-10000.0}                # LGM-memory spin-up [yr/pass]
+TIME_EQUIL_MAX=${TIME_EQUIL_MAX:-100000.0}   # LGM-memory spin-up cap [yr]
 OMP=${OMP:-8}                                # OpenMP threads per run
 EXP=${EXP:-runs/ve_res_sweep}                # experiment root (under gitignored runs/)
 
@@ -74,7 +74,7 @@ EXP=${EXP:-runs/ve_res_sweep}                # experiment root (under gitignored
 RUNME_FLAGS=${RUNME_FLAGS--s -r}             # note: `-` not `:-`, so RUNME_FLAGS="" = stage-only
 
 # 3-D viscosity + cheap 1-D LGM spin-up (the deglac3d setup from run_modal_vs_ve.sh).
-VISC3D_ON=(fe3d.l_visc_3d=true fe3d.spinup_1d=true fe3d.visc_3d_file="$VISC3D")
+VISC3D_ON=(fe3d.l_visc_3d=true fe3d.pre_spinup_1d=true fe3d.visc_3d_file="$VISC3D")
 
 # Parameters common to every run (machine paths + the shared deglaciation setup).
 # Resolution (lmax + reference) and the scheme/cfl are added per run below.
@@ -85,21 +85,21 @@ COMMON=(
   fe3d.earth_response=ve
   fe3d.scheme=fe
   fe3d.dt_couple="$DT_COUPLE"
-  fe3d.dt_equil="$DT_EQUIL"
+  fe3d.time_equil_max="$TIME_EQUIL_MAX"
   fe3d.time_init="$T0"
   fe3d.time_end="$T1"
   fe3d.rotation=true            # real-Earth run: rotational feedback on
   fe3d.file_out=out.nc
 )
 
-# require <ref-file> — fail loudly if a per-resolution reference is missing.
-require() { [ -f "$1" ] || { echo "ERROR: reference file not found: $1 (need rtopo_gauss_l<lmax>.nc; make fastearth_mkref)" >&2; exit 1; }; }
+# the single canonical reference; remapped to each run's resolution online (cached).
+REF=${REF:-data/reference/rtopo_gauss_l128.nc}
+[ -f "$REF" ] || { echo "ERROR: reference file not found: $REF (make fastearth_mkref)" >&2; exit 1; }
 
 # launch <outdir> <lmax> <extra -p args...> — one VE run at the given resolution.
 launch() {
   local out=$1 lmax=$2; shift 2
-  local ref="data/reference/rtopo_gauss_l${lmax}.nc"
-  require "$ref"
+  local ref="$REF"
   echo ">>> $out   (lmax=$lmax $*)"
   runme -o "$out" -e main --omp "$OMP" $RUNME_FLAGS \
         -p "${COMMON[@]}" \
@@ -111,7 +111,7 @@ launch() {
 case " $LMAX_LIST " in *" $LMAX_REF "*) ;; *) echo "ERROR: LMAX_REF=$LMAX_REF not in LMAX_LIST='$LMAX_LIST'" >&2; exit 1;; esac
 
 echo "lmax sweep: $LMAX_LIST   ref=$LMAX_REF   cfl-probe@ref: ${CFL_PROBE:-(none)}   vtol-probe@ref: ${VTOL_PROBE:-(none)}"
-echo "window=[$T0,$T1]  dt_couple=$DT_COUPLE  dt_equil=$DT_EQUIL  omp=$OMP"
+echo "window=[$T0,$T1]  dt_couple=$DT_COUPLE  time_equil_max=$TIME_EQUIL_MAX  omp=$OMP"
 echo "exp root: $EXP    runme flags: '$RUNME_FLAGS'"
 
 # ---------------------------------------------------------------------------

@@ -11,7 +11,7 @@
 #                 with n_modes=all converges to VE exactly; isolates the accuracy
 #                 of the mode-count / ranking dial (no lateral approximation).
 #   2. deglac3d — full run with laterally-varying (3-D) viscosity. The LGM spin-up
-#                 is done with the cheap 1-D solver in every case (spinup_1d=true),
+#                 is done with the cheap 1-D solver in every case (pre_spinup_1d=true),
 #                 then the transient runs on the 3-D path. This is where modal is a
 #                 genuine approximation to VE (design §4).
 #
@@ -47,14 +47,14 @@ VISC3D=${VISC3D:-${ISOSTASY_DATA}/earth_structure/viscosity/bagge2021.nc}  # log
 # ============================================================================
 # Resolution. LMAX is the one knob for the WHOLE script; LMAX_RADIAL / LMAX_DEGLAC
 # default to it but can be set independently (e.g. cheap radial benchmark at 64,
-# deglaciation at 128). The matching reference file rtopo_gauss_l<LMAX>.nc must exist.
+# deglaciation at 128). All runs use the canonical reference rtopo_gauss_l128.nc.
 LMAX=${LMAX:-64}                             # spherical-harmonic degree (whole script)
 LMAX_RADIAL=${LMAX_RADIAL:-$LMAX}            # set 1 (idealized / radial)
 LMAX_DEGLAC=${LMAX_DEGLAC:-$LMAX}            # set 2 (full deglaciation)
 T0=${T0:--26000.0}                           # transient start [yr] (LGM)
 T1=${T1:-0.0}                                # transient end   [yr] (present)
 DT_COUPLE=${DT_COUPLE:-100.0}                # coupling interval [yr] (forcing cadence)
-DT_EQUIL=${DT_EQUIL:-10000.0}                # LGM-memory spin-up [yr/pass]
+TIME_EQUIL_MAX=${TIME_EQUIL_MAX:-100000.0}    # LGM-memory spin-up cap [yr]
 OMP=${OMP:-8}                                # OpenMP threads per run
 EXP=${EXP:-runs/modal_vs_ve}                 # experiment root (under gitignored runs/)
 
@@ -80,17 +80,15 @@ RUNME_FLAGS=${RUNME_FLAGS--s -r}     # note: `-` not `:-`, so RUNME_FLAGS="" mea
 
 # Turning on 3-D viscosity + 1-D spin-up. runme writes booleans quoted ('true'),
 # but the model's nml reader parses 'true'/'false' as logicals, so -p is fine.
-VISC3D_ON=(fe3d.l_visc_3d=true fe3d.spinup_1d=true fe3d.visc_3d_file="$VISC3D")
+VISC3D_ON=(fe3d.l_visc_3d=true fe3d.pre_spinup_1d=true fe3d.visc_3d_file="$VISC3D")
 
-# Per-resolution params (lmax + the matching present-day reference, i_eq=1). The ref
-# is resolved via the rundir 'data' symlink; require it to exist up front.
-REF_RADIAL="data/reference/rtopo_gauss_l${LMAX_RADIAL}.nc"
-REF_DEGLAC="data/reference/rtopo_gauss_l${LMAX_DEGLAC}.nc"
-for r in "$REF_RADIAL" "$REF_DEGLAC"; do
-  [ -f "$r" ] || { echo "ERROR: reference file not found: $r (need rtopo_gauss_l<lmax>.nc)" >&2; exit 1; }
-done
-RES_RADIAL=(fe3d.lmax="$LMAX_RADIAL" fe3d.z_bed_ref_file="$REF_RADIAL" fe3d.h_ice_ref_file="$REF_RADIAL")
-RES_DEGLAC=(fe3d.lmax="$LMAX_DEGLAC" fe3d.z_bed_ref_file="$REF_DEGLAC" fe3d.h_ice_ref_file="$REF_DEGLAC")
+# Per-resolution params (lmax, i_eq=1). Every run uses the one canonical present-day
+# reference, remapped to its lmax online (cached). The ref is resolved via the rundir
+# 'data' symlink; require it to exist up front.
+REF=${REF:-data/reference/rtopo_gauss_l128.nc}
+[ -f "$REF" ] || { echo "ERROR: reference file not found: $REF (make fastearth_mkref)" >&2; exit 1; }
+RES_RADIAL=(fe3d.lmax="$LMAX_RADIAL" fe3d.z_bed_ref_file="$REF" fe3d.h_ice_ref_file="$REF")
+RES_DEGLAC=(fe3d.lmax="$LMAX_DEGLAC" fe3d.z_bed_ref_file="$REF" fe3d.h_ice_ref_file="$REF")
 
 # Parameters common to every run (machine paths + the shared deglaciation setup).
 # Resolution (lmax + reference) is added per set from RES_RADIAL / RES_DEGLAC.
@@ -99,7 +97,7 @@ COMMON=(
   fe3d.name_ice=ice_thickness
   fe3d.i_eq=1
   fe3d.dt_couple="$DT_COUPLE"
-  fe3d.dt_equil="$DT_EQUIL"
+  fe3d.time_equil_max="$TIME_EQUIL_MAX"
   fe3d.time_init="$T0"
   fe3d.time_end="$T1"
   fe3d.rotation=true            # real-Earth runs: rotational feedback on (both solvers)
@@ -119,7 +117,7 @@ launch() {
         -p "${COMMON[@]}" "$@"
 }
 
-echo "lmax: radial=$LMAX_RADIAL deglac3d=$LMAX_DEGLAC  window=[$T0,$T1]  dt_couple=$DT_COUPLE  dt_equil=$DT_EQUIL  omp=$OMP"
+echo "lmax: radial=$LMAX_RADIAL deglac3d=$LMAX_DEGLAC  window=[$T0,$T1]  dt_couple=$DT_COUPLE  time_equil_max=$TIME_EQUIL_MAX  omp=$OMP"
 echo "exp root: $EXP    runme flags: '$RUNME_FLAGS'"
 
 # ---------------------------------------------------------------------------

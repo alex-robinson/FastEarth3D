@@ -373,11 +373,11 @@ contains
 
    subroutine read_ref2d(p, sht, remap, file, varname, conserve, field)
       !! Read a 2D lon-lat reference field onto the Gauss grid. If the file is
-      !! already on the Gauss grid (its lon/lat dims match nphi/nlat — e.g. a
-      !! prebaked reference from fastearth_mkref) it is read directly, skipping the
-      !! expensive conservative-map build. Otherwise a per-file conservative map is
-      !! built from the file's own axes and applied (conserve=.true. for ice). In
-      !! legacy (remap=.false.) mode the field is read directly.
+      !! already on the Gauss grid (its lon/lat dims match nphi/nlat — e.g. the
+      !! canonical reference at this run's resolution) it is read directly. Otherwise
+      !! a per-file conservative map is built from the file's own axes and applied
+      !! (conserve=.true. for ice) — the weights are cached (fe_remap), so the build
+      !! cost is paid once. In legacy (remap=.false.) mode the field is read directly.
       type(fe_param_class), intent(in)  :: p
       type(sht_grid),       intent(in)  :: sht
       logical,              intent(in)  :: remap, conserve
