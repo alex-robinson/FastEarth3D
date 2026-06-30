@@ -1,7 +1,8 @@
 program test_params
    !! fe_params: load a &fe3d namelist into fe_param_class and build the earth
    !! model from it. A sparse user file is overlaid on the complete, shipped
-   !! defaults file (fastearth.nml) — the yelmo defaults_file convention. Checks
+   !! defaults file (input/fastearth3d_defaults.nml) — the yelmo defaults_file
+   !! convention. Checks
    !! (1) scalar / string / logical overrides, (2) the YEARS->seconds conversion
    !! of the time fields, (3) custom per-layer earth assembly, (4) the named
    !! built-in path (defaults), and (5) an un-overridden value falling through to
@@ -13,7 +14,7 @@ program test_params
    implicit none
 
    character(len=*), parameter :: NML  = "obj/test_params.nml"
-   character(len=*), parameter :: DEFS = "fastearth.nml"   ! shipped complete defaults
+   character(len=*), parameter :: DEFS = "input/fastearth3d_defaults.nml"   ! shipped complete &fe3d defaults
    type(fe_param_class) :: p, pdef
    type(earth_model)    :: em, emdef
    integer :: u

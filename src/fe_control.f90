@@ -18,6 +18,12 @@ module fe_control
    private
 
    public :: fe_ctl_class, fe_ctl_load, fe_ctl_print
+   public :: DEFAULTS_FILE
+
+   !! Canonical physics defaults the executables load automatically. A run config
+   !! given on the command line is overlaid on this (yelmo defaults_file convention).
+   !! Relative to the run directory; input/ is linked into each rundir (see .runme).
+   character(len=*), parameter :: DEFAULTS_FILE = "input/fastearth3d_defaults.nml"
 
    type :: fe_ctl_class
       ! --- ice-thickness forcing (lon,lat,time) ---------------------------------
@@ -76,64 +82,62 @@ module fe_control
 
 contains
 
-   subroutine fe_ctl_load(c, filename, defaults_file, group)
-      !! Fill the control record from the `&ctl` group of `filename`, overlaid on a
-      !! complete `defaults_file` (yelmo convention): every parameter must exist in the
-      !! defaults file, but the user `filename` may set only the subset it overrides (or
-      !! omit the group entirely, falling through to the defaults). If `defaults_file` is
-      !! omitted, `filename` IS its own defaults. Override `group` to read a differently-
-      !! named namelist. Time fields are given in YEARS and converted to SI here.
+   subroutine fe_ctl_load(c, filename, group)
+      !! Fill the control record from the `&ctl` group of `filename`. There is no
+      !! separate &ctl defaults file (the canonical defaults — input/fastearth3d_defaults.nml
+      !! — carry only &fe3d, the host API contract). Reads are therefore non-strict:
+      !! a parameter present in `filename` overrides, one that is absent keeps the
+      !! fe_ctl_class in-code default. So a run config may set only the &ctl keys it
+      !! needs. Override `group` to read a differently-named namelist. Time fields are
+      !! given in YEARS and converted to SI here.
       type(fe_ctl_class), intent(inout) :: c
       character(len=*),   intent(in)    :: filename
-      character(len=*),   intent(in), optional :: defaults_file
       character(len=*),   intent(in), optional :: group
       character(len=64)  :: g
-      character(len=512) :: df
       real(wp) :: time_init_yr, time_end_yr
 
-      g  = "ctl";       if (present(group))         g  = group
-      df = filename;    if (present(defaults_file)) df = defaults_file
+      g = "ctl";  if (present(group)) g = group
       call nml_set_verbose(.false.)             ! fe_ctl_print echoes a concise summary instead
 
       ! forcing
-      call nml_read(filename, g, "file_forcing",  c%file_forcing,  defaults_file=df)
-      call nml_read(filename, g, "name_ice",      c%name_ice,      defaults_file=df)
-      call nml_read(filename, g, "name_time",     c%name_time,     defaults_file=df)
+      call nml_read(filename, g, "file_forcing",  c%file_forcing)
+      call nml_read(filename, g, "name_ice",      c%name_ice)
+      call nml_read(filename, g, "name_time",     c%name_time)
 
       ! legacy Gauss-grid reference file
-      call nml_read(filename, g, "file_ref",      c%file_ref,      defaults_file=df)
-      call nml_read(filename, g, "name_zbed_eq",  c%name_zbed_eq,  defaults_file=df)
-      call nml_read(filename, g, "name_hice_ref", c%name_hice_ref, defaults_file=df)
+      call nml_read(filename, g, "file_ref",      c%file_ref)
+      call nml_read(filename, g, "name_zbed_eq",  c%name_zbed_eq)
+      call nml_read(filename, g, "name_hice_ref", c%name_hice_ref)
 
       ! output
-      call nml_read(filename, g, "file_out",      c%file_out,      defaults_file=df)
+      call nml_read(filename, g, "file_out",      c%file_out)
 
       ! time window (YEARS in the nml -> SI seconds in the record)
       time_init_yr = c%time_init/sec_per_year
       time_end_yr  = c%time_end /sec_per_year
-      call nml_read(filename, g, "time_init",     time_init_yr,    defaults_file=df)
-      call nml_read(filename, g, "time_end",      time_end_yr,     defaults_file=df)
+      call nml_read(filename, g, "time_init",     time_init_yr)
+      call nml_read(filename, g, "time_end",      time_end_yr)
       c%time_init = time_init_yr*sec_per_year
       c%time_end  = time_end_yr *sec_per_year
 
       ! online remap
-      call nml_read(filename, g, "remap_input",   c%remap_input,   defaults_file=df)
-      call nml_read(filename, g, "name_lon",      c%name_lon,      defaults_file=df)
-      call nml_read(filename, g, "name_lat",      c%name_lat,      defaults_file=df)
+      call nml_read(filename, g, "remap_input",   c%remap_input)
+      call nml_read(filename, g, "name_lon",      c%name_lon)
+      call nml_read(filename, g, "name_lat",      c%name_lat)
 
       ! reference / equilibration selector
-      call nml_read(filename, g, "i_eq",            c%i_eq,            defaults_file=df)
-      call nml_read(filename, g, "z_bed_ref_file",  c%z_bed_ref_file,  defaults_file=df)
-      call nml_read(filename, g, "h_ice_ref_file",  c%h_ice_ref_file,  defaults_file=df)
-      call nml_read(filename, g, "z_bed_eq_file",   c%z_bed_eq_file,   defaults_file=df)
-      call nml_read(filename, g, "h_ice_eq_file",   c%h_ice_eq_file,   defaults_file=df)
-      call nml_read(filename, g, "rsl_restart_file", c%rsl_restart_file, defaults_file=df)
-      call nml_read(filename, g, "name_z_bed_ref",  c%name_z_bed_ref,  defaults_file=df)
-      call nml_read(filename, g, "name_h_ice_ref",  c%name_h_ice_ref,  defaults_file=df)
-      call nml_read(filename, g, "name_rsl",        c%name_rsl,        defaults_file=df)
+      call nml_read(filename, g, "i_eq",            c%i_eq)
+      call nml_read(filename, g, "z_bed_ref_file",  c%z_bed_ref_file)
+      call nml_read(filename, g, "h_ice_ref_file",  c%h_ice_ref_file)
+      call nml_read(filename, g, "z_bed_eq_file",   c%z_bed_eq_file)
+      call nml_read(filename, g, "h_ice_eq_file",   c%h_ice_eq_file)
+      call nml_read(filename, g, "rsl_restart_file", c%rsl_restart_file)
+      call nml_read(filename, g, "name_z_bed_ref",  c%name_z_bed_ref)
+      call nml_read(filename, g, "name_h_ice_ref",  c%name_h_ice_ref)
+      call nml_read(filename, g, "name_rsl",        c%name_rsl)
 
       ! restart-in path
-      call nml_read(filename, g, "restart_in_file", c%restart_in_file, defaults_file=df)
+      call nml_read(filename, g, "restart_in_file", c%restart_in_file)
    end subroutine fe_ctl_load
 
    subroutine fe_ctl_print(c, unit)

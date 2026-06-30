@@ -1,7 +1,7 @@
 {
     "exe_default" : "bin/fastearth.x",
 
-    "par_path_as_argument" : false,
+    "par_path_as_argument" : true,
 
     "exe_aliases" :
         {   "main"  : "bin/fastearth.x",

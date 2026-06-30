@@ -6,7 +6,7 @@ module fastearth3d
    use fe_precision,       only: wp, sp, dp
    use fe_constants
    use fe_params,          only: fe_param_class, fe_par_load, fe_par_print
-   use fe_control,         only: fe_ctl_class, fe_ctl_load, fe_ctl_print
+   use fe_control,         only: fe_ctl_class, fe_ctl_load, fe_ctl_print, DEFAULTS_FILE
    use fe_sht,             only: sht_grid
    use fe_earth_structure, only: earth_model, build_earth, build_M3L70V01
    use fe_radial_fe,       only: radial_operator

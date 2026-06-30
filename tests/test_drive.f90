@@ -18,7 +18,7 @@ program test_drive
    character(len=*), parameter :: FORCE = "obj/test_drive_force.nc"
    character(len=*), parameter :: OUT   = "obj/test_drive_out.nc"
    character(len=*), parameter :: CFG   = "obj/test_drive.nml"
-   character(len=*), parameter :: DEFS  = "fastearth.nml"
+   character(len=*), parameter :: DEFS  = "input/fastearth3d_defaults.nml"
 
    type(sht_grid), target :: sht
    real(wp), allocatable  :: lon_deg(:), lat_deg(:), z_bed_eq(:,:), h_ice_eq(:,:)
@@ -68,8 +68,8 @@ program test_drive
    call nc_write_dim(FORCE, "time", x=tyr,     units="years", unlimited=.true.)
    call nc_write(FORCE, "h_ice", h_ice, dim1="lon", dim2="lat", dim3="time")
 
-   ! --- sparse config overlaid on the shipped defaults -------------------------
-   ! &fe3d carries the physics/grid overrides; &ctl the run I/O.
+   ! --- run config: sparse &fe3d (overlaid on the physics defaults) + a COMPLETE
+   ! --- &ctl group (the run config owns &ctl in full; it has no defaults file).
    open(newunit=u, file=CFG, status="replace", action="write")
    write(u,'(a)')    "&fe3d"
    write(u,'(a,i0)') "    lmax = ", LMAX
@@ -77,11 +77,28 @@ program test_drive
    write(u,'(a,i0)') "    nphi = ", NPHI
    write(u,'(a)')    "/"
    write(u,'(a)')    "&ctl"
-   write(u,'(a)')    '    file_ref     = "'//REF//'"'
    write(u,'(a)')    '    file_forcing = "'//FORCE//'"'
+   write(u,'(a)')    '    name_ice     = "h_ice"'
+   write(u,'(a)')    '    name_time    = "time"'
+   write(u,'(a)')    '    file_ref     = "'//REF//'"'
+   write(u,'(a)')    '    name_zbed_eq = "z_bed_eq"'
+   write(u,'(a)')    '    name_hice_ref = "h_ice_eq"'
    write(u,'(a)')    '    file_out     = "'//OUT//'"'
+   write(u,'(a)')    "    time_init    = -1.0e30"
+   write(u,'(a)')    "    time_end     =  1.0e30"
    write(u,'(a)')    "    remap_input  = .false."   ! input already on the Gauss grid
+   write(u,'(a)')    '    name_lon     = "lon"'
+   write(u,'(a)')    '    name_lat     = "lat"'
    write(u,'(a)')    "    i_eq         = 0"         ! start slice (ice-free) is the reference
+   write(u,'(a)')    '    z_bed_ref_file   = ""'
+   write(u,'(a)')    '    h_ice_ref_file   = ""'
+   write(u,'(a)')    '    z_bed_eq_file    = ""'
+   write(u,'(a)')    '    h_ice_eq_file    = ""'
+   write(u,'(a)')    '    rsl_restart_file = ""'
+   write(u,'(a)')    '    name_z_bed_ref = "bedrock_topography"'
+   write(u,'(a)')    '    name_h_ice_ref = "ice_thickness"'
+   write(u,'(a)')    '    name_rsl       = "rsl"'
+   write(u,'(a)')    '    restart_in_file = ""'
    write(u,'(a)')    "/"
    close(u)
 

@@ -1,124 +1,17 @@
-&fe3d
-    ! ====================================================================
-    ! FastEarth3D physics + numerics — the model configuration record
-    ! (fe_params). This is the host API contract: a host (CLIMBER-X) fills
-    ! these values in memory; the standalone driver reads them from this file.
-    ! This block is the CANONICAL, COMPLETE defaults set: every parameter is
-    ! present. A run can pass a sparse file overlaid on this one (fe_par_load
-    ! with defaults_file=...), setting only what it overrides.
-    !
-    ! Run-management settings (forcing/reference/output files, the time window,
-    ! online-remap and i_eq selectors, restart-in path) live in the separate
-    ! &ctl group below — used only by the executables, never by a host.
-    !
-    ! Δt fields (dt_*) are in YEARS here and converted to SI seconds on load;
-    ! everything else is SI.
-    ! ====================================================================
-
-    ! --- spectral grid (fe_sht) ---------------------------------------
-    lmax      = 64          ! maximum spherical-harmonic degree
-    nlat      = 0           ! Gauss latitudes (0 => SHTns default = lmax+2)
-    nphi      = 0           ! longitudes      (0 => SHTns default)
-    mmax      = -1          ! maximum order   (<0 => = lmax)
-    mres      = 1           ! order stride
-    eps_polar = -1.0        ! polar-optimization threshold (<0 => library default)
-
-    ! --- earth structure (fe_earth_structure) -------------------------
-    ! earth = a named built-in model, or "custom" to assemble from the
-    ! surface-first layer arrays below (rheology: 0=elastic 1=Maxwell 2=fluid).
-    ! The arrays here are the M3-L70-V01 layers, shown as a worked example;
-    ! they are inert unless earth = "custom".
-    earth    = "M3-L70-V01"
-    n_layer  = 5
-    r_earth  = 6371.0e3
-    r_core   = 3480.0e3
-    r_bot    = 6301.0e3, 5951.0e3, 5701.0e3, 3480.0e3,    0.0
-    r_top    = 6371.0e3, 6301.0e3, 5951.0e3, 5701.0e3, 3480.0e3
-    rho      =   3037.0,   3438.0,   3871.0,   4978.0,  10750.0
-    mu       = 5.0605e10, 7.0363e10, 1.0549e11, 2.2834e11, 0.0
-    eta      = 1.0e40,    1.0e21,    1.0e21,    2.0e21,    0.0
-    rheology = 0, 1, 1, 1, 2
-
-    ! --- viscoelastic memory scheme (fe_response) ---------------------
-    scheme          = "fe"     ! fe | etd1 | trap | be  (fe = 1st-order explicit, default; trap = 2nd-order adaptive)
-    max_couple_iter = 20       ! SLE<->memory co-convergence cap (implicit schemes)
-
-    ! --- response kind selector (fe_response / fe_modal) --------------
-    earth_response  = "ve"     ! ve | modal | elastic | null  (ve = full Martinec FE, default)
-    n_modes         = -1       ! modal: # relaxation modes per degree (<=0 => all above tol)
-    mode_rank       = "isostatic" ! modal rank metric: isostatic | rate | residue
-    lat_method      = "coupled" ! modal lateral-η: coupled (default, stable) | lie | strang
-    dt_be           = 1000.0   ! modal eigensolve backward-Euler Δt [years]
-    n_krylov        = 20       ! modal: Arnoldi/Krylov block size (caps modes/degree found; raise so all->VE)
-    modal_adaptive  = .false.  ! modal: sub-step each interval to rtol (A3). false=1 exact step/interval (fast); only helps 1-D temporal accuracy, not 3-D
-
-    ! --- sea-level equation (fe_sle) ----------------------------------
-    sle_n_outer      = 3
-    sle_n_inner      = 20
-    sle_tol          = 1.0e-7
-    sle_max_mem_iter = 20
-    sle_fixed_ocean  = .false. ! .true. => coastline held fixed (no migration)
-    sle_subgrid      = .true.  ! sloping-coast (mass-correct) ocean load
-
-    ! --- adaptive time stepping (fe_timestep) -------------------------
-    ! The coupling cadence is NOT a parameter: the host (or the driver's forcing
-    ! axis) passes each interval to solid_earth_update. These tune the internal
-    ! adaptive sub-stepping within an interval.
-    dt_init    = 0.0           ! first trial Δt [years] (0 => try the whole interval)
-    dt_min     = 0.0           ! Δt floor [years] (0 => none)
-    dt_max     = 1.0e30        ! Δt ceiling [years] (huge => no ceiling)
-    rtol       = 1.0e-4        ! relative local-error tolerance (memory norm)
-    atol       = 1.0e-3        ! absolute local-error floor
-    safety     = 0.9
-    grow_max   = 5.0
-    shrink_min = 0.2
-    cfl        = 1.0           ! explicit (fe) sub-step Maxwell-number ceiling M=mu*dt/eta
-
-    ! --- rotational feedback (fe_rotation) ----------------------------
-    rotation = .true.          ! TPW feedback: on for real runs; set .false. for
-                               ! the non-rotating community benchmarks
-
-    ! --- LGM-memory spin-up (fe_coupling solid_earth_spinup) ----------
-    ! A model capability the host opts into; holds the reference as the datum and
-    ! relaxes under the start-slice ice so the transient enters with viscous memory.
-    equil_time_max = 0.0     ! [years] >0: full-model LGM-memory spin-up cap (hold start ice,
-                             ! relax to bed-stationary, exit early or warn at this cap)
-    equil_rate_tol = 1.0e-3  ! [m/yr] spin-up convergence: mean bed velocity over a pass below
-                             ! which the relaxation is taken to have converged
-    pre_spinup_1d  = .false. ! run a cheap 1-D pre-equilibration first (geomean radial visc),
-                             ! then the full model carrying the spun-up memory
-
-    ! --- 3D viscosity field + uncertainty (fe_earth_structure) --------
-    l_visc_3d      = .false. ! load a lateral log10(eta) field
-    ! Default 3-D field: Bagge et al. (2021), floored at log10 eta = 19.5 (visc_log10_min
-    ! below). Preferred over Pan 2022, whose raw min (~13.7 dex) is unphysical and ~6x slower.
-    visc_3d_file   = "/Users/alrobi001/models/isostasy_data/earth_structure/viscosity/bagge2021.nc"
-    name_visc      = "eta"   ! viscosity var (log10 Pa s)
-    name_visc_lon  = "lon"
-    name_visc_lat  = "lat"
-    name_visc_r    = "r"
-    name_visc_sd   = ""      ! optional sigma(log10 eta) var; "" => relative sigma
-    f_visc_sd      = 0.0     ! perturbation in units of sigma (0 = mean field)
-    f_visc_rel     = 0.1     ! relative sigma = f_visc_rel*log10(eta) when no sd var
-    visc_log10_min = 19.5    ! floor on log10(eta) after read + perturbation [dex]
-    visc_log10_max = 30.0    ! ceiling on log10(eta) after read + perturbation [dex]
-    visc3d_tol     = 1.0e-3  ! lateral log10(eta) spread [dex] above which an element is genuinely
-                             ! 3-D (pays the dyadic SHT round-trip); higher => fewer 3-D elements,
-                             ! cheaper memory advance, at the cost of approximating weak lateral structure
-/
+! ====================================================================
+! FastEarth3D run configuration — the file you edit / pass on the command line:
+!     bin/fastearth.x [this-file.nml]      (default: fastearth.nml)
+! It is overlaid on the physics defaults in input/fastearth3d_defaults.nml
+! (loaded automatically). Only the parameters here override the defaults, so
+! anything present in this file is an ensemble knob you can sweep with `-p`.
+!
+! &ctl  : standalone-run control (forcing/reference/output, window, i_eq, ...).
+!         The full group lives here — a host model (CLIMBER-X) does not use it.
+! &fe3d : the curated subset of physics/numerics parameters we tune in ensembles.
+!         Everything else falls through to input/fastearth3d_defaults.nml.
+! ====================================================================
 
 &ctl
-    ! ====================================================================
-    ! Standalone-run control (fe_control). Forcing/reference/output files,
-    ! variable names, the time window, the online-remap toggle, the reference-
-    ! equilibration selector (i_eq), and the restart-in path. Read ONLY by the
-    ! executables (program fastearth + the offline tools). A host model
-    ! (CLIMBER-X) supplies all of this through the API and its own time loop,
-    ! and never reads this group.
-    !
-    ! Time fields (time_*) are in YEARS here and converted to SI seconds on load.
-    ! ====================================================================
-
     ! --- ice-thickness forcing, h_ice(lon,lat,time) -------------------
     file_forcing  = ""
     name_ice      = "h_ice"
@@ -157,4 +50,35 @@
     ! --- restart-in path ----------------------------------------------
     restart_in_file = ""     ! full-state restart to resume from (skips/precedes spin-up);
                              ! lower-res restart is interpolated up to the model grid
+/
+
+&fe3d
+    ! Curated physics/numerics knobs (override input/fastearth3d_defaults.nml).
+    ! Values here match the defaults — edit / sweep what you need.
+
+    ! --- resolution + scheme ------------------------------------------
+    lmax           = 64        ! maximum spherical-harmonic degree
+    nlat           = 0         ! Gauss latitudes (0 => default = lmax+2)
+    nphi           = 0         ! longitudes      (0 => default)
+    scheme         = "fe"      ! fe (1st-order, default) | trap (2nd-order adaptive) | etd1 | be
+    cfl            = 1.0       ! explicit (fe) sub-step Maxwell-number ceiling M=mu*dt/eta
+    rtol           = 1.0e-4    ! relative local-error tolerance (adaptive schemes)
+    rotation       = .true.    ! TPW rotational feedback (off for non-rotating benchmarks)
+
+    ! --- response kind (1-D VE vs reduced modal) ----------------------
+    earth_response = "ve"      ! ve | modal | elastic | null
+    n_modes        = -1        ! modal: # modes/degree (<=0 => all above tol)
+    mode_rank      = "isostatic" ! modal rank metric: isostatic | rate | residue
+    lat_method     = "coupled" ! modal lateral-η: coupled | lie | strang
+    n_krylov       = 20        ! modal: Arnoldi/Krylov block size
+    modal_adaptive = .false.   ! modal: sub-step each interval to rtol (1-D accuracy only)
+
+    ! --- LGM-memory spin-up -------------------------------------------
+    equil_time_max = 0.0       ! [years] >0: full-model spin-up cap (else no spin-up)
+    pre_spinup_1d  = .false.   ! cheap 1-D pre-equilibration first
+
+    ! --- 3-D viscosity + uncertainty sampling -------------------------
+    l_visc_3d      = .false.   ! load a lateral log10(eta) field (Bagge 2021 by default)
+    f_visc_sd      = 0.0       ! perturbation in units of sigma (0 = mean field)
+    visc3d_tol     = 1.0e-3    ! [dex] lateral spread above which an element is treated 3-D
 /

@@ -13,14 +13,14 @@ program fastearth_mkref
    !! reference vars are assumed on a common source grid (RTopo).
    use fe_precision, only: wp
    use fe_params,    only: fe_param_class, fe_par_load
-   use fe_control,   only: fe_ctl_class, fe_ctl_load
+   use fe_control,   only: fe_ctl_class, fe_ctl_load, DEFAULTS_FILE
    use fe_sht,       only: sht_grid, sht_grid_init, sht_grid_destroy
    use fe_remap,     only: remap_ll_gauss, remap_init, remap_to_gauss
    use ncio,         only: nc_read, nc_size, nc_create, nc_write_dim, nc_write
    implicit none
 
    real(wp), parameter :: RAD2DEG = 57.295779513082323_wp
-   character(len=512)  :: cfg, defs
+   character(len=512)  :: cfg
    type(fe_param_class) :: p
    type(fe_ctl_class)   :: c
    type(sht_grid)       :: sht
@@ -29,20 +29,14 @@ program fastearth_mkref
    real(wp), allocatable :: lon_g(:), lat_g(:)
    integer :: nlon, nls, np, nl, k, nlat, nphi
 
-   ! --- config ---------------------------------------------------------------
+   ! --- config (grid from &fe3d over the physics defaults; I/O from &ctl) -----
    if (command_argument_count() >= 1) then
       call get_command_argument(1, cfg)
    else
       cfg = "fastearth.nml"
    end if
-   if (command_argument_count() >= 2) then
-      call get_command_argument(2, defs)
-      call fe_par_load(p, cfg, defaults_file=trim(defs))
-      call fe_ctl_load(c, cfg, defaults_file=trim(defs))
-   else
-      call fe_par_load(p, cfg)
-      call fe_ctl_load(c, cfg)
-   end if
+   call fe_par_load(p, cfg, defaults_file=DEFAULTS_FILE)
+   call fe_ctl_load(c, cfg)
    if (len_trim(c%z_bed_ref_file) == 0) error stop 'fastearth_mkref: z_bed_ref_file not set'
    if (len_trim(c%h_ice_ref_file) == 0) error stop 'fastearth_mkref: h_ice_ref_file not set'
 

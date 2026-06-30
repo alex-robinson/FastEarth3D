@@ -51,11 +51,13 @@ module fe_drive
 contains
 
    subroutine fastearth_run(cfg_file, defaults_file)
-      !! Run a forced simulation defined by the &fe3d (physics) and &ctl (run control)
-      !! groups of cfg_file, both overlaid on defaults_file if given; otherwise cfg_file
-      !! must be complete.
-      character(len=*), intent(in)           :: cfg_file
-      character(len=*), intent(in), optional :: defaults_file
+      !! Run a forced simulation defined by cfg_file. Its &fe3d (physics) group is
+      !! overlaid on the complete physics defaults in defaults_file (the program
+      !! passes fe_control's DEFAULTS_FILE = input/fastearth3d_defaults.nml); its &ctl
+      !! (run control) group is read from cfg_file alone, with the fe_ctl_class in-code
+      !! defaults filling any gaps.
+      character(len=*), intent(in) :: cfg_file
+      character(len=*), intent(in) :: defaults_file
 
       type(fe_param_class)   :: p
       type(fe_ctl_class)     :: c
@@ -73,14 +75,11 @@ contains
       real(wp) :: t_dr, t_mm                      ! PROFILE: solid_earth_update sub-phases
       integer  :: nstep = 0
 
-      ! --- configuration (physics &fe3d + run control &ctl) ---------------------
-      if (present(defaults_file)) then
-         call fe_par_load(p, cfg_file, defaults_file=defaults_file)
-         call fe_ctl_load(c, cfg_file, defaults_file=defaults_file)
-      else
-         call fe_par_load(p, cfg_file)
-         call fe_ctl_load(c, cfg_file)
-      end if
+      ! --- configuration --------------------------------------------------------
+      ! &fe3d: cfg_file overlaid on the physics defaults. &ctl: from cfg_file alone
+      ! (the defaults file carries no &ctl group — it is the host API contract).
+      call fe_par_load(p, cfg_file, defaults_file=defaults_file)
+      call fe_ctl_load(c, cfg_file)
       call fe_par_print(p)
       call fe_ctl_print(c)
 
