@@ -38,3 +38,6 @@ data/reference/*.log
 
 # generated analysis figures
 /analysis/figs/
+
+# coords remap weight cache
+maps/

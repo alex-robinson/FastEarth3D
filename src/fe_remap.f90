@@ -1,9 +1,7 @@
 module fe_remap
    !! Bidirectional conservative/bilinear remapping between a host lon-lat grid and
    !! the model's SHTns Gauss-Legendre grid, built on the fesm-utils `coords` library
-   !! (great-circle polygon clipping for the conservative leg; quadrant-IDW neighbour
-   !! interpolation for the bilinear leg — the same SCRIP-style apparatus CLIMBER-X
-   !! uses host-side, but generated natively by coords, no CDO).
+   !! (in-package SCRIP-style weights, gen="coords", no CDO).
    !!
    !! Two legs, mirroring CLIMBER-X's VILMA coupling:
    !!   host lon-lat --(conservative)--> Gauss   [remap_to_gauss]   mass-bearing fields (ice)
@@ -14,6 +12,13 @@ module fe_remap
    !! the model Gauss grid, and drives h_ice in / rsl out through it; the standalone
    !! driver (fe_drive) uses it to remap lon-lat forcing onto the Gauss grid.
    !!
+   !! Caching: map_init writes each weight set to a SCRIP(-superset) NetCDF cache under
+   !! `fldr` (default "maps") and reloads it on the next run, keyed by the grid names —
+   !! which we tag with the grid dimensions so a resolution change invalidates the
+   !! cache. The conservative weight build (polygon clipping) is the costly step; the
+   !! cache lets a restart skip it. (Same-dimension/different-axes host grids would
+   !! collide on the name — clear `fldr` if the host grid changes at fixed resolution.)
+   !!
    !! Mass note: `coords` derives target cell boundaries from axis midpoints, so the
    !! Gauss-cell areas it uses are not exactly the SHTns Gauss quadrature weights. The
    !! conservative map is conservative w.r.t. its own areas, but when SHTns re-integrates
@@ -22,15 +27,9 @@ module fe_remap
    !! so its SHTns surface integral equals the source area-integral exactly (the whole
    !! sphere is 4*pi sr, used to convert the conserved coords-area total to steradians
    !! without needing the planet radius). Geometry fields (bed) are remapped as-is.
-   !!
-   !! Caching: the on-disk weight cache is intentionally NOT wired here. coords' only
-   !! cached weight path (map_scrip_*) shells out to CDO, which we avoid; a native
-   !! weight_map_t read/write belongs in coords/fesm-utils (reusable) rather than bolted
-   !! on here. The maps are rebuilt in-memory per run for now.
    use fe_precision, only: wp
    use fe_sht,       only: sht_grid, sht_grid_surface_integral
-   use coords,       only: grid_class, grid_init, map_class, map_init, &
-                           map_init_conservative, map_field
+   use coords,       only: grid_class, grid_init, map_class, map_init, map_field
    implicit none
    private
 
@@ -39,7 +38,7 @@ module fe_remap
 
    real(wp), parameter :: RAD2DEG = 57.295779513082323_wp
    real(wp), parameter :: FOURPI  = 12.566370614359172_wp
-   integer,  parameter :: BIL_NEIGHBORS = 8   !! neighbour pool for the bilinear (quadrant-IDW) leg
+   integer,  parameter :: BIL_NEIGHBORS = 8   !! neighbour pool for the bilinear leg
 
    type :: remap_ll_gauss
       !! A precomputed map pair between a host lon-lat grid and the model's SHTns
@@ -54,21 +53,26 @@ module fe_remap
 
 contains
 
-   subroutine remap_init(self, sht, lon_src, lat_src)
-      !! Build the conservative (ll->Gauss) and bilinear (Gauss->ll) maps for source
-      !! cell-centre axes lon_src(:), lat_src(:) [degrees, ascending] against the SHTns
-      !! Gauss grid. The Gauss grid is built with ASCENDING latitude (south first),
-      !! which coords expects; the apply routines flip into/out of the SHTns
-      !! (north-first) row order.
+   subroutine remap_init(self, sht, lon_src, lat_src, fldr)
+      !! Build (or load from cache) the conservative (ll->Gauss) and bilinear
+      !! (Gauss->ll) maps for source cell-centre axes lon_src(:), lat_src(:) [degrees,
+      !! ascending] against the SHTns Gauss grid. The Gauss grid is built with ASCENDING
+      !! latitude (south first), which coords expects; the apply routines flip into/out
+      !! of the SHTns (north-first) row order. fldr is the weight-cache directory.
       type(remap_ll_gauss), intent(out) :: self
       type(sht_grid),       intent(in)  :: sht
       real(wp),             intent(in)  :: lon_src(:)   !! source longitudes [deg]
       real(wp),             intent(in)  :: lat_src(:)   !! source latitudes  [deg]
+      character(len=*), optional, intent(in) :: fldr    !! weight-cache dir (default "maps")
       real(wp), allocatable :: lon_t(:), lat_t(:)
+      character(len=:), allocatable :: cache
+      character(len=64) :: ll_name, gauss_name
       integer :: j
 
       self%nlon = size(lon_src);  self%nlat_ll = size(lat_src)
       self%nphi = sht%nphi;       self%nlat    = sht%nlat
+      cache = "maps";  if (present(fldr)) cache = trim(fldr)
+      call execute_command_line("mkdir -p '"//cache//"'")
 
       allocate(lon_t(self%nphi), lat_t(self%nlat))
       do j = 1, self%nphi
@@ -80,13 +84,18 @@ contains
          lat_t(j) = 90.0_wp - sht%colat(self%nlat - j + 1)*RAD2DEG
       end do
 
-      call grid_init(self%ll,    name="ll-src", mtype="latlon", units="degrees", &
+      ! tag grid names with their dimensions so the weight cache is resolution-specific
+      write(ll_name,    '(a,i0,a,i0)') "ll_",    self%nlon, "x", self%nlat_ll
+      write(gauss_name, '(a,i0,a,i0)') "gauss_", self%nphi, "x", self%nlat
+      call grid_init(self%ll,    name=trim(ll_name),    mtype="latlon", units="degrees", &
                      lon180=.true.,  x=lon_src, y=lat_src)
-      call grid_init(self%gauss, name="gauss",  mtype="latlon", units="degrees", &
+      call grid_init(self%gauss, name=trim(gauss_name), mtype="latlon", units="degrees", &
                      lon180=.false., x=lon_t,   y=lat_t)
 
-      call map_init_conservative(self%to_gauss, self%ll, self%gauss)
-      call map_init(self%to_ll, self%gauss, self%ll, max_neighbors=BIL_NEIGHBORS)
+      ! in-package weights (gen="coords"), auto-cached under fldr and reloaded if present
+      call map_init(self%to_gauss, self%ll, self%gauss, method="con", gen="coords", fldr=cache)
+      call map_init(self%to_ll, self%gauss, self%ll, method="bilinear", &
+                    max_neighbors=BIL_NEIGHBORS, gen="coords", fldr=cache)
    end subroutine remap_init
 
    subroutine remap_to_gauss(self, sht, f_ll, f_gauss, conserve_mass)
@@ -111,7 +120,7 @@ contains
          error stop 'fe_remap: target field shape /= SHTns grid'
 
       allocate(vt(self%nphi, self%nlat), m2(self%nphi, self%nlat))
-      call map_field(self%to_gauss, "f", f_ll, vt, method="mean", mask2=m2)
+      call map_field(self%to_gauss, "f", f_ll, vt, stat="mean", mask2=m2)
       where (.not. m2) vt = 0.0_wp                       ! uncovered cells (global src: none)
 
       do j = 1, self%nlat                                 ! ascending-lat -> SHTns north-first
