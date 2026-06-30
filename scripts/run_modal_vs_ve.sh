@@ -54,7 +54,7 @@ LMAX_DEGLAC=${LMAX_DEGLAC:-$LMAX}            # set 2 (full deglaciation)
 T0=${T0:--26000.0}                           # transient start [yr] (LGM)
 T1=${T1:-0.0}                                # transient end   [yr] (present)
 DT_COUPLE=${DT_COUPLE:-100.0}                # coupling interval [yr] (forcing cadence)
-TIME_EQUIL_MAX=${TIME_EQUIL_MAX:-100000.0}    # LGM-memory spin-up cap [yr]
+EQUIL_TIME_MAX=${EQUIL_TIME_MAX:-100000.0}    # LGM-memory spin-up cap [yr]
 OMP=${OMP:-8}                                # OpenMP threads per run
 EXP=${EXP:-runs/modal_vs_ve}                 # experiment root (under gitignored runs/)
 
@@ -97,7 +97,7 @@ COMMON=(
   fe3d.name_ice=ice_thickness
   fe3d.i_eq=1
   fe3d.dt_couple="$DT_COUPLE"
-  fe3d.time_equil_max="$TIME_EQUIL_MAX"
+  fe3d.equil_time_max="$EQUIL_TIME_MAX"
   fe3d.time_init="$T0"
   fe3d.time_end="$T1"
   fe3d.rotation=true            # real-Earth runs: rotational feedback on (both solvers)
@@ -117,7 +117,7 @@ launch() {
         -p "${COMMON[@]}" "$@"
 }
 
-echo "lmax: radial=$LMAX_RADIAL deglac3d=$LMAX_DEGLAC  window=[$T0,$T1]  dt_couple=$DT_COUPLE  time_equil_max=$TIME_EQUIL_MAX  omp=$OMP"
+echo "lmax: radial=$LMAX_RADIAL deglac3d=$LMAX_DEGLAC  window=[$T0,$T1]  dt_couple=$DT_COUPLE  equil_time_max=$EQUIL_TIME_MAX  omp=$OMP"
 echo "exp root: $EXP    runme flags: '$RUNME_FLAGS'"
 
 # ---------------------------------------------------------------------------

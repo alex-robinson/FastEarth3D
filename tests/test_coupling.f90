@@ -40,7 +40,6 @@ program test_coupling
    bed_eq_ice = z_bed_eq(1,jice)
 
    dt_couple    = 2.0e3_wp                          ! interval per se%update call [years]
-   p%dt_couple  = dt_couple*sec_per_year            ! param seed (SI); default cadence (default fe scheme)
    p%lmax = LMAX;  p%nlat = 2*LMAX;  p%nphi = 4*LMAX ! model builds its own grid from par (matches local sht)
    se%par = p; call solid_earth_init(se, z_bed_eq, h_ice_eq)   ! no grid => Gauss-native (passthrough)
 
@@ -164,7 +163,6 @@ contains
       allocate(h_off(sht%nphi,sht%nlat), zoff(sht%nphi,sht%nlat))
       call make_load_offaxis(h_off)
 
-      pr%dt_couple = dt_couple
       pr%lmax = LMAX;  pr%nlat = 2*LMAX;  pr%nphi = 4*LMAX
       pr%rotation  = .false.
       se_off%par = pr; call solid_earth_init(se_off, z_bed_eq, h_ice_eq)

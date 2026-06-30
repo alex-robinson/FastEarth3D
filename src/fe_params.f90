@@ -1,14 +1,17 @@
 module fe_params
-   !! Single configuration record for the whole solid-Earth model, loaded from one
-   !! namelist group `&fe3d` (yelmo convention: a flat parameter type filled by
-   !! nml_read, see fesm-utils/utils/src/nml.f90). Every runtime knob lives here;
+   !! Physics + numerics configuration record for the solid-Earth model, loaded from
+   !! one namelist group `&fe3d` (yelmo convention: a flat parameter type filled by
+   !! nml_read, see fesm-utils/utils/src/nml.f90). This is the host API contract:
    !! the high-level system init (solid_earth_init) consumes the whole record and
    !! distributes the values to the sub-solvers, while the specific component inits
    !! keep their direct-argument signatures.
    !!
-   !! The standalone driver (program fastearth) reads `&fe3d` from a file and runs
-   !! a forced simulation; a host model (CLIMBER-X) can instead fill the record in
-   !! memory. The IO fields (file_*, name_*, time_*) are used only by the driver.
+   !! A host model (CLIMBER-X) fills this record in memory and drives the model
+   !! through the API (z_bed_eq/h_ice_eq passed to solid_earth_init, each interval to
+   !! solid_earth_update). The standalone driver reads it from a file. Run-management
+   !! settings the *executables* need — forcing/reference/output paths, the time
+   !! window, online-remap and i_eq selectors, restart-in path — live in the separate
+   !! `&ctl` group (fe_control), which a host never reads.
    use fe_precision, only: wp
    use fe_constants, only: kyr, sec_per_year
    use nml
@@ -66,9 +69,10 @@ module fe_params
       logical  :: sle_subgrid      = .true.
 
       ! --- adaptive time stepping (fe_timestep) ----------------------------------
-      ! Time fields are SI [s] in the record; the nml supplies them in YEARS and
-      ! fe_par_load converts on read (so the in-memory record is uniformly SI).
-      real(wp) :: dt_couple = kyr            !! default coupling interval [s] (driver cadence)
+      ! The Δt fields are SI [s] in the record; the nml supplies them in YEARS and
+      ! fe_par_load converts on read (so the in-memory record is uniformly SI). The
+      ! coupling cadence is NOT a parameter: the host (or the standalone driver's
+      ! forcing axis) passes each interval to solid_earth_update.
       real(wp) :: dt_init   = 0.0_wp         !! first trial Δt [s] (0 => try the whole interval)
       real(wp) :: dt_min    = 0.0_wp         !! Δt floor [s] (0 => none)
       real(wp) :: dt_max    = huge(1.0_wp)   !! Δt ceiling [s]
@@ -82,54 +86,26 @@ module fe_params
       ! --- rotational feedback (fe_rotation) ------------------------------------
       logical  :: rotation = .true.          !! TPW feedback (on for real runs; off for non-rotating benchmarks)
 
-      ! --- driver I/O (program fastearth only) ----------------------------------
-      character(len=512) :: file_forcing = ""            !! ice-thickness forcing (lon,lat,time)
-      character(len=64)  :: name_ice     = "h_ice"       !! ice variable in file_forcing
-      character(len=64)  :: name_time    = "time"        !! time axis [years] in file_forcing
-      character(len=512) :: file_ref     = ""            !! reference state (z_bed_eq, h_ice_eq)
-      character(len=64)  :: name_zbed_eq = "z_bed_eq"    !! bed var (legacy 2D ref; or 3D bed in forcing)
-      character(len=64)  :: name_hice_ref = "h_ice_ref"  !! ice var (legacy 2D ref)
-      character(len=512) :: file_out     = "fastearth_out.nc"  !! step output
-      real(wp) :: time_init = -huge(1.0_wp)  !! start time [years] (default: first forcing slice)
-      real(wp) :: time_end  =  huge(1.0_wp)  !! end time   [years] (default: last  forcing slice)
-      ! --- online lon-lat -> Gauss remap of the forcing (program fastearth) ------
-      logical  :: remap_input = .true.   !! .true.: forcing is lon-lat, remap on the fly;
-                                         !! .false.: forcing already on the Gauss grid (legacy)
-      character(len=64) :: name_lon = "lon"  !! source longitude axis variable [deg]
-      character(len=64) :: name_lat = "lat"  !! source latitude  axis variable [deg]
-      ! --- reference / equilibration (program fastearth) ------------------------
-      ! The relaxed reference (z_bed_eq = SLE topo0, h_ice_eq) is set by i_eq,
-      ! mirroring CLIMBER-X i_equilibrium (src/geo/geo.f90). RSL is measured
-      ! against this reference, so i_eq=1 (present-day reference) yields rsl ~0 at
-      ! the present day. Reference fields are lon-lat and remapped online.
-      integer  :: i_eq = 1
-         !! 0: start slice is the equilibrium (z_bed_eq=bed[k0], h_ice_eq=ice[k0]);
-         !! 1: present-day reference from z_bed_ref_file / h_ice_ref_file (default);
-         !! 2: equilibrium read from z_bed_eq_file / h_ice_eq_file;
-         !! 3: z_bed_eq = present-day reference bed + rsl from rsl_restart_file.
-      character(len=512) :: z_bed_ref_file = ""   !! present-day reference bed  (i_eq=1,3)
-      character(len=512) :: h_ice_ref_file = ""   !! present-day reference ice  (i_eq=1,3)
-      character(len=512) :: z_bed_eq_file  = ""   !! equilibrium bed (i_eq=2)
-      character(len=512) :: h_ice_eq_file  = ""   !! equilibrium ice (i_eq=2)
-      character(len=512) :: rsl_restart_file = "" !! rsl field added to ref bed (i_eq=3)
-      character(len=64)  :: name_z_bed_ref = "bedrock_topography" !! bed var in the ref/eq files
-      character(len=64)  :: name_h_ice_ref = "ice_thickness"      !! ice var in the ref/eq files
-      character(len=64)  :: name_rsl       = "rsl"                !! rsl var in rsl_restart_file
-      real(wp) :: time_equil_max = 0.0_wp
+      ! --- LGM-memory spin-up (fe_coupling solid_earth_spinup) -------------------
+      ! A model capability the host opts into. Relax under the start-slice ice while
+      ! HOLDING the reference (z_bed_eq, h_ice_eq) as the datum, so the transient
+      ! enters with viscous memory. The standalone driver triggers it; a host
+      ! (CLIMBER-X) leaves equil_time_max=0 / pre_spinup_1d=.false. to skip it and
+      ! takes whatever state it passes in as the (zero-memory) equilibrium.
+      real(wp) :: equil_time_max = 0.0_wp
          !! >0: spin up the LGM memory state by holding the start-slice ice (relaxing to
          !! isostatic equilibrium) in the FULL model BEFORE the transient, with the
-         !! i_eq-selected reference held as the datum. A cap [years]: the relaxation
-         !! exits early once the bed stops moving, or at this time with a warning if it
-         !! has not converged. =0 skips the full-model equilibration phase. Non-default.
+         !! reference held as the datum. A cap [years]: the relaxation exits early once
+         !! the bed stops moving, or at this time with a warning if it has not
+         !! converged. =0 skips the full-model equilibration phase. Non-default.
+      real(wp) :: equil_rate_tol = 1.0e-3_wp
+         !! spin-up convergence criterion: the mean bed velocity over a relaxation pass
+         !! [m/yr]. Relaxation exits once the rate drops below this.
       logical :: pre_spinup_1d = .false.
          !! .true.: before the full-model phase, run a cheap 1-D pre-equilibration to
          !! bed-stationary convergence (the 1-D radial viscosity is the lateral
          !! geometric mean of the 3-D field), then switch to the full model carrying the
-         !! spun-up memory. Independent of time_equil_max.
-      character(len=512) :: restart_in_file = ""
-         !! full-state restart (fe_restart.nc) to resume from: solid_earth_init at the
-         !! reference, then restore the saved memory/clock. A lower-resolution restart is
-         !! interpolated up to the model grid.
+         !! spun-up memory. Independent of equil_time_max.
 
       ! --- 3D viscosity field + uncertainty sampling (fe_earth_structure) --------
       ! Mirrors the CLIMBER-X VILMA scheme (src/geo/vilma.F90) but with a RELATIVE
@@ -167,8 +143,8 @@ contains
       character(len=*),     intent(in), optional :: group
       character(len=64)  :: g
       character(len=512) :: df
-      real(wp) :: dt_couple_yr, dt_init_yr, dt_min_yr, dt_max_yr, time_init_yr, time_end_yr
-      real(wp) :: time_equil_max_yr, dt_be_yr
+      real(wp) :: dt_init_yr, dt_min_yr, dt_max_yr
+      real(wp) :: equil_time_max_yr, dt_be_yr
 
       g  = "fe3d";      if (present(group))         g  = group
       df = filename;    if (present(defaults_file)) df = defaults_file
@@ -217,20 +193,17 @@ contains
       call nml_read(filename, g, "sle_fixed_ocean",  p%sle_fixed_ocean,  defaults_file=df)
       call nml_read(filename, g, "sle_subgrid",      p%sle_subgrid,      defaults_file=df)
 
-      ! adaptive time stepping. The Δt / time fields are given in YEARS in the nml
-      ! and converted to SI seconds here (the record is uniformly SI internally).
-      dt_couple_yr = p%dt_couple/sec_per_year
-      dt_init_yr   = p%dt_init  /sec_per_year
-      dt_min_yr    = p%dt_min   /sec_per_year
-      dt_max_yr    = p%dt_max   /sec_per_year
-      call nml_read(filename, g, "dt_couple",  dt_couple_yr, defaults_file=df)
+      ! adaptive time stepping. The Δt fields are given in YEARS in the nml and
+      ! converted to SI seconds here (the record is uniformly SI internally).
+      dt_init_yr = p%dt_init/sec_per_year
+      dt_min_yr  = p%dt_min /sec_per_year
+      dt_max_yr  = p%dt_max /sec_per_year
       call nml_read(filename, g, "dt_init",    dt_init_yr,   defaults_file=df)
       call nml_read(filename, g, "dt_min",     dt_min_yr,    defaults_file=df)
       call nml_read(filename, g, "dt_max",     dt_max_yr,    defaults_file=df)
-      p%dt_couple = dt_couple_yr*sec_per_year
-      p%dt_init   = dt_init_yr  *sec_per_year
-      p%dt_min    = dt_min_yr   *sec_per_year
-      p%dt_max    = dt_max_yr   *sec_per_year
+      p%dt_init = dt_init_yr*sec_per_year
+      p%dt_min  = dt_min_yr *sec_per_year
+      p%dt_max  = dt_max_yr *sec_per_year
       call nml_read(filename, g, "rtol",       p%rtol,       defaults_file=df)
       call nml_read(filename, g, "atol",       p%atol,       defaults_file=df)
       call nml_read(filename, g, "safety",     p%safety,     defaults_file=df)
@@ -241,39 +214,12 @@ contains
       ! rotation
       call nml_read(filename, g, "rotation",   p%rotation,   defaults_file=df)
 
-      ! driver I/O
-      call nml_read(filename, g, "file_forcing",  p%file_forcing,  defaults_file=df)
-      call nml_read(filename, g, "name_ice",      p%name_ice,      defaults_file=df)
-      call nml_read(filename, g, "name_time",     p%name_time,     defaults_file=df)
-      call nml_read(filename, g, "file_ref",      p%file_ref,      defaults_file=df)
-      call nml_read(filename, g, "name_zbed_eq",  p%name_zbed_eq,  defaults_file=df)
-      call nml_read(filename, g, "name_hice_ref", p%name_hice_ref, defaults_file=df)
-      call nml_read(filename, g, "file_out",      p%file_out,      defaults_file=df)
-      time_init_yr = p%time_init/sec_per_year
-      time_end_yr  = p%time_end /sec_per_year
-      call nml_read(filename, g, "time_init",     time_init_yr,    defaults_file=df)
-      call nml_read(filename, g, "time_end",      time_end_yr,     defaults_file=df)
-      p%time_init = time_init_yr*sec_per_year
-      p%time_end  = time_end_yr *sec_per_year
-
-      ! remap + equilibration
-      call nml_read(filename, g, "remap_input",   p%remap_input,   defaults_file=df)
-      call nml_read(filename, g, "name_lon",      p%name_lon,      defaults_file=df)
-      call nml_read(filename, g, "name_lat",      p%name_lat,      defaults_file=df)
-      call nml_read(filename, g, "i_eq",          p%i_eq,          defaults_file=df)
-      call nml_read(filename, g, "z_bed_ref_file", p%z_bed_ref_file, defaults_file=df)
-      call nml_read(filename, g, "h_ice_ref_file", p%h_ice_ref_file, defaults_file=df)
-      call nml_read(filename, g, "z_bed_eq_file",  p%z_bed_eq_file,  defaults_file=df)
-      call nml_read(filename, g, "h_ice_eq_file",  p%h_ice_eq_file,  defaults_file=df)
-      call nml_read(filename, g, "rsl_restart_file", p%rsl_restart_file, defaults_file=df)
-      call nml_read(filename, g, "name_z_bed_ref", p%name_z_bed_ref, defaults_file=df)
-      call nml_read(filename, g, "name_h_ice_ref", p%name_h_ice_ref, defaults_file=df)
-      call nml_read(filename, g, "name_rsl",       p%name_rsl,       defaults_file=df)
-      time_equil_max_yr = p%time_equil_max/sec_per_year
-      call nml_read(filename, g, "time_equil_max", time_equil_max_yr, defaults_file=df)
-      p%time_equil_max = time_equil_max_yr*sec_per_year
+      ! LGM-memory spin-up (equil_time_max given in YEARS, converted to SI below)
+      equil_time_max_yr = p%equil_time_max/sec_per_year
+      call nml_read(filename, g, "equil_time_max", equil_time_max_yr, defaults_file=df)
+      p%equil_time_max = equil_time_max_yr*sec_per_year
+      call nml_read(filename, g, "equil_rate_tol", p%equil_rate_tol, defaults_file=df)
       call nml_read(filename, g, "pre_spinup_1d",  p%pre_spinup_1d,  defaults_file=df)
-      call nml_read(filename, g, "restart_in_file", p%restart_in_file, defaults_file=df)
 
       ! 3D viscosity + uncertainty
       call nml_read(filename, g, "l_visc_3d",      p%l_visc_3d,      defaults_file=df)
@@ -319,12 +265,12 @@ contains
       write(u,'(a,i0,a,i0,a,es8.1,a,l1,a,l1)') &
            '   sle:    n_outer=', p%sle_n_outer, '  n_inner=', p%sle_n_inner, &
            '  tol=', p%sle_tol, '  fixed_ocean=', p%sle_fixed_ocean, '  subgrid=', p%sle_subgrid
-      write(u,'(a,es9.2,a,es9.2,a,es8.1,a,es8.1,a,f5.2)') &
-           '   dt:     couple=', p%dt_couple, '  init=', p%dt_init, &
+      write(u,'(a,es9.2,a,es8.1,a,es8.1,a,f5.2)') &
+           '   dt:     init=', p%dt_init, &
            '  rtol=', p%rtol, '  atol=', p%atol, '  cfl=', p%cfl
       write(u,'(a,l1)')       '   rotation: ', p%rotation
-      write(u,'(a,l1,a,i0,a,es9.2,a,l1)') '   forcing: remap_input=', p%remap_input, &
-           '  i_eq=', p%i_eq, '  time_equil_max=', p%time_equil_max, '  pre_spinup_1d=', p%pre_spinup_1d
+      write(u,'(a,es9.2,a,es9.2,a,l1)') '   spinup: equil_time_max=', p%equil_time_max, &
+           '  equil_rate_tol=', p%equil_rate_tol, '  pre_spinup_1d=', p%pre_spinup_1d
       if (p%l_visc_3d) then
          write(u,'(a,a)')   '   visc_3d: ', trim(p%visc_3d_file)
          write(u,'(a,f6.2,a,f6.2,a,f5.2,a,f5.2,a)') &

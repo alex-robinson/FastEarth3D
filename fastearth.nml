@@ -1,14 +1,18 @@
 &fe3d
     ! ====================================================================
-    ! FastEarth3D configuration — one namelist group read by fe_par_load.
-    ! This file is the CANONICAL, COMPLETE defaults set: every parameter is
+    ! FastEarth3D physics + numerics — the model configuration record
+    ! (fe_params). This is the host API contract: a host (CLIMBER-X) fills
+    ! these values in memory; the standalone driver reads them from this file.
+    ! This block is the CANONICAL, COMPLETE defaults set: every parameter is
     ! present. A run can pass a sparse file overlaid on this one (fe_par_load
-    ! with defaults_file=...), setting only what it overrides. Used both by
-    ! the standalone driver (program fastearth) and as the record a host
-    ! model (CLIMBER-X) can fill in memory.
+    ! with defaults_file=...), setting only what it overrides.
     !
-    ! Time fields (dt_*, time_*) are in YEARS here and converted to SI
-    ! seconds on load; everything else is SI.
+    ! Run-management settings (forcing/reference/output files, the time window,
+    ! online-remap and i_eq selectors, restart-in path) live in the separate
+    ! &ctl group below — used only by the executables, never by a host.
+    !
+    ! Δt fields (dt_*) are in YEARS here and converted to SI seconds on load;
+    ! everything else is SI.
     ! ====================================================================
 
     ! --- spectral grid (fe_sht) ---------------------------------------
@@ -57,7 +61,9 @@
     sle_subgrid      = .true.  ! sloping-coast (mass-correct) ocean load
 
     ! --- adaptive time stepping (fe_timestep) -------------------------
-    dt_couple  = 1000.0        ! default coupling interval [years] in the driver
+    ! The coupling cadence is NOT a parameter: the host (or the driver's forcing
+    ! axis) passes each interval to solid_earth_update. These tune the internal
+    ! adaptive sub-stepping within an interval.
     dt_init    = 0.0           ! first trial Δt [years] (0 => try the whole interval)
     dt_min     = 0.0           ! Δt floor [years] (0 => none)
     dt_max     = 1.0e30        ! Δt ceiling [years] (huge => no ceiling)
@@ -72,40 +78,15 @@
     rotation = .true.          ! TPW feedback: on for real runs; set .false. for
                                ! the non-rotating community benchmarks
 
-    ! --- driver I/O (program fastearth only) --------------------------
-    file_forcing  = ""                 ! ice-thickness forcing, h_ice(lon,lat,time)
-    name_ice      = "h_ice"
-    name_time     = "time"             ! time axis [years]
-    file_ref      = ""                 ! reference state (z_bed_eq, h_ice_eq)
-    name_zbed_eq  = "z_bed_eq"
-    name_hice_ref = "h_ice_ref"
-    file_out      = "fastearth_out.nc" ! step output
-    time_init     = -1.0e30            ! [years] (<= forcing start => full range)
-    time_end      =  1.0e30            ! [years] (>= forcing end   => full range)
-
-    ! --- online remap + reference / equilibration (program fastearth) -
-    remap_input   = .true.   ! .true.: forcing is lon-lat, remap to Gauss on the fly
-                             ! .false.: forcing already on the Gauss grid (legacy)
-    name_lon      = "lon"    ! source longitude axis variable [deg] (remap mode)
-    name_lat      = "lat"    ! source latitude  axis variable [deg] (remap mode)
-    i_eq          = 1        ! 0: start slice is the equilibrium
-                             ! 1: present-day reference (z_bed_ref_file/h_ice_ref_file)
-                             ! 2: equilibrium from z_bed_eq_file/h_ice_eq_file
-                             ! 3: present-day ref bed + rsl from rsl_restart_file
-    z_bed_ref_file  = ""     ! present-day reference bed  (i_eq=1,3) [lon,lat]
-    h_ice_ref_file  = ""     ! present-day reference ice  (i_eq=1,3) [lon,lat]
-    z_bed_eq_file   = ""     ! equilibrium bed (i_eq=2)
-    h_ice_eq_file   = ""     ! equilibrium ice (i_eq=2)
-    rsl_restart_file = ""    ! rsl field added to reference bed (i_eq=3)
-    name_z_bed_ref  = "bedrock_topography"  ! bed var in the ref/eq files
-    name_h_ice_ref  = "ice_thickness"       ! ice var in the ref/eq files
-    name_rsl        = "rsl"                 ! rsl var in rsl_restart_file
-    time_equil_max = 0.0     ! [years] >0: full-model LGM-memory spin-up cap (hold start ice,
+    ! --- LGM-memory spin-up (fe_coupling solid_earth_spinup) ----------
+    ! A model capability the host opts into; holds the reference as the datum and
+    ! relaxes under the start-slice ice so the transient enters with viscous memory.
+    equil_time_max = 0.0     ! [years] >0: full-model LGM-memory spin-up cap (hold start ice,
                              ! relax to bed-stationary, exit early or warn at this cap)
+    equil_rate_tol = 1.0e-3  ! [m/yr] spin-up convergence: mean bed velocity over a pass below
+                             ! which the relaxation is taken to have converged
     pre_spinup_1d  = .false. ! run a cheap 1-D pre-equilibration first (geomean radial visc),
                              ! then the full model carrying the spun-up memory
-    restart_in_file = ""     ! full-state restart to resume from (skips/precedes spin-up);
-                             ! lower-res restart is interpolated up to the model grid
 
     ! --- 3D viscosity field + uncertainty (fe_earth_structure) --------
     l_visc_3d      = .false. ! load a lateral log10(eta) field
@@ -124,4 +105,56 @@
     visc3d_tol     = 1.0e-3  ! lateral log10(eta) spread [dex] above which an element is genuinely
                              ! 3-D (pays the dyadic SHT round-trip); higher => fewer 3-D elements,
                              ! cheaper memory advance, at the cost of approximating weak lateral structure
+/
+
+&ctl
+    ! ====================================================================
+    ! Standalone-run control (fe_control). Forcing/reference/output files,
+    ! variable names, the time window, the online-remap toggle, the reference-
+    ! equilibration selector (i_eq), and the restart-in path. Read ONLY by the
+    ! executables (program fastearth + the offline tools). A host model
+    ! (CLIMBER-X) supplies all of this through the API and its own time loop,
+    ! and never reads this group.
+    !
+    ! Time fields (time_*) are in YEARS here and converted to SI seconds on load.
+    ! ====================================================================
+
+    ! --- ice-thickness forcing, h_ice(lon,lat,time) -------------------
+    file_forcing  = ""
+    name_ice      = "h_ice"
+    name_time     = "time"             ! time axis [years]
+
+    ! --- legacy Gauss-grid reference file (remap_input=.false.) -------
+    file_ref      = ""                 ! reference state (z_bed_eq, h_ice_eq)
+    name_zbed_eq  = "z_bed_eq"
+    name_hice_ref = "h_ice_ref"
+
+    ! --- step output --------------------------------------------------
+    file_out      = "fastearth_out.nc"
+    time_init     = -1.0e30            ! [years] (<= forcing start => full range)
+    time_end      =  1.0e30            ! [years] (>= forcing end   => full range)
+
+    ! --- online lon-lat -> Gauss remap of the forcing -----------------
+    remap_input   = .true.   ! .true.: forcing is lon-lat, remap to Gauss on the fly
+                             ! .false.: forcing already on the Gauss grid (legacy)
+    name_lon      = "lon"    ! source longitude axis variable [deg] (remap mode)
+    name_lat      = "lat"    ! source latitude  axis variable [deg] (remap mode)
+
+    ! --- reference / equilibration selector ---------------------------
+    i_eq          = 1        ! 0: start slice is the equilibrium
+                             ! 1: present-day reference (z_bed_ref_file/h_ice_ref_file)
+                             ! 2: equilibrium from z_bed_eq_file/h_ice_eq_file
+                             ! 3: present-day ref bed + rsl from rsl_restart_file
+    z_bed_ref_file  = ""     ! present-day reference bed  (i_eq=1,3) [lon,lat]
+    h_ice_ref_file  = ""     ! present-day reference ice  (i_eq=1,3) [lon,lat]
+    z_bed_eq_file   = ""     ! equilibrium bed (i_eq=2)
+    h_ice_eq_file   = ""     ! equilibrium ice (i_eq=2)
+    rsl_restart_file = ""    ! rsl field added to reference bed (i_eq=3)
+    name_z_bed_ref  = "bedrock_topography"  ! bed var in the ref/eq files
+    name_h_ice_ref  = "ice_thickness"       ! ice var in the ref/eq files
+    name_rsl        = "rsl"                 ! rsl var in rsl_restart_file
+
+    ! --- restart-in path ----------------------------------------------
+    restart_in_file = ""     ! full-state restart to resume from (skips/precedes spin-up);
+                             ! lower-res restart is interpolated up to the model grid
 /
