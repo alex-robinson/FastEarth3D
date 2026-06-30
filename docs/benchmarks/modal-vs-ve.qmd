@@ -20,7 +20,7 @@ ladder](../physics/modal.qmd):
 | Set | Viscosity | What it isolates |
 |---|---|---|
 | **radial** | 1-D (radially symmetric) | the clean limit where `n_modes = all` converges to `RESP_VE` **exactly** — isolates the accuracy of the mode-count / ranking dial, with no lateral approximation |
-| **deglac3d** | 3-D (laterally varying) | the genuine-approximation regime: the LGM spin-up is done with the cheap 1-D solver (`spinup_1d`), then the transient runs on the 3-D path, where modal is an approximation to `RESP_VE` at every $K$ |
+| **deglac3d** | 3-D (laterally varying) | the genuine-approximation regime: the LGM spin-up runs a cheap 1-D pre-equilibration (`pre_spinup_1d`), then the transient runs on the 3-D path, where modal is an approximation to `RESP_VE` at every $K$ |
 
 Each set sweeps `earth_response = modal` over `n_modes` × `mode_rank`, adds an
 `n_modes = all` run, and includes the single `RESP_VE` reference.
@@ -53,14 +53,13 @@ Key knobs (all with sensible defaults in the script):
 | `RANKS` | `mode_rank` metric swept | `isostatic,rate,residue` |
 | `T0` / `T1` | transient window [yr] (LGM → present) | `-26000` / `0` |
 | `DT_COUPLE` | coupling interval [yr] (forcing cadence) | `100` |
-| `DT_EQUIL` | LGM-memory spin-up [yr/pass] | `10000` |
+| `TIME_EQUIL_MAX` | LGM-memory spin-up cap [yr] | `100000` |
 | `OMP` | OpenMP threads per run | `8` |
 | `FORCING` / `VISC3D` | ice forcing and 3-D `log10(eta)` field (absolute paths) | machine-specific |
 | `RUNME_FLAGS` | how runme launches (`-s -r` submit, `-s` stage, `-r` local, `""` stage-only) | `-s -r` |
 
-The matching present-day reference `data/reference/rtopo_gauss_l<LMAX>.nc` must
-exist for each resolution used (build it with `fastearth_mkref` if needed); the
-script checks for it up front.
+All runs use the single canonical reference `data/reference/rtopo_gauss_l128.nc`,
+remapped to each resolution online (cached); the script checks for it up front.
 
 ::: {.callout-note title="Machine-specific paths"}
 The `FORCING` and `VISC3D` defaults at the top of `scripts/run_modal_vs_ve.sh`

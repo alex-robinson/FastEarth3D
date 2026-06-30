@@ -78,8 +78,10 @@ template), with dependencies provided through a `fesm-utils` checkout (FFTW,
 SHTns) plus system netCDF, and runs are staged with **runme** — both covered in
 [Install & run](getting-started.qmd). The host-coupling contract (designed for
 CLIMBER-X) is intentionally narrow: the host passes **ice thickness** in and
-receives **relative sea level** and **bedrock** out, with all spherical-harmonic
-transforms kept inside the model.
+receives **relative sea level** and **bedrock** out, on its own grid. The model
+owns its Gauss grid and the host↔Gauss remap (conservative in, bilinear out),
+built from the parameter record, and keeps all spherical-harmonic transforms
+inside.
 
 ## License and citation
 

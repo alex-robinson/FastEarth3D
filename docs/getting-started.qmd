@@ -84,8 +84,9 @@ A few conventions worth knowing:
 - **Response solver** is chosen by `earth_response`: `"ve"` (full viscoelastic,
   default), `"modal"` (the [reduced approximation](physics/modal.qmd), with
   `n_modes` / `mode_rank`), `"elastic"`, or `"null"`.
-- **Reference state / spin-up** is controlled by `i_eq`, `dt_equil` (LGM-memory
-  spin-up), `spinup_1d` (do that spin-up with the cheap 1-D solver), and
+- **Reference state / spin-up** is controlled by `i_eq`, `time_equil_max`
+  (LGM-memory spin-up cap, relaxing to bed-stationary equilibrium),
+  `pre_spinup_1d` (run a cheap 1-D pre-equilibration first), and
   `restart_in_file` (resume full state, interpolated up if lower-resolution).
 - **3-D viscosity** is enabled with `l_visc_3d = .true.` and a lateral
   `log10(eta)` field (`visc_3d_file`).
@@ -97,8 +98,8 @@ A few conventions worth knowing:
 | Executable | Role |
 |---|---|
 | `bin/fastearth.x` | reads a reference state + an ice-thickness forcing `h_ice(lon,lat,time)`, marches the model across the forcing (online lon-lat → Gauss remap by default), and writes the diagnostic surface fields (`rsl`, `z_bed`, `h_ice`, ocean function) to `file_out` |
-| `bin/fastearth_mkref.x` | builds a Gauss-grid present-day reference state (e.g. RTopo) used by `i_eq = 1` |
-| `bin/fastearth_remap.x` | offline conservative lon-lat → Gauss remap, to pre-bake a forcing onto the model grid (`remap_input = .false.`) |
+| `bin/fastearth_mkref.x` | generates the canonical Gauss-grid present-day reference (e.g. RTopo) used by `i_eq = 1`; other resolutions remap it online (cached) |
+| `bin/fastearth_remap.x` | offline conservative lon-lat → Gauss remap, to preprocess a forcing onto the model grid (`remap_input = .false.`) |
 
 A complete worked configuration — an LGM → present-day deglaciation forced by
 the Tarasov ice/bed reconstruction — is in
@@ -138,19 +139,25 @@ runme sweep.
 
 The CLIMBER-X coupling path uses the same code behind a single
 `use fastearth3d`. The contract is intentionally narrow — the host passes **ice
-thickness** in and receives **relative sea level** and **bedrock** out, with all
-spherical-harmonic transforms kept inside the model
+thickness** in and receives **relative sea level** and **bedrock** out, on its
+own grid. The model owns its Gauss grid and the host↔Gauss remap (built from the
+parameter record), and keeps all spherical-harmonic work inside
 (see [Implementation](implementation.qmd)):
 
 ```fortran
 use fastearth3d
-type(fe_param_class) :: par
-type(solid_earth)    :: se
-call fe_par_load(par, "fastearth.nml")
-call solid_earth_init(se, par, sht, z_bed_eq, h_ice_ref)
-call solid_earth_update(se, h_ice, dt)   ! advance time -> time+dt; reads se%rsl, se%z_bed
+type(solid_earth) :: se
+call fe_par_load(se%par, "fastearth.nml")             ! configuration lives in se%par
+call solid_earth_init(se, z_bed_eq, h_ice_eq, grid=host_grid)  ! builds the Gauss grid + remap
+call solid_earth_spinup(se, h_ice_lgm)                ! optional LGM-memory spin-up
+do
+   call solid_earth_update(se, h_ice, dt_yr)          ! advance dt_yr [years]
+   ! ... read se%rsl, se%z_bed on the host grid (se%gg%* on the Gauss grid) ...
+end do
+call solid_earth_finalize(se)                         ! frees the grid too
 ```
 
-The full prognostic state (Maxwell memory or modal amplitudes, the integrator
-state, and the model clock) is persisted on restart, so a coupled run resumes
-bit-for-bit.
+`grid` (a coords lon-lat grid) is optional: omit it when the fields are already on
+the model's Gauss grid. The full prognostic state (Maxwell memory or modal
+amplitudes, the integrator state, and the model clock) is persisted on restart, so
+a coupled run resumes bit-for-bit; the host-grid outputs are re-derived on read.

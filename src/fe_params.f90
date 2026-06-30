@@ -86,7 +86,7 @@ module fe_params
       character(len=512) :: file_forcing = ""            !! ice-thickness forcing (lon,lat,time)
       character(len=64)  :: name_ice     = "h_ice"       !! ice variable in file_forcing
       character(len=64)  :: name_time    = "time"        !! time axis [years] in file_forcing
-      character(len=512) :: file_ref     = ""            !! reference state (z_bed_eq, h_ice_ref)
+      character(len=512) :: file_ref     = ""            !! reference state (z_bed_eq, h_ice_eq)
       character(len=64)  :: name_zbed_eq = "z_bed_eq"    !! bed var (legacy 2D ref; or 3D bed in forcing)
       character(len=64)  :: name_hice_ref = "h_ice_ref"  !! ice var (legacy 2D ref)
       character(len=512) :: file_out     = "fastearth_out.nc"  !! step output
@@ -98,12 +98,12 @@ module fe_params
       character(len=64) :: name_lon = "lon"  !! source longitude axis variable [deg]
       character(len=64) :: name_lat = "lat"  !! source latitude  axis variable [deg]
       ! --- reference / equilibration (program fastearth) ------------------------
-      ! The relaxed reference (z_bed_eq = SLE topo0, h_ice_ref) is set by i_eq,
+      ! The relaxed reference (z_bed_eq = SLE topo0, h_ice_eq) is set by i_eq,
       ! mirroring CLIMBER-X i_equilibrium (src/geo/geo.f90). RSL is measured
       ! against this reference, so i_eq=1 (present-day reference) yields rsl ~0 at
       ! the present day. Reference fields are lon-lat and remapped online.
       integer  :: i_eq = 1
-         !! 0: start slice is the equilibrium (z_bed_eq=bed[k0], h_ice_ref=ice[k0]);
+         !! 0: start slice is the equilibrium (z_bed_eq=bed[k0], h_ice_eq=ice[k0]);
          !! 1: present-day reference from z_bed_ref_file / h_ice_ref_file (default);
          !! 2: equilibrium read from z_bed_eq_file / h_ice_eq_file;
          !! 3: z_bed_eq = present-day reference bed + rsl from rsl_restart_file.

@@ -101,22 +101,20 @@ module fe_coupling
 
 contains
 
-   subroutine solid_earth_init(self, z_bed_eq, h_ice_eq, grid, h_ice_init, defer_visc_3d)
+   subroutine solid_earth_init(self, z_bed_eq, h_ice_eq, grid, h_ice_init)
       !! Build the model from its parameter record (self%par, set by the host before
       !! this call) and set the reference state. The model builds and owns its Gauss
       !! transform grid (from self%par%lmax/nlat/nphi) and, when `grid` differs from
       !! it, the host<->Gauss remap. Reference fields are supplied on the host grid
-      !! (or directly on the Gauss grid when `grid` is absent / matches).
+      !! (or directly on the Gauss grid when `grid` is absent / matches). The model is
+      !! built in its full configuration per self%par; the 1-D pre-spin-up
+      !! (solid_earth_spinup) toggles the lateral viscosity internally, not here.
       type(solid_earth),   intent(inout)        :: self
       real(wp),             intent(in)           :: z_bed_eq(:,:)  !! relaxed bedrock [m] (host grid)
       real(wp),             intent(in)           :: h_ice_eq(:,:)  !! reference grounded ice [m] (host grid)
       type(grid_class),     intent(in), optional :: grid           !! host lon-lat grid; absent => data already on Gauss
       real(wp),             intent(in), optional :: h_ice_init(:,:)!! current ice at t0 (host grid); default h_ice_eq
-      logical,              intent(in), optional :: defer_visc_3d
-         !! .true. => skip the lateral-viscosity (3-D) enable even when l_visc_3d is set,
-         !! leaving the model 1-D (used by the 1-D pre-spin-up: relax 1-D, then enable 3-D).
       integer  :: np, nl
-      logical  :: do_visc_3d
 
       call solid_earth_finalize(self)                       ! clean slate (safe on a fresh object)
 
@@ -140,7 +138,7 @@ contains
       call to_gauss(self, z_bed_eq, self%gg%z_bed_eq, conserve_mass=.false.)   ! bed: geometry
       call to_gauss(self, h_ice_eq, self%gg%h_ice_eq, conserve_mass=.true.)    ! ice: mass
 
-      call build_solver(self, np, nl, defer_visc_3d)
+      call build_solver(self, np, nl)
 
       ! current state — seeded at the reference (or at h_ice_init if given). At the
       ! reference nothing has moved: rsl = 0, z_bed = z_bed_eq, memory zero. The ocean
@@ -163,14 +161,12 @@ contains
       allocate(self%z_bed, source=z_bed_eq)
    end subroutine solid_earth_init
 
-   subroutine build_solver(self, np, nl, defer_visc_3d)
+   subroutine build_solver(self, np, nl)
       !! Build the earth structure and the sub-solvers (response, SLE, adaptive
       !! stepper, optional rotation) from self%par on the model's Gauss grid.
-      type(solid_earth), intent(inout)        :: self
-      integer,           intent(in)           :: np, nl
-      logical,           intent(in), optional :: defer_visc_3d
+      type(solid_earth), intent(inout) :: self
+      integer,           intent(in)    :: np, nl
       real(wp) :: dt0
-      logical  :: do_visc_3d
 
       self%earth = build_earth(self%par)
 
@@ -201,12 +197,8 @@ contains
       end select
       self%resp%visc3d_tol = self%par%visc3d_tol   ! 3-D split threshold (read before any enable below)
 
-      ! optional laterally-varying (3D) viscosity (rung 6c), unless deferred.
-      do_visc_3d = self%par%l_visc_3d
-      if (present(defer_visc_3d)) then
-         if (defer_visc_3d) do_visc_3d = .false.
-      end if
-      if (do_visc_3d) call solid_earth_enable_visc_3d(self, self%sht)
+      ! laterally-varying (3D) viscosity (rung 6c), per self%par%l_visc_3d
+      if (self%par%l_visc_3d) call solid_earth_enable_visc_3d(self, self%sht)
 
       ! sea-level equation knobs. Warm-start the fixed point across steps: gg%rsl
       ! persists (seeded to 0), and between adjacent steps the coastline barely moves,
