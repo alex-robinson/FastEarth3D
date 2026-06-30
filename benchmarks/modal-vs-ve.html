@@ -641,7 +641,7 @@ window.Quarto = {
 <tr class="even">
 <td><strong>deglac3d</strong></td>
 <td>3-D (laterally varying)</td>
-<td>the genuine-approximation regime: the LGM spin-up is done with the cheap 1-D solver (<code>spinup_1d</code>), then the transient runs on the 3-D path, where modal is an approximation to <code>RESP_VE</code> at every <span class="math inline">\(K\)</span></td>
+<td>the genuine-approximation regime: the LGM spin-up runs a cheap 1-D pre-equilibration (<code>pre_spinup_1d</code>), then the transient runs on the 3-D path, where modal is an approximation to <code>RESP_VE</code> at every <span class="math inline">\(K\)</span></td>
 </tr>
 </tbody>
 </table>
@@ -701,9 +701,9 @@ window.Quarto = {
 <td><code>100</code></td>
 </tr>
 <tr class="odd">
-<td><code>DT_EQUIL</code></td>
-<td>LGM-memory spin-up [yr/pass]</td>
-<td><code>10000</code></td>
+<td><code>TIME_EQUIL_MAX</code></td>
+<td>LGM-memory spin-up cap [yr]</td>
+<td><code>100000</code></td>
 </tr>
 <tr class="even">
 <td><code>OMP</code></td>
@@ -722,7 +722,7 @@ window.Quarto = {
 </tr>
 </tbody>
 </table>
-<p>The matching present-day reference <code>data/reference/rtopo_gauss_l&lt;LMAX&gt;.nc</code> must exist for each resolution used (build it with <code>fastearth_mkref</code> if needed); the script checks for it up front.</p>
+<p>All runs use the single canonical reference <code>data/reference/rtopo_gauss_l128.nc</code>, remapped to each resolution online (cached); the script checks for it up front.</p>
 <div class="callout callout-style-default callout-note callout-titled" title="Machine-specific paths">
 <div class="callout-header d-flex align-content-center">
 <div class="callout-icon-container">

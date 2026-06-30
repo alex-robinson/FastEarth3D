@@ -668,7 +668,7 @@ window.Quarto = {
 </section>
 <section id="build-and-host-coupling" class="level2">
 <h2 class="anchored" data-anchor-id="build-and-host-coupling">Build and host coupling</h2>
-<p>The model uses a <strong>configme</strong> build (a machine fragment inserted into a Makefile template), with dependencies provided through a <code>fesm-utils</code> checkout (FFTW, SHTns) plus system netCDF, and runs are staged with <strong>runme</strong> — both covered in <a href="./getting-started.html">Install &amp; run</a>. The host-coupling contract (designed for CLIMBER-X) is intentionally narrow: the host passes <strong>ice thickness</strong> in and receives <strong>relative sea level</strong> and <strong>bedrock</strong> out, with all spherical-harmonic transforms kept inside the model.</p>
+<p>The model uses a <strong>configme</strong> build (a machine fragment inserted into a Makefile template), with dependencies provided through a <code>fesm-utils</code> checkout (FFTW, SHTns) plus system netCDF, and runs are staged with <strong>runme</strong> — both covered in <a href="./getting-started.html">Install &amp; run</a>. The host-coupling contract (designed for CLIMBER-X) is intentionally narrow: the host passes <strong>ice thickness</strong> in and receives <strong>relative sea level</strong> and <strong>bedrock</strong> out, on its own grid. The model owns its Gauss grid and the host↔︎Gauss remap (conservative in, bilinear out), built from the parameter record, and keeps all spherical-harmonic transforms inside.</p>
 </section>
 <section id="license-and-citation" class="level2">
 <h2 class="anchored" data-anchor-id="license-and-citation">License and citation</h2>

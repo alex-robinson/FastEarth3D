@@ -648,7 +648,7 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 <li><strong>Time fields</strong> (<code>dt_*</code>, <code>time_*</code>) are given in <strong>years</strong> in the namelist and converted to SI seconds on load; everything else is SI.</li>
 <li><strong>Earth structure</strong> is chosen by <code>earth</code> — a named built-in (e.g. <code>"M3-L70-V01"</code>) or <code>"custom"</code> to assemble from the surface-first layer arrays.</li>
 <li><strong>Response solver</strong> is chosen by <code>earth_response</code>: <code>"ve"</code> (full viscoelastic, default), <code>"modal"</code> (the <a href="./physics/modal.html">reduced approximation</a>, with <code>n_modes</code> / <code>mode_rank</code>), <code>"elastic"</code>, or <code>"null"</code>.</li>
-<li><strong>Reference state / spin-up</strong> is controlled by <code>i_eq</code>, <code>dt_equil</code> (LGM-memory spin-up), <code>spinup_1d</code> (do that spin-up with the cheap 1-D solver), and <code>restart_in_file</code> (resume full state, interpolated up if lower-resolution).</li>
+<li><strong>Reference state / spin-up</strong> is controlled by <code>i_eq</code>, <code>time_equil_max</code> (LGM-memory spin-up cap, relaxing to bed-stationary equilibrium), <code>pre_spinup_1d</code> (run a cheap 1-D pre-equilibration first), and <code>restart_in_file</code> (resume full state, interpolated up if lower-resolution).</li>
 <li><strong>3-D viscosity</strong> is enabled with <code>l_visc_3d = .true.</code> and a lateral <code>log10(eta)</code> field (<code>visc_3d_file</code>).</li>
 <li><strong>Rotational feedback</strong> (<code>rotation</code>) is <strong>on by default</strong> for real-Earth runs; set <code>rotation = .false.</code> for the non-rotating community benchmarks.</li>
 </ul>
@@ -673,11 +673,11 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </tr>
 <tr class="even">
 <td><code>bin/fastearth_mkref.x</code></td>
-<td>builds a Gauss-grid present-day reference state (e.g.&nbsp;RTopo) used by <code>i_eq = 1</code></td>
+<td>generates the canonical Gauss-grid present-day reference (e.g.&nbsp;RTopo) used by <code>i_eq = 1</code>; other resolutions remap it online (cached)</td>
 </tr>
 <tr class="odd">
 <td><code>bin/fastearth_remap.x</code></td>
-<td>offline conservative lon-lat → Gauss remap, to pre-bake a forcing onto the model grid (<code>remap_input = .false.</code>)</td>
+<td>offline conservative lon-lat → Gauss remap, to preprocess a forcing onto the model grid (<code>remap_input = .false.</code>)</td>
 </tr>
 </tbody>
 </table>
@@ -700,14 +700,18 @@ pre > code.sourceCode > span > a:first-child::before { text-decoration: underlin
 </section>
 <section id="embedding-in-a-host-model" class="level2">
 <h2 class="anchored" data-anchor-id="embedding-in-a-host-model">Embedding in a host model</h2>
-<p>The CLIMBER-X coupling path uses the same code behind a single <code>use fastearth3d</code>. The contract is intentionally narrow — the host passes <strong>ice thickness</strong> in and receives <strong>relative sea level</strong> and <strong>bedrock</strong> out, with all spherical-harmonic transforms kept inside the model (see <a href="./implementation.html">Implementation</a>):</p>
+<p>The CLIMBER-X coupling path uses the same code behind a single <code>use fastearth3d</code>. The contract is intentionally narrow — the host passes <strong>ice thickness</strong> in and receives <strong>relative sea level</strong> and <strong>bedrock</strong> out, on its own grid. The model owns its Gauss grid and the host↔︎Gauss remap (built from the parameter record), and keeps all spherical-harmonic work inside (see <a href="./implementation.html">Implementation</a>):</p>
 <div class="code-copy-outer-scaffold"><div class="sourceCode" id="cb6"><pre class="sourceCode fortran code-with-copy"><code class="sourceCode fortranfixed"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="kw">use</span> fastearth3d</span>
-<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="dt">type(fe_param_class)</span> <span class="dt">::</span> par</span>
-<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a><span class="dt">type(solid_earth)</span>    <span class="dt">::</span> se</span>
-<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a><span class="co">call fe_par_load(par, "fastearth.nml")</span></span>
-<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a><span class="co">call solid_earth_init(se, par, sht, z_bed_eq, h_ice_ref)</span></span>
-<span id="cb6-6"><a href="#cb6-6" aria-hidden="true" tabindex="-1"></a><span class="co">call solid_earth_update(se, h_ice, dt)   ! advance time -&gt; time+dt; reads se%rsl, se%z_bed</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
-<p>The full prognostic state (Maxwell memory or modal amplitudes, the integrator state, and the model clock) is persisted on restart, so a coupled run resumes bit-for-bit.</p>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a><span class="dt">type(solid_earth)</span> <span class="dt">::</span> se</span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a><span class="co">call fe_par_load(se%par, "fastearth.nml")             ! configuration lives in se%par</span></span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a><span class="co">call solid_earth_init(se, z_bed_eq, h_ice_eq, grid=host_grid)  ! builds the Gauss grid + remap</span></span>
+<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a><span class="co">call solid_earth_spinup(se, h_ice_lgm)                ! optional LGM-memory spin-up</span></span>
+<span id="cb6-6"><a href="#cb6-6" aria-hidden="true" tabindex="-1"></a><span class="kw">do</span></span>
+<span id="cb6-7"><a href="#cb6-7" aria-hidden="true" tabindex="-1"></a>   <span class="kw">call</span> solid_earth_update(se, h_ice, dt_yr)          <span class="co">! advance dt_yr [years]</span></span>
+<span id="cb6-8"><a href="#cb6-8" aria-hidden="true" tabindex="-1"></a>   <span class="co">! ... read se%rsl, se%z_bed on the host grid (se%gg%* on the Gauss grid) ...</span></span>
+<span id="cb6-9"><a href="#cb6-9" aria-hidden="true" tabindex="-1"></a><span class="kw">end do</span></span>
+<span id="cb6-10"><a href="#cb6-10" aria-hidden="true" tabindex="-1"></a><span class="co">call solid_earth_finalize(se)                         ! frees the grid too</span></span></code></pre></div><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></div>
+<p><code>grid</code> (a coords lon-lat grid) is optional: omit it when the fields are already on the model’s Gauss grid. The full prognostic state (Maxwell memory or modal amplitudes, the integrator state, and the model clock) is persisted on restart, so a coupled run resumes bit-for-bit; the host-grid outputs are re-derived on read.</p>
 
 
 </section>
