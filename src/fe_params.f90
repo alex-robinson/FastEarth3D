@@ -115,18 +115,21 @@ module fe_params
       character(len=64)  :: name_z_bed_ref = "bedrock_topography" !! bed var in the ref/eq files
       character(len=64)  :: name_h_ice_ref = "ice_thickness"      !! ice var in the ref/eq files
       character(len=64)  :: name_rsl       = "rsl"                !! rsl var in rsl_restart_file
-      real(wp) :: dt_equil = 0.0_wp
-         !! >0: spin up the LGM memory state by holding the start-slice ice this long
-         !! per pass (relaxing to isostatic equilibrium) BEFORE the transient, with the
-         !! i_eq-selected reference held as the datum. Non-default.
+      real(wp) :: time_equil_max = 0.0_wp
+         !! >0: spin up the LGM memory state by holding the start-slice ice (relaxing to
+         !! isostatic equilibrium) in the FULL model BEFORE the transient, with the
+         !! i_eq-selected reference held as the datum. A cap [years]: the relaxation
+         !! exits early once the bed stops moving, or at this time with a warning if it
+         !! has not converged. =0 skips the full-model equilibration phase. Non-default.
+      logical :: pre_spinup_1d = .false.
+         !! .true.: before the full-model phase, run a cheap 1-D pre-equilibration to
+         !! bed-stationary convergence (the 1-D radial viscosity is the lateral
+         !! geometric mean of the 3-D field), then switch to the full model carrying the
+         !! spun-up memory. Independent of time_equil_max.
       character(len=512) :: restart_in_file = ""
          !! full-state restart (fe_restart.nc) to resume from: solid_earth_init at the
-         !! reference, then restore the saved memory/clock. Typically used with
-         !! dt_equil=0 (skip spin-up); dt_equil>0 further-equilibrates from the restart.
-         !! A lower-resolution restart is interpolated up to the model grid.
-      logical :: spinup_1d = .false.
-         !! .true.: run the dt_equil spin-up with 1-D (radial) viscosity (cheap, fast
-         !! convergence), then enable the 3-D field for the transient from that seed.
+         !! reference, then restore the saved memory/clock. A lower-resolution restart is
+         !! interpolated up to the model grid.
 
       ! --- 3D viscosity field + uncertainty sampling (fe_earth_structure) --------
       ! Mirrors the CLIMBER-X VILMA scheme (src/geo/vilma.F90) but with a RELATIVE
@@ -165,7 +168,7 @@ contains
       character(len=64)  :: g
       character(len=512) :: df
       real(wp) :: dt_couple_yr, dt_init_yr, dt_min_yr, dt_max_yr, time_init_yr, time_end_yr
-      real(wp) :: dt_equil_yr, dt_be_yr
+      real(wp) :: time_equil_max_yr, dt_be_yr
 
       g  = "fe3d";      if (present(group))         g  = group
       df = filename;    if (present(defaults_file)) df = defaults_file
@@ -266,11 +269,11 @@ contains
       call nml_read(filename, g, "name_z_bed_ref", p%name_z_bed_ref, defaults_file=df)
       call nml_read(filename, g, "name_h_ice_ref", p%name_h_ice_ref, defaults_file=df)
       call nml_read(filename, g, "name_rsl",       p%name_rsl,       defaults_file=df)
-      dt_equil_yr = p%dt_equil/sec_per_year
-      call nml_read(filename, g, "dt_equil",      dt_equil_yr,     defaults_file=df)
-      p%dt_equil = dt_equil_yr*sec_per_year
+      time_equil_max_yr = p%time_equil_max/sec_per_year
+      call nml_read(filename, g, "time_equil_max", time_equil_max_yr, defaults_file=df)
+      p%time_equil_max = time_equil_max_yr*sec_per_year
+      call nml_read(filename, g, "pre_spinup_1d",  p%pre_spinup_1d,  defaults_file=df)
       call nml_read(filename, g, "restart_in_file", p%restart_in_file, defaults_file=df)
-      call nml_read(filename, g, "spinup_1d",       p%spinup_1d,       defaults_file=df)
 
       ! 3D viscosity + uncertainty
       call nml_read(filename, g, "l_visc_3d",      p%l_visc_3d,      defaults_file=df)
@@ -320,8 +323,8 @@ contains
            '   dt:     couple=', p%dt_couple, '  init=', p%dt_init, &
            '  rtol=', p%rtol, '  atol=', p%atol, '  cfl=', p%cfl
       write(u,'(a,l1)')       '   rotation: ', p%rotation
-      write(u,'(a,l1,a,i0,a,es9.2)') '   forcing: remap_input=', p%remap_input, &
-           '  i_eq=', p%i_eq, '  dt_equil=', p%dt_equil
+      write(u,'(a,l1,a,i0,a,es9.2,a,l1)') '   forcing: remap_input=', p%remap_input, &
+           '  i_eq=', p%i_eq, '  time_equil_max=', p%time_equil_max, '  pre_spinup_1d=', p%pre_spinup_1d
       if (p%l_visc_3d) then
          write(u,'(a,a)')   '   visc_3d: ', trim(p%visc_3d_file)
          write(u,'(a,f6.2,a,f6.2,a,f5.2,a,f5.2,a)') &

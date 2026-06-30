@@ -20,16 +20,15 @@ module fe_drive
    !!           z_bed_ref_file / h_ice_ref_file (e.g. RTopo), remapped online.
    !!   i_eq=2  equilibrium read from z_bed_eq_file / h_ice_eq_file.
    !!   i_eq=3  z_bed_eq = present-day reference bed + rsl from rsl_restart_file.
-   !! Optional (non-default) ice-free paleotopo spin-up when dt_equil>0: find the
-   !! ice-free relaxed bed by a fixed point so the EQUILIBRIUM under the start-slice
-   !! ice reproduces z_bed_eq, holding the load dt_equil per pass; this supersedes
-   !! the i_eq-selected bed and leaves the model spun up (bed AND viscous memory).
+   !! Optional (non-default) LGM-memory spin-up when pre_spinup_1d or time_equil_max>0:
+   !! relax under the start-slice ice while HOLDING the i_eq reference as the datum, so
+   !! the model enters the transient spun up (viscous memory) — see solid_earth_spinup.
    use fe_precision, only: wp
    use fe_constants, only: sec_per_year
    use fe_params,    only: fe_param_class, fe_par_load, fe_par_print
-   use fe_sht,       only: sht_grid, sht_grid_destroy, sht_grid_surface_integral, sht_grid_init
+   use fe_sht,       only: sht_grid, sht_grid_destroy, sht_grid_init
    use fe_coupling,  only: solid_earth_finalize, solid_earth_update, solid_earth_init, solid_earth, &
-                           solid_earth_enable_visc_3d
+                           solid_earth_spinup
    use fe_response,  only: RESP_MODAL
    use fe_remap,     only: remap_ll_gauss, remap_init, remap_to_gauss
    use fe_io,        only: fe_write_step, fe_restart_write, fe_restart_read
@@ -44,9 +43,6 @@ module fe_drive
    ! written separately via fe_restart_write when a restart is wanted)
    character(len=8), parameter :: OUT_VARS(5) = &
         [character(len=8) :: "h_ice", "rsl", "z_bed", "C_ocean", "bsl"]
-
-   integer,  parameter :: MAX_EQ  = 12       !! cap on LGM-memory spin-up passes
-   real(wp), parameter :: EQ_TOL  = 1.0_wp   !! spin-up convergence: mean|Δz_bed/pass| [m]
 
 contains
 
@@ -119,28 +115,19 @@ contains
       ! and <rundir>/final at the end, where rundir is the directory of file_out.
       rundir = dir_of(p%file_out)
       call system_clock(pc0, prate)
-      if (len_trim(p%restart_in_file) > 0) then
-         ! resume from a saved full state (memory + clock). init at the reference, then
-         ! restore; a lower-resolution restart is interpolated up to the model grid.
-         se%par = p; call solid_earth_init(se, z_bed_eq, h_ice_eq)
+      se%par = p; call solid_earth_init(se, z_bed_eq, h_ice_eq)              ! reference, memory 0
+      if (len_trim(p%restart_in_file) > 0) &                                 ! resume saved memory + clock
          call fe_restart_read(se, trim(p%restart_in_file))
-         if (p%dt_equil > 0.0_wp) then            ! optional further equilibration
-            call equilibrate(p, sht, se, z_bed_eq, h_ice_eq, ice_lgm, from_restart=.true.)
-            call fe_restart_write(se, se%time, folder=trim(rundir)//"/spinup")
-         else
-            ! seed the entering (LGM) ice and re-solve the diagnostics from the restored
-            ! memory (also fills rsl/z_bed/C after a cross-resolution restart).
-            call solid_earth_update(se, ice_lgm, 0.0_wp)
-         end if
-      else if (p%dt_equil > 0.0_wp) then
-         ! spin up se to isostatic equilibrium under the start-slice (LGM) ice while
-         ! HOLDING the present-day reference (z_bed_eq, h_ice_eq) as the datum, so the
-         ! transient measures rsl/bsl against today (-> 0 as ice -> h_ice_eq).
-         call equilibrate(p, sht, se, z_bed_eq, h_ice_eq, ice_lgm, spinup_1d=p%spinup_1d)
+      if (p%pre_spinup_1d .or. p%time_equil_max > 0.0_wp) then
+         ! LGM-memory spin-up: relax under the start-slice ice while HOLDING the
+         ! reference (z_bed_eq, h_ice_eq) as the datum, so the transient measures
+         ! rsl/bsl against the reference (-> 0 as ice -> h_ice_eq).
+         call solid_earth_spinup(se, ice_lgm)
          call fe_restart_write(se, se%time, folder=trim(rundir)//"/spinup")
       else
-         se%par = p; call solid_earth_init(se, z_bed_eq, h_ice_eq)
-         call solid_earth_update(se, ice_lgm, 0.0_wp)                        ! seed entering ice, no integration
+         ! seed the entering (LGM) ice and re-solve the diagnostics (also fills
+         ! rsl/z_bed/C after a cross-resolution restart); no integration.
+         call solid_earth_update(se, ice_lgm, 0.0_wp)
       end if
       call system_clock(pc1)
       write(*,'(a,f8.2,a)') ' [PROFILE setup] solid_earth_init+visc3d+seed =', real(pc1-pc0,wp)/prate, ' s'
@@ -211,66 +198,6 @@ contains
       write(*,'(a,a)') ' fastearth: wrote restart ', trim(rundir)//'/final/fe_restart.nc'
       call solid_earth_finalize(se);  call sht_grid_destroy(sht)
    end subroutine fastearth_run
-
-   ! --- equilibration ----------------------------------------------------------
-
-   subroutine equilibrate(p, sht, se, z_bed_eq, h_ice_eq, ice_lgm, spinup_1d, from_restart)
-      !! LGM-memory spin-up (i_eq=1): bring se to isostatic equilibrium under the
-      !! start-slice ice ice_lgm while HOLDING the present-day reference (z_bed_eq =
-      !! observed bed, h_ice_eq = observed ice) as the fixed datum. The model is
-      !! initialised at the reference (memory 0, rsl 0), the entering ice is set to
-      !! ice_lgm, then ice_lgm is held for dt_equil per pass until the bed stops moving
-      !! between passes (the slow Maxwell modes have relaxed). On return se carries the
-      !! relaxed LGM deflection rsl = equilibrium response to the load anomaly
-      !! (ice_lgm - h_ice_eq) and its consistent memory state; the reference datum is
-      !! UNCHANGED, so the transient that follows measures rsl/bsl against today
-      !! (rsl, bsl -> 0 as ice -> h_ice_eq).
-      !!
-      !! spinup_1d:    run the relaxation with 1-D (radial) viscosity, then enable the
-      !!               3-D field for the transient (cheap seed; ignored if not l_visc_3d).
-      !! from_restart: se is already initialised + state-restored, so skip the init and
-      !!               continue relaxing from the restored memory (further-equilibration).
-      type(fe_param_class), intent(in)            :: p
-      type(sht_grid),       intent(in),   target  :: sht
-      type(solid_earth),    intent(inout)         :: se
-      real(wp),             intent(in)            :: z_bed_eq(:,:)   !! PD reference bed (datum, held)
-      real(wp),             intent(in)            :: h_ice_eq(:,:)  !! PD reference ice (datum, held)
-      real(wp),             intent(in)            :: ice_lgm(:,:)
-      logical, optional,    intent(in)            :: spinup_1d, from_restart
-      real(wp), allocatable :: z_prev(:,:), resid(:,:)
-      real(wp) :: rmean, rmax, fourpi
-      integer  :: it, np, nl
-      logical  :: l1d, resume
-
-      l1d    = .false.;  if (present(spinup_1d))    l1d    = spinup_1d
-      resume = .false.;  if (present(from_restart)) resume = from_restart
-      np = sht%nphi;  nl = sht%nlat
-      fourpi = 16.0_wp*atan(1.0_wp)
-      allocate(z_prev(np,nl), resid(np,nl))
-
-      write(*,'(a,a,a,es9.2,a)') ' equilibration (i_eq=1): spin up LGM memory vs PD reference', &
-           merge(' [1-D]', '      ', l1d .and. p%l_visc_3d), ', dt_equil=', p%dt_equil/sec_per_year, ' yr/pass'
-      if (.not. resume) then
-         se%par = p
-         call solid_earth_init(se, z_bed_eq, h_ice_eq, defer_visc_3d=l1d)  ! reference, memory 0
-      end if
-      call solid_earth_update(se, ice_lgm, 0.0_wp)                   ! set entering ice = start (LGM) ice
-      z_prev = se%z_bed
-      do it = 1, MAX_EQ
-         call solid_earth_update(se, ice_lgm, p%dt_equil/sec_per_year)  ! hold LGM ice -> relax further [years]
-         resid = se%z_bed - z_prev                                   ! bed motion since the previous pass
-         rmean = sht_grid_surface_integral(sht, abs(resid))/fourpi
-         rmax  = maxval(abs(resid))
-         write(*,'(a,i2,a,f10.4,a,f10.2,a)') '   pass ', it, ':  d|z_bed|(vs prev pass)=', &
-              rmean, ' m   max=', rmax, ' m'
-         if (rmean < EQ_TOL) exit
-         z_prev = se%z_bed
-      end do
-
-      ! spinup_1d: the relaxation ran 1-D; enable the 3-D field for the transient,
-      ! preserving the spun-up memory as the seed.
-      if (l1d .and. p%l_visc_3d) call solid_earth_enable_visc_3d(se, sht)
-   end subroutine equilibrate
 
    pure function dir_of(path) result(d)
       !! Directory part of a path (everything before the last "/"); "." if none.

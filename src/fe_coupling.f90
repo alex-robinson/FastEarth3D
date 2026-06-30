@@ -29,7 +29,7 @@ module fe_coupling
    !! drive the deformation and sea-level change incrementally. The reference
    !! topography z_bed_eq doubles as the SLE's reference topo0.
    use fe_precision,       only: wp
-   use fe_constants,       only: rho_ice, rho_water, sec_per_year
+   use fe_constants,       only: rho_ice, rho_water, sec_per_year, pi
    use fe_params,          only: fe_param_class
    use fe_sht,             only: sht_grid, sht_grid_init, sht_grid_destroy, &
                                  sht_grid_synthesis, sht_grid_surface_integral
@@ -50,7 +50,13 @@ module fe_coupling
 
    public :: solid_earth, gauss_state
    public :: solid_earth_init, solid_earth_update, solid_earth_finalize
-   public :: solid_earth_enable_visc_3d, solid_earth_sync_host
+   public :: solid_earth_enable_visc_3d, solid_earth_sync_host, solid_earth_spinup
+
+   ! LGM-memory spin-up controls (the relaxation interval is internal — no user dt).
+   real(wp), parameter :: SPINUP_DT0   = 200.0_wp   !! first relaxation interval [years]
+   real(wp), parameter :: SPINUP_GROW  = 1.6_wp     !! interval growth per pass (the bed stiffens)
+   real(wp), parameter :: SPINUP_TOL   = 1.0_wp     !! convergence: mean |Δz_bed| per pass [m]
+   integer,  parameter :: SPINUP_MAXP  = 60         !! internal cap on relaxation passes
 
    type :: gauss_state
       !! Model fields on the model's own Gauss grid, where the physics runs. When the
@@ -322,6 +328,107 @@ contains
       end if
       self%z_bed = self%z_bed_eq - self%rsl
    end subroutine solid_earth_sync_host
+
+   subroutine solid_earth_spinup(self, h_ice_lgm)
+      !! Bring the model to isostatic equilibrium under the start-slice (LGM) ice load,
+      !! HOLDING the reference (z_bed_eq, h_ice_eq) as the datum, so the transient that
+      !! follows measures rsl/bsl against the reference. Driven entirely by self%par:
+      !!
+      !!   pre_spinup_1d : run a cheap 1-D pre-equilibration first (the 1-D radial
+      !!                   viscosity is the lateral geometric mean of the 3-D field),
+      !!                   then switch to the full model carrying the spun-up memory.
+      !!   time_equil_max: relax the FULL model, exiting early when the bed stops moving
+      !!                   or at this cap [years] with a warning if not yet converged.
+      !!
+      !! Both phases relax to bed-stationary convergence; the relaxation interval is
+      !! chosen internally (no user dt). A no-op if both are disabled. On return the
+      !! model is always in its full configuration, ready for the transient.
+      type(solid_earth), intent(inout) :: self
+      real(wp),           intent(in)    :: h_ice_lgm(:,:)   !! start-slice (LGM) ice [m] (host grid)
+      real(wp), allocatable :: visc_node(:,:), visc_unif(:,:)
+      integer :: r, nh
+      logical :: pre_1d
+      real(wp) :: t_max
+
+      pre_1d = self%par%pre_spinup_1d
+      t_max  = self%par%time_equil_max/sec_per_year          ! par stores SI; relax works in years
+      if (.not. pre_1d .and. t_max <= 0.0_wp) return         ! nothing to do
+
+      call solid_earth_update(self, h_ice_lgm, 0.0_wp)       ! seed the entering ice = start (LGM) ice
+
+      if (pre_1d) then
+         ! 1-D phase: replace the lateral viscosity with its lateral geometric mean
+         ! (a laterally-uniform field => a 1-D model on the mean radial profile). The
+         ! Maxwell memory is preserved across the enable, so it seeds the full model.
+         if (self%par%l_visc_3d) then
+            call load_visc_3d(self%par, self%sht, self%resp%r, visc_node)
+            nh = size(visc_node, 1)
+            allocate(visc_unif(nh, size(visc_node, 2)))
+            do r = 1, size(visc_node, 2)
+               visc_unif(:, r) = sum(visc_node(:, r)) / real(nh, wp)   ! lateral mean of log10(eta)
+            end do
+            select case (self%resp%kind)
+            case (RESP_VE);    call response_enable_lateral_visc_from_nodes(self%resp, self%sht, visc_unif)
+            case (RESP_MODAL); call response_enable_lateral_visc_modal_from_nodes(self%resp, self%sht, visc_unif)
+            end select
+         end if
+         call relax_hold(self, h_ice_lgm, -1.0_wp, "1-D ")    ! converge; internal pass cap only
+         if (self%par%l_visc_3d) call solid_earth_enable_visc_3d(self, self%sht)  ! restore the real 3-D field
+      end if
+
+      if (t_max > 0.0_wp) call relax_hold(self, h_ice_lgm, t_max, "full")
+   end subroutine solid_earth_spinup
+
+   subroutine relax_hold(self, h_ice_lgm, t_cap, label)
+      !! Hold h_ice_lgm and relax to bed-stationary convergence, advancing in an
+      !! internally-grown interval (the adaptive stepper sub-steps within it). t_cap<0:
+      !! no time cap (internal pass cap only, for the fast 1-D phase). t_cap>0: a cap
+      !! [years] — exit with a WARNING + diagnostics if convergence is not reached.
+      !! Logs per pass: wall time, mean internal Δt, sub-steps, bed residual, resid/tol.
+      type(solid_earth), intent(inout) :: self
+      real(wp),           intent(in)    :: h_ice_lgm(:,:)
+      real(wp),           intent(in)    :: t_cap
+      character(len=*),   intent(in)    :: label
+      real(wp), allocatable :: z_prev(:,:)
+      real(wp) :: pass_dt, t_done, rmean, rmax, wall0, wall1, mean_dt
+      integer  :: it, nsub0, nsub, np, nl
+      logical  :: converged
+
+      np = self%sht%nphi;  nl = self%sht%nlat
+      allocate(z_prev(np,nl), source=self%gg%z_bed)
+      pass_dt = SPINUP_DT0;  t_done = 0.0_wp;  converged = .false.
+      rmean = huge(1.0_wp)
+      if (t_cap > 0.0_wp) then
+         write(*,'(a,a,a,f0.0,a)') ' spin-up [', trim(label), &
+              ']: relax LGM memory vs reference, cap ', t_cap, ' yr'
+      else
+         write(*,'(a,a,a)') ' spin-up [', trim(label), &
+              ']: relax LGM memory vs reference (1-D pre-spin)'
+      end if
+      do it = 1, SPINUP_MAXP
+         if (t_cap > 0.0_wp) pass_dt = min(pass_dt, t_cap - t_done)
+         if (pass_dt <= 0.0_wp) exit
+         nsub0 = self%stepper%n_accept
+         call cpu_time(wall0)
+         call solid_earth_update(self, h_ice_lgm, pass_dt)
+         call cpu_time(wall1)
+         t_done  = t_done + pass_dt
+         nsub    = max(1, self%stepper%n_accept - nsub0)
+         mean_dt = pass_dt / real(nsub, wp)
+         rmean   = sht_grid_surface_integral(self%sht, abs(self%gg%z_bed - z_prev)) / (4.0_wp*pi)
+         rmax    = maxval(abs(self%gg%z_bed - z_prev))
+         write(*,'(a,i3,a,f7.2,a,f9.1,a,i0,a,f9.4,a,f9.2,a,es8.1)') &
+              '   pass ', it, ':  ', wall1-wall0, ' s  <dt>=', mean_dt, ' yr (', nsub, &
+              ' sub)  d|z_bed|=', rmean, ' m  max=', rmax, ' m  resid/tol=', rmean/SPINUP_TOL
+         if (rmean < SPINUP_TOL) then;  converged = .true.;  exit;  end if
+         z_prev  = self%gg%z_bed
+         pass_dt = pass_dt*SPINUP_GROW
+      end do
+      if (t_cap > 0.0_wp .and. .not. converged) &
+         write(*,'(a,a,a,f0.1,a,f0.4,a,es8.1,a)') ' WARNING: spin-up [', trim(label), &
+              '] hit time_equil_max=', t_done, ' yr before convergence (d|z_bed|=', &
+              rmean, ' m, ', rmean/SPINUP_TOL, 'x tol)'
+   end subroutine relax_hold
 
    subroutine update_bsl(self)
       !! Diagnose the barystatic sea level from the current (Gauss-grid) state.
