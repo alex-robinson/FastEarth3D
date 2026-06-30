@@ -42,7 +42,6 @@ program test_couple_remap
    bed_eq_ice = z_bed_eq(1,jice)
 
    p%lmax = LMAX;  p%nlat = 2*LMAX;  p%nphi = 4*LMAX
-   p%dt_couple = 2.0e3_wp*sec_per_year
    se%par = p
    call solid_earth_init(se, z_bed_eq, h_ice_eq, grid=hgrid)
 

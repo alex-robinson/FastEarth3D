@@ -6,6 +6,7 @@ obj_fastearth = \
 	$(objdir)/fe_precision.o \
 	$(objdir)/fe_constants.o \
 	$(objdir)/fe_params.o \
+	$(objdir)/fe_control.o \
 	$(objdir)/fe_sht.o \
 	$(objdir)/fe_tensor_sh.o \
 	$(objdir)/fe_field.o \
@@ -28,6 +29,7 @@ obj_fastearth = \
 # --- Inter-module dependencies (so `make -j` stays correct) ------------------
 $(objdir)/fe_constants.o:        $(objdir)/fe_precision.o
 $(objdir)/fe_params.o:           $(objdir)/fe_precision.o $(objdir)/fe_constants.o
+$(objdir)/fe_control.o:          $(objdir)/fe_precision.o $(objdir)/fe_constants.o
 $(objdir)/fe_sht.o:              $(objdir)/fe_precision.o
 $(objdir)/fe_tensor_sh.o:        $(objdir)/fe_precision.o $(objdir)/fe_sht.o
 $(objdir)/fe_field.o:            $(objdir)/fe_precision.o $(objdir)/fe_sht.o
@@ -58,13 +60,15 @@ $(objdir)/fe_remap.o:            $(objdir)/fe_precision.o $(objdir)/fe_sht.o
 $(objdir)/fe_io.o:               $(objdir)/fe_coupling.o $(objdir)/fe_response.o \
                                  $(objdir)/fe_viscoelastic.o $(objdir)/fe_sht.o \
                                  $(objdir)/fe_constants.o
-$(objdir)/fe_drive.o:            $(objdir)/fe_params.o $(objdir)/fe_sht.o \
+$(objdir)/fe_drive.o:            $(objdir)/fe_params.o $(objdir)/fe_control.o \
+                                 $(objdir)/fe_sht.o \
                                  $(objdir)/fe_coupling.o $(objdir)/fe_io.o \
                                  $(objdir)/fe_remap.o \
                                  $(objdir)/fe_constants.o $(objdir)/fe_precision.o
 # The umbrella module re-exports every component, so it compiles last.
 $(objdir)/fastearth3d.o:         $(objdir)/fe_coupling.o $(objdir)/fe_io.o \
-                                 $(objdir)/fe_drive.o $(objdir)/fe_params.o
+                                 $(objdir)/fe_drive.o $(objdir)/fe_params.o \
+                                 $(objdir)/fe_control.o
 
 # --- Pattern rule ------------------------------------------------------------
 $(objdir)/%.o: $(srcdir)/%.f90 | $(objdir)

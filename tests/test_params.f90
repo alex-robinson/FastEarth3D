@@ -37,7 +37,7 @@ program test_params
    write(u,'(a)') '    scheme       = "be"'
    write(u,'(a)') "    sle_n_outer  = 5"
    write(u,'(a)') "    sle_subgrid  = .false."
-   write(u,'(a)') "    dt_couple    = 2000.0"
+   write(u,'(a)') "    equil_time_max = 2000.0"
    write(u,'(a)') "    dt_init      = 500.0"
    write(u,'(a)') "    rotation     = .true."
    write(u,'(a)') "/"
@@ -55,8 +55,8 @@ program test_params
    call check_log("rotation",    p%rotation,    .true.)
 
    ! --- (2) YEARS -> seconds conversion of the time fields ---------------------
-   call check_real("dt_couple [s]", p%dt_couple, 2000.0_wp*sec_per_year)
-   call check_real("dt_init [s]",   p%dt_init,    500.0_wp*sec_per_year)
+   call check_real("equil_time_max [s]", p%equil_time_max, 2000.0_wp*sec_per_year)
+   call check_real("dt_init [s]",        p%dt_init,         500.0_wp*sec_per_year)
 
    ! --- (3) custom per-layer earth assembly ------------------------------------
    em = build_earth(p)

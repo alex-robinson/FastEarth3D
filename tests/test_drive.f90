@@ -69,11 +69,14 @@ program test_drive
    call nc_write(FORCE, "h_ice", h_ice, dim1="lon", dim2="lat", dim3="time")
 
    ! --- sparse config overlaid on the shipped defaults -------------------------
+   ! &fe3d carries the physics/grid overrides; &ctl the run I/O.
    open(newunit=u, file=CFG, status="replace", action="write")
    write(u,'(a)')    "&fe3d"
    write(u,'(a,i0)') "    lmax = ", LMAX
    write(u,'(a,i0)') "    nlat = ", NLAT
    write(u,'(a,i0)') "    nphi = ", NPHI
+   write(u,'(a)')    "/"
+   write(u,'(a)')    "&ctl"
    write(u,'(a)')    '    file_ref     = "'//REF//'"'
    write(u,'(a)')    '    file_forcing = "'//FORCE//'"'
    write(u,'(a)')    '    file_out     = "'//OUT//'"'

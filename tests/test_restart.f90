@@ -62,7 +62,6 @@ contains
       integer  :: step, nt
 
       dt_yr           = 1.0e3_wp          ! interval per update [years]
-      p%dt_couple     = dt_yr*sec_per_year! param seed (SI); M3-L70-V01
       p%lmax = LMAX;  p%nlat = 2*LMAX;  p%nphi = 4*LMAX  ! model builds its own grid from par
       p%earth_response = resp             ! "ve" (memory tensor) or "modal" (φ amplitudes)
       p%rotation      = .true.            ! rotation on: also round-trips the polar

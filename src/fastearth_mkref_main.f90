@@ -13,6 +13,7 @@ program fastearth_mkref
    !! reference vars are assumed on a common source grid (RTopo).
    use fe_precision, only: wp
    use fe_params,    only: fe_param_class, fe_par_load
+   use fe_control,   only: fe_ctl_class, fe_ctl_load
    use fe_sht,       only: sht_grid, sht_grid_init, sht_grid_destroy
    use fe_remap,     only: remap_ll_gauss, remap_init, remap_to_gauss
    use ncio,         only: nc_read, nc_size, nc_create, nc_write_dim, nc_write
@@ -21,6 +22,7 @@ program fastearth_mkref
    real(wp), parameter :: RAD2DEG = 57.295779513082323_wp
    character(len=512)  :: cfg, defs
    type(fe_param_class) :: p
+   type(fe_ctl_class)   :: c
    type(sht_grid)       :: sht
    type(remap_ll_gauss)   :: rmap
    real(wp), allocatable :: lon_s(:), lat_s(:), buf(:,:), bed(:,:), ice(:,:)
@@ -36,11 +38,13 @@ program fastearth_mkref
    if (command_argument_count() >= 2) then
       call get_command_argument(2, defs)
       call fe_par_load(p, cfg, defaults_file=trim(defs))
+      call fe_ctl_load(c, cfg, defaults_file=trim(defs))
    else
       call fe_par_load(p, cfg)
+      call fe_ctl_load(c, cfg)
    end if
-   if (len_trim(p%z_bed_ref_file) == 0) error stop 'fastearth_mkref: z_bed_ref_file not set'
-   if (len_trim(p%h_ice_ref_file) == 0) error stop 'fastearth_mkref: h_ice_ref_file not set'
+   if (len_trim(c%z_bed_ref_file) == 0) error stop 'fastearth_mkref: z_bed_ref_file not set'
+   if (len_trim(c%h_ice_ref_file) == 0) error stop 'fastearth_mkref: h_ice_ref_file not set'
 
    ! --- Gauss grid (same defaulting as the driver) ---------------------------
    nlat = p%nlat;  if (nlat <= 0) nlat = 2*p%lmax + 2
@@ -49,18 +53,18 @@ program fastearth_mkref
    np = sht%nphi;  nl = sht%nlat
 
    ! --- conservative map from the reference source axes ----------------------
-   nlon = nc_size(p%z_bed_ref_file, trim(p%name_lon))
-   nls  = nc_size(p%z_bed_ref_file, trim(p%name_lat))
+   nlon = nc_size(c%z_bed_ref_file, trim(c%name_lon))
+   nls  = nc_size(c%z_bed_ref_file, trim(c%name_lat))
    allocate(lon_s(nlon), lat_s(nls), buf(nlon,nls), bed(np,nl), ice(np,nl))
-   call nc_read(p%z_bed_ref_file, trim(p%name_lon), lon_s)
-   call nc_read(p%z_bed_ref_file, trim(p%name_lat), lat_s)
+   call nc_read(c%z_bed_ref_file, trim(c%name_lon), lon_s)
+   call nc_read(c%z_bed_ref_file, trim(c%name_lat), lat_s)
    write(*,'(a,i0,a,i0,a,i0,a,i0,a)') ' fastearth_mkref: ', nlon, 'x', nls, &
         ' lon-lat -> ', np, 'x', nl, ' Gauss (building conservative map)'
    call remap_init(rmap, sht, lon_s, lat_s)
 
-   call nc_read(p%z_bed_ref_file, trim(p%name_z_bed_ref), buf)
+   call nc_read(c%z_bed_ref_file, trim(c%name_z_bed_ref), buf)
    call remap_to_gauss(rmap, sht, buf, bed, conserve_mass=.false.)
-   call nc_read(p%h_ice_ref_file, trim(p%name_h_ice_ref), buf)
+   call nc_read(c%h_ice_ref_file, trim(c%name_h_ice_ref), buf)
    call remap_to_gauss(rmap, sht, buf, ice, conserve_mass=.true.)
 
    ! --- Gauss output ---------------------------------------------------------
@@ -68,14 +72,14 @@ program fastearth_mkref
    lon_g = sht%lon*RAD2DEG
    do k = 1, nl;  lat_g(k) = 90.0_wp - sht%colat(k)*RAD2DEG;  end do
 
-   call nc_create(p%file_out)
-   call nc_write_dim(p%file_out, "lon", x=lon_g, units="degrees_east")
-   call nc_write_dim(p%file_out, "lat", x=lat_g, units="degrees_north")
-   call nc_write(p%file_out, trim(p%name_z_bed_ref), bed, dim1="lon", dim2="lat", &
+   call nc_create(c%file_out)
+   call nc_write_dim(c%file_out, "lon", x=lon_g, units="degrees_east")
+   call nc_write_dim(c%file_out, "lat", x=lat_g, units="degrees_north")
+   call nc_write(c%file_out, trim(c%name_z_bed_ref), bed, dim1="lon", dim2="lat", &
                  units="m", long_name="reference bedrock elevation (Gauss grid)")
-   call nc_write(p%file_out, trim(p%name_h_ice_ref), ice, dim1="lon", dim2="lat", &
+   call nc_write(c%file_out, trim(c%name_h_ice_ref), ice, dim1="lon", dim2="lat", &
                  units="m", long_name="reference ice thickness (Gauss grid)")
 
    call sht_grid_destroy(sht)
-   write(*,'(a,a)') ' fastearth_mkref: wrote ', trim(p%file_out)
+   write(*,'(a,a)') ' fastearth_mkref: wrote ', trim(c%file_out)
 end program fastearth_mkref

@@ -29,7 +29,7 @@ module fe_coupling
    !! drive the deformation and sea-level change incrementally. The reference
    !! topography z_bed_eq doubles as the SLE's reference topo0.
    use fe_precision,       only: wp
-   use fe_constants,       only: rho_ice, rho_water, sec_per_year, pi
+   use fe_constants,       only: rho_ice, rho_water, sec_per_year, pi, kyr
    use fe_params,          only: fe_param_class
    use fe_sht,             only: sht_grid, sht_grid_init, sht_grid_destroy, &
                                  sht_grid_synthesis, sht_grid_surface_integral
@@ -173,8 +173,9 @@ contains
 
       ! viscoelastic driver: operators assembled + factored once, memory zeroed.
       ! Δt enters only through Mk = (μ/η)Δt, which the adaptive stepper rescales
-      ! per sub-step (resp%set_dt) — so the init Δt is just a nominal seed.
-      dt0 = self%par%dt_init;  if (dt0 <= 0.0_wp) dt0 = self%par%dt_couple
+      ! per sub-step (resp%set_dt) — so the init Δt is just a nominal seed (the host
+      ! passes the real interval to solid_earth_update; this only seeds the assembly).
+      dt0 = self%par%dt_init;  if (dt0 <= 0.0_wp) dt0 = kyr
       select case (trim(self%par%earth_response))
       case ("ve")
          call response_init_ve(self%resp, self%earth, self%sht, dt0)

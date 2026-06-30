@@ -1,17 +1,27 @@
 &fe3d
     ! ====================================================================
-    ! LGM -> present-day deglaciation, Tarasov PMIP4 ice + bed (CLIMBER-X
-    ! input geo_ice_tarasov_deglac.nc, 1 deg lon x 0.5 deg lat, -26 ka -> 0,
-    ! 100-yr slices). Sparse config -- overlay on fastearth.nml:
+    ! LGM -> present-day deglaciation (physics overrides). Sparse config --
+    ! overlay on fastearth.nml:
     !     bin/fastearth.x examples/deglac_lgm.nml fastearth.nml
-    ! Forcing is remapped online; the present-day reference (RTopo) is read from
-    ! the canonical Gauss-grid reference (data/reference/rtopo_gauss_l128.nc) and
-    ! remapped to this run's resolution (cached), so i_eq=1 measures rsl against
-    ! today (rsl ~ 0 at present day).
+    ! Run I/O (forcing, reference, output, window) is in the &ctl group below.
     ! ====================================================================
     lmax         = 64
     scheme       = "trap"
 
+    equil_time_max = 50000.0   ! full-model LGM-memory spin-up cap [years]; >0 equilibrates
+                               ! the LGM state first (else i_eq=1 starts at the present-day
+                               ! reference with zero memory -> a zero/un-equilibrated slice 0)
+/
+
+&ctl
+    ! ====================================================================
+    ! Tarasov PMIP4 ice + bed (CLIMBER-X input geo_ice_tarasov_deglac.nc,
+    ! 1 deg lon x 0.5 deg lat, -26 ka -> 0, 100-yr slices). Forcing is remapped
+    ! online; the present-day reference (RTopo) is read from the canonical
+    ! Gauss-grid reference (data/reference/rtopo_gauss_l128.nc) and remapped to
+    ! this run's resolution (cached), so i_eq=1 measures rsl against today
+    ! (rsl ~ 0 at present day).
+    ! ====================================================================
     file_forcing = "/Users/alrobi001/models/climber-x/input/geo_ice_tarasov_deglac.nc"
     name_ice     = "ice_thickness"
     name_time    = "time"
@@ -24,11 +34,6 @@
     h_ice_ref_file = "data/reference/rtopo_gauss_l128.nc"
     name_z_bed_ref = "bedrock_topography"
     name_h_ice_ref = "ice_thickness"
-    equil_time_max = 50000.0   ! full-model LGM-memory spin-up cap [years]; >0 equilibrates
-                               ! the LGM state first (else i_eq=1 starts at the present-day
-                               ! reference with zero memory -> a zero/un-equilibrated slice 0)
-
-    dt_couple    = 100.0       ! [years] slice spacing
 
     file_out     = "runs/deglac_lgm/out.nc"
     time_init    = -26000.0

@@ -37,7 +37,6 @@ program test_spinup
    jice = nearest_row(15.0_wp)
 
    p%lmax = LMAX;  p%nlat = 2*LMAX;  p%nphi = 4*LMAX
-   p%dt_couple = 2.0e3_wp*sec_per_year
 
    ! reference: a single cold 2 kyr coupling step (elastic + a little viscous)
    se%par = p;  call solid_earth_init(se, z_bed_eq, h_ice_eq)

@@ -13,6 +13,7 @@ program fastearth_remap
    !! (fe_remap), so results are identical.
    use fe_precision, only: wp
    use fe_params,    only: fe_param_class, fe_par_load
+   use fe_control,   only: fe_ctl_class, fe_ctl_load
    use fe_sht,       only: sht_grid, sht_grid_init, sht_grid_destroy
    use fe_remap,     only: remap_ll_gauss, remap_init, remap_to_gauss
    use ncio,         only: nc_read, nc_size, nc_create, nc_write_dim, nc_write
@@ -21,6 +22,7 @@ program fastearth_remap
    real(wp), parameter :: RAD2DEG = 57.295779513082323_wp
    character(len=512)  :: cfg, defs
    type(fe_param_class) :: p
+   type(fe_ctl_class)   :: c
    type(sht_grid)       :: sht
    type(remap_ll_gauss)   :: rmap
    real(wp), allocatable :: lon_s(:), lat_s(:), src(:,:), gauss(:,:)
@@ -36,10 +38,12 @@ program fastearth_remap
    if (command_argument_count() >= 2) then
       call get_command_argument(2, defs)
       call fe_par_load(p, cfg, defaults_file=trim(defs))
+      call fe_ctl_load(c, cfg, defaults_file=trim(defs))
    else
       call fe_par_load(p, cfg)
+      call fe_ctl_load(c, cfg)
    end if
-   if (len_trim(p%file_forcing) == 0) error stop 'fastearth_remap: file_forcing not set'
+   if (len_trim(c%file_forcing) == 0) error stop 'fastearth_remap: file_forcing not set'
 
    ! --- Gauss grid (same defaulting as the driver) ---------------------------
    nlat = p%nlat;  if (nlat <= 0) nlat = 2*p%lmax + 2
@@ -48,15 +52,15 @@ program fastearth_remap
    np = sht%nphi;  nl = sht%nlat
 
    ! --- conservative map from the source axes --------------------------------
-   nlon = nc_size(p%file_forcing, trim(p%name_lon))
-   nls  = nc_size(p%file_forcing, trim(p%name_lat))
+   nlon = nc_size(c%file_forcing, trim(c%name_lon))
+   nls  = nc_size(c%file_forcing, trim(c%name_lat))
    allocate(lon_s(nlon), lat_s(nls))
-   call nc_read(p%file_forcing, trim(p%name_lon), lon_s)
-   call nc_read(p%file_forcing, trim(p%name_lat), lat_s)
+   call nc_read(c%file_forcing, trim(c%name_lon), lon_s)
+   call nc_read(c%file_forcing, trim(c%name_lat), lat_s)
    call remap_init(rmap, sht, lon_s, lat_s)
 
-   nt = nc_size(p%file_forcing, trim(p%name_time))
-   allocate(tyr(nt));  call nc_read(p%file_forcing, trim(p%name_time), tyr)
+   nt = nc_size(c%file_forcing, trim(c%name_time))
+   allocate(tyr(nt));  call nc_read(c%file_forcing, trim(c%name_time), tyr)
    write(*,'(a,i0,a,i0,a,i0,a,i0,a,i0,a)') ' fastearth_remap: ', nlon, 'x', nls, &
         ' lon-lat -> ', np, 'x', nl, ' Gauss, ', nt, ' slices'
 
@@ -65,20 +69,20 @@ program fastearth_remap
    lon_g = sht%lon*RAD2DEG
    do k = 1, nl;  lat_g(k) = 90.0_wp - sht%colat(k)*RAD2DEG;  end do
 
-   call nc_create(p%file_out)
-   call nc_write_dim(p%file_out, "lon",  x=lon_g, units="degrees_east")
-   call nc_write_dim(p%file_out, "lat",  x=lat_g, units="degrees_north")
-   call nc_write_dim(p%file_out, "time", x=tyr,   units="years", unlimited=.true.)
+   call nc_create(c%file_out)
+   call nc_write_dim(c%file_out, "lon",  x=lon_g, units="degrees_east")
+   call nc_write_dim(c%file_out, "lat",  x=lat_g, units="degrees_north")
+   call nc_write_dim(c%file_out, "time", x=tyr,   units="years", unlimited=.true.)
 
    allocate(src(nlon,nls), gauss(np,nl))
    do k = 1, nt
-      call nc_read(p%file_forcing, trim(p%name_ice), src, &
+      call nc_read(c%file_forcing, trim(c%name_ice), src, &
                    start=[1,1,k], count=[nlon, nls, 1])
       call remap_to_gauss(rmap, sht, src, gauss, conserve_mass=.true.)
-      call nc_write(p%file_out, trim(p%name_ice), gauss, dim1="lon", dim2="lat", &
+      call nc_write(c%file_out, trim(c%name_ice), gauss, dim1="lon", dim2="lat", &
                     dim3="time", start=[1,1,k], count=[np, nl, 1])
    end do
 
    call sht_grid_destroy(sht)
-   write(*,'(a,a)') ' fastearth_remap: wrote ', trim(p%file_out)
+   write(*,'(a,a)') ' fastearth_remap: wrote ', trim(c%file_out)
 end program fastearth_remap
