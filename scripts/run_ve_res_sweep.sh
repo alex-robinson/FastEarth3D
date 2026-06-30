@@ -11,10 +11,8 @@
 # enough to be affordable. The lmax<128 runs show how far resolution can drop (cost
 # falls ~ lmax^2-3) before the answer drifts past tolerance; the cfl probes at the
 # reference resolution show whether the default cfl=1 sub-stepping is temporally
-# converged. Every run now shares the LMAX_REF (l128) transform grid — only lmax (the
-# solid-Earth truncation) varies — so all out.nc are on the same 512x258 grid and
-# errors are measured against the LMAX_REF / cfl=1 run by analysis/ve_res_sweep.jl
-# directly (no regridding needed).
+# converged. ALL errors are measured against the LMAX_REF / cfl=1 run by
+# analysis/ve_res_sweep.jl (it regrids each run onto the reference grid first).
 #
 # Run it from anywhere; it cd's to the repo root so runme finds .runme/.
 #
@@ -41,17 +39,15 @@ VISC3D=${VISC3D:-${ISOSTASY_DATA}/earth_structure/viscosity/bagge2021.nc}   # lo
 # Experiment knobs.
 # ============================================================================
 # Resolution sweep. LMAX_REF is the production resolution and the error reference;
-# it MUST appear in LMAX_LIST. The transform grid is PINNED to the LMAX_REF Gauss
-# grid (NLAT_REF x NPHI_REF) for EVERY run, so only the spherical-harmonic truncation
-# (lmax = the solid-Earth resolution) varies — the grid that the forcing/reference are
-# remapped onto and that the topo output is written on stays fixed at the l128 grid.
-# The canonical reference data/reference/rtopo_gauss_l128.nc (i_eq=1) thus matches the
-# grid exactly and is read directly (no online down-remap), and every run's out.nc
-# lands on the same 512x258 grid — directly comparable with no regridding.
+# it MUST appear in LMAX_LIST. Each run's transform grid is derived from its OWN lmax
+# (nlat=2·lmax+2, nphi=4·lmax), so the solver internals run at the resolution set and
+# cost falls ~ lmax^2-3 with resolution. Every run uses the one canonical reference
+# data/reference/rtopo_gauss_l128.nc (i_eq=1), remapped to its lmax grid online
+# (cached) — the input topography stays fixed at l128 regardless of run resolution.
+# out.nc thus land on per-run grids; analysis/ve_res_sweep.jl regrids each onto the
+# LMAX_REF grid before comparing.
 LMAX_LIST=${LMAX_LIST:-32 64 96 128}        # spherical-harmonic degrees to sweep
-LMAX_REF=${LMAX_REF:-128}                    # production target + error reference; also pins the grid
-NLAT_REF=$((2*LMAX_REF + 2))                 # Gauss latitudes of the pinned (LMAX_REF) grid
-NPHI_REF=$((4*LMAX_REF))                      # longitudes      of the pinned (LMAX_REF) grid
+LMAX_REF=${LMAX_REF:-128}                    # production target + error reference
 
 # Sub-step probe at the reference resolution: extra cfl values (the Maxwell-number
 # ceiling M=μΔt/η of the explicit fe scheme; n_sub = ceil(span·max(μ/η)/cfl)). The
@@ -86,11 +82,9 @@ RUNME_FLAGS=${RUNME_FLAGS--s -r}             # note: `-` not `:-`, so RUNME_FLAG
 VISC3D_ON=(fe3d.l_visc_3d=true fe3d.pre_spinup_1d=true fe3d.visc_3d_file="$VISC3D")
 
 # Parameters common to every run (machine paths + the shared deglaciation setup).
-# The grid is pinned here to the LMAX_REF (l128) Gauss grid; lmax (the solid-Earth
-# resolution) and the scheme/cfl are added per run below.
+# Resolution (lmax + reference) and the scheme/cfl are added per run below; the grid
+# is derived from each run's own lmax (not pinned).
 COMMON=(
-  fe3d.nlat="$NLAT_REF"
-  fe3d.nphi="$NPHI_REF"
   fe3d.file_forcing="$FORCING"
   fe3d.name_ice=ice_thickness
   fe3d.i_eq=1
@@ -128,7 +122,7 @@ echo "exp root: $EXP    runme flags: '$RUNME_FLAGS'"
 
 # ---------------------------------------------------------------------------
 # Resolution sweep (explicit fe scheme, cfl=1). lmax.<L>; lmax.<REF> is the reference.
-# Every run shares the pinned l128 grid (set in COMMON), so all out.nc are 512x258.
+# Each run's grid is derived from its own lmax (see COMMON note above).
 # ---------------------------------------------------------------------------
 for L in $LMAX_LIST; do
   launch "$EXP/lmax.$L" "$L" fe3d.cfl=1.0
