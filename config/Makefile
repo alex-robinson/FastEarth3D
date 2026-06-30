@@ -8,8 +8,10 @@ testdir = tests
 bindir  = bin
 
 # === Command-line switches ===================================================
-debug  ?= 0     # 0 = optimized, 1 = debug/checks, 2 = profile
-openmp ?= 1     # 0 = serial dep variants; 1 = OpenMP dep variants + -fopenmp (default on)
+# debug:  0 = optimized, 1 = debug/checks, 2 = profile
+debug  ?= 0
+# openmp: 0 = serial dep variants; 1 = OpenMP dep variants + -fopenmp (default on)
+openmp ?= 1
 
 defaulttarget: usage
 
