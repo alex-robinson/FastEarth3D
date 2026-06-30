@@ -53,7 +53,7 @@ Key knobs (all with sensible defaults in the script):
 | `RANKS` | `mode_rank` metric swept | `isostatic,rate,residue` |
 | `T0` / `T1` | transient window [yr] (LGM → present) | `-26000` / `0` |
 | `DT_COUPLE` | coupling interval [yr] (forcing cadence) | `100` |
-| `TIME_EQUIL_MAX` | LGM-memory spin-up cap [yr] | `100000` |
+| `EQUIL_TIME_MAX` | LGM-memory spin-up cap [yr] | `100000` |
 | `OMP` | OpenMP threads per run | `8` |
 | `FORCING` / `VISC3D` | ice forcing and 3-D `log10(eta)` field (absolute paths) | machine-specific |
 | `RUNME_FLAGS` | how runme launches (`-s -r` submit, `-s` stage, `-r` local, `""` stage-only) | `-s -r` |

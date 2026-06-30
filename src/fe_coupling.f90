@@ -55,8 +55,9 @@ module fe_coupling
    ! LGM-memory spin-up controls (the relaxation interval is internal — no user dt).
    real(wp), parameter :: SPINUP_DT0   = 200.0_wp   !! first relaxation interval [years]
    real(wp), parameter :: SPINUP_GROW  = 1.6_wp     !! interval growth per pass (the bed stiffens)
-   real(wp), parameter :: SPINUP_TOL   = 1.0e-3_wp  !! convergence: mean bed velocity over a pass [m/yr]
    integer,  parameter :: SPINUP_MAXP  = 60         !! internal cap on relaxation passes
+   !! The convergence criterion (mean bed velocity over a pass [m/yr]) is the runtime
+   !! parameter par%equil_rate_tol.
 
    type :: gauss_state
       !! Model fields on the model's own Gauss grid, where the physics runs. When the
@@ -329,8 +330,9 @@ contains
       !!   pre_spinup_1d : run a cheap 1-D pre-equilibration first (the 1-D radial
       !!                   viscosity is the lateral geometric mean of the 3-D field),
       !!                   then switch to the full model carrying the spun-up memory.
-      !!   time_equil_max: relax the FULL model, exiting early when the bed stops moving
-      !!                   or at this cap [years] with a warning if not yet converged.
+      !!   equil_time_max: relax the FULL model, exiting early when the bed stops moving
+      !!                   (rate < equil_rate_tol) or at this cap [years] with a warning
+      !!                   if not yet converged.
       !!
       !! Both phases relax to bed-stationary convergence; the relaxation interval is
       !! chosen internally (no user dt). A no-op if both are disabled. On return the
@@ -343,7 +345,7 @@ contains
       real(wp) :: t_max
 
       pre_1d = self%par%pre_spinup_1d
-      t_max  = self%par%time_equil_max/sec_per_year          ! par stores SI; relax works in years
+      t_max  = self%par%equil_time_max/sec_per_year          ! par stores SI; relax works in years
       if (.not. pre_1d .and. t_max <= 0.0_wp) return         ! nothing to do
 
       call solid_earth_update(self, h_ice_lgm, 0.0_wp)       ! seed the entering ice = start (LGM) ice
@@ -382,10 +384,11 @@ contains
       real(wp),           intent(in)    :: t_cap
       character(len=*),   intent(in)    :: label
       real(wp), allocatable :: z_prev(:,:)
-      real(wp) :: pass_dt, t_done, rmean, rmax, rrate, wall0, wall1, mean_dt
+      real(wp) :: pass_dt, t_done, rmean, rmax, rrate, wall0, wall1, mean_dt, tol
       integer  :: it, nsub0, nsub, np, nl
       logical  :: converged
 
+      tol = self%par%equil_rate_tol
       np = self%sht%nphi;  nl = self%sht%nlat
       allocate(z_prev(np,nl), source=self%gg%z_bed)
       pass_dt = SPINUP_DT0;  t_done = 0.0_wp;  converged = .false.
@@ -412,15 +415,15 @@ contains
          rrate   = rmean / pass_dt                            ! mean bed velocity over the pass [m/yr]
          write(*,'(a,i3,a,f7.2,a,f9.1,a,i0,a,f9.4,a,f9.2,a,es9.2,a,es8.1)') &
               '   pass ', it, ':  ', wall1-wall0, ' s  <dt>=', mean_dt, ' yr (', nsub, &
-              ' sub)  d|z_bed|=', rmean, ' m  max=', rmax, ' m  v=', rrate, ' m/yr  v/tol=', rrate/SPINUP_TOL
-         if (rrate < SPINUP_TOL) then;  converged = .true.;  exit;  end if
+              ' sub)  d|z_bed|=', rmean, ' m  max=', rmax, ' m  v=', rrate, ' m/yr  v/tol=', rrate/tol
+         if (rrate < tol) then;  converged = .true.;  exit;  end if
          z_prev  = self%gg%z_bed
          pass_dt = pass_dt*SPINUP_GROW
       end do
       if (t_cap > 0.0_wp .and. .not. converged) &
          write(*,'(a,a,a,f0.1,a,es9.2,a,es8.1,a)') ' WARNING: spin-up [', trim(label), &
-              '] hit time_equil_max=', t_done, ' yr before convergence (v=', &
-              rrate, ' m/yr, ', rrate/SPINUP_TOL, 'x tol)'
+              '] hit equil_time_max=', t_done, ' yr before convergence (v=', &
+              rrate, ' m/yr, ', rrate/tol, 'x tol)'
    end subroutine relax_hold
 
    subroutine update_bsl(self)

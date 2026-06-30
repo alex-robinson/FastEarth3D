@@ -84,8 +84,8 @@ $z_{\text{bed}} = z_{\text{bed,eq}} - \text{rsl}$ is returned at the coupling
 cadence. The reference state and its datum are chosen by `i_eq` (e.g. a
 present-day RTopo reference, or an equilibrium configuration); a non-equilibrium
 start (a held LGM load) is brought into balance by a **spin-up**
-(`solid_earth_spinup`) that relaxes the held load to bed-stationary equilibrium —
-capped by `time_equil_max` — with an optional cheap 1-D pre-equilibration
+(`solid_earth_spinup`) that relaxes the held load to bed-stationary equilibrium
+(rate below `equil_rate_tol`) — capped by `equil_time_max` — with an optional cheap 1-D pre-equilibration
 (`pre_spinup_1d`) before switching the transient to the 3-D path.
 
 ::: {.callout-tip title="Where this lives in the code"}

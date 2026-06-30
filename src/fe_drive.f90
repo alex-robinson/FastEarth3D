@@ -20,7 +20,7 @@ module fe_drive
    !!           z_bed_ref_file / h_ice_ref_file (e.g. RTopo), remapped online.
    !!   i_eq=2  equilibrium read from z_bed_eq_file / h_ice_eq_file.
    !!   i_eq=3  z_bed_eq = present-day reference bed + rsl from rsl_restart_file.
-   !! Optional (non-default) LGM-memory spin-up when pre_spinup_1d or time_equil_max>0:
+   !! Optional (non-default) LGM-memory spin-up when pre_spinup_1d or equil_time_max>0:
    !! relax under the start-slice ice while HOLDING the i_eq reference as the datum, so
    !! the model enters the transient spun up (viscous memory) — see solid_earth_spinup.
    use fe_precision, only: wp
@@ -118,7 +118,7 @@ contains
       se%par = p; call solid_earth_init(se, z_bed_eq, h_ice_eq)              ! reference, memory 0
       if (len_trim(p%restart_in_file) > 0) &                                 ! resume saved memory + clock
          call fe_restart_read(se, trim(p%restart_in_file))
-      if (p%pre_spinup_1d .or. p%time_equil_max > 0.0_wp) then
+      if (p%pre_spinup_1d .or. p%equil_time_max > 0.0_wp) then
          ! LGM-memory spin-up: relax under the start-slice ice while HOLDING the
          ! reference (z_bed_eq, h_ice_eq) as the datum, so the transient measures
          ! rsl/bsl against the reference (-> 0 as ice -> h_ice_eq).

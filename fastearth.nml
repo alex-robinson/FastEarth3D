@@ -100,8 +100,10 @@
     name_z_bed_ref  = "bedrock_topography"  ! bed var in the ref/eq files
     name_h_ice_ref  = "ice_thickness"       ! ice var in the ref/eq files
     name_rsl        = "rsl"                 ! rsl var in rsl_restart_file
-    time_equil_max = 0.0     ! [years] >0: full-model LGM-memory spin-up cap (hold start ice,
+    equil_time_max = 0.0     ! [years] >0: full-model LGM-memory spin-up cap (hold start ice,
                              ! relax to bed-stationary, exit early or warn at this cap)
+    equil_rate_tol = 1.0e-3  ! [m/yr] spin-up convergence: mean bed velocity over a pass below
+                             ! which the relaxation is taken to have converged
     pre_spinup_1d  = .false. ! run a cheap 1-D pre-equilibration first (geomean radial visc),
                              ! then the full model carrying the spun-up memory
     restart_in_file = ""     ! full-state restart to resume from (skips/precedes spin-up);

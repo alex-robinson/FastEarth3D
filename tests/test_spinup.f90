@@ -2,7 +2,7 @@ program test_spinup
    !! LGM-memory spin-up (solid_earth_spinup): hold a start-slice (LGM) ice load and
    !! relax toward isostatic equilibrium BEFORE the transient, HOLDING the reference as
    !! the datum. Uses the default 1-D earth (no 3-D viscosity file needed). Checks:
-   !!   (1) full-model phase (time_equil_max): relaxes the bed far more than a single
+   !!   (1) full-model phase (equil_time_max): relaxes the bed far more than a single
    !!       cold coupling step, and leaves it near-stationary (a follow-up step moves it
    !!       less than a cold step would);
    !!   (2) pre_spinup_1d phase also runs and drives appreciable subsidence.
@@ -47,7 +47,7 @@ program test_spinup
 
    ! (1) full-model spin-up: relax to (near) equilibrium under the held load
    p%pre_spinup_1d  = .false.
-   p%time_equil_max = 5.0e5_wp*sec_per_year       ! 500 kyr cap (par stores SI; >> Maxwell time)
+   p%equil_time_max = 5.0e5_wp*sec_per_year       ! 500 kyr cap (par stores SI; >> Maxwell time)
    se%par = p;  call solid_earth_init(se, z_bed_eq, h_ice_eq)
    call solid_earth_spinup(se, h_ice)
    spin_sub = z_bed_eq(1,jice) - se%z_bed(1,jice)
@@ -74,7 +74,7 @@ program test_spinup
 
    ! (2) pre_spinup_1d phase (1-D pre-equilibration only, no full-model phase)
    p%pre_spinup_1d  = .true.
-   p%time_equil_max = 0.0_wp
+   p%equil_time_max = 0.0_wp
    se%par = p;  call solid_earth_init(se, z_bed_eq, h_ice_eq)
    call solid_earth_spinup(se, h_ice)
    write(*,'(a,f12.3,a)') '   pre_spinup_1d subsidence       =', &

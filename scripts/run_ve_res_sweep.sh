@@ -69,7 +69,7 @@ VTOL_PROBE=${VTOL_PROBE:-0.1 0.3 1.0}
 T0=${T0:--26000.0}                           # transient start [yr] (LGM)
 T1=${T1:-0.0}                                # transient end   [yr] (present)
 DT_COUPLE=${DT_COUPLE:-100.0}                # coupling interval [yr] (forcing cadence)
-TIME_EQUIL_MAX=${TIME_EQUIL_MAX:-10000.0}    # LGM-memory spin-up cap [yr]
+EQUIL_TIME_MAX=${EQUIL_TIME_MAX:-10000.0}    # LGM-memory spin-up cap [yr]
 OMP=${OMP:-8}                                # OpenMP threads per run
 EXP=${EXP:-runs/ve_res_sweep}                # experiment root (under gitignored runs/)
 
@@ -91,7 +91,7 @@ COMMON=(
   fe3d.earth_response=ve
   fe3d.scheme=fe
   fe3d.dt_couple="$DT_COUPLE"
-  fe3d.time_equil_max="$TIME_EQUIL_MAX"
+  fe3d.equil_time_max="$EQUIL_TIME_MAX"
   fe3d.time_init="$T0"
   fe3d.time_end="$T1"
   fe3d.rotation=true            # real-Earth run: rotational feedback on
@@ -117,7 +117,7 @@ launch() {
 case " $LMAX_LIST " in *" $LMAX_REF "*) ;; *) echo "ERROR: LMAX_REF=$LMAX_REF not in LMAX_LIST='$LMAX_LIST'" >&2; exit 1;; esac
 
 echo "lmax sweep: $LMAX_LIST   ref=$LMAX_REF   cfl-probe@ref: ${CFL_PROBE:-(none)}   vtol-probe@ref: ${VTOL_PROBE:-(none)}"
-echo "window=[$T0,$T1]  dt_couple=$DT_COUPLE  time_equil_max=$TIME_EQUIL_MAX  omp=$OMP"
+echo "window=[$T0,$T1]  dt_couple=$DT_COUPLE  equil_time_max=$EQUIL_TIME_MAX  omp=$OMP"
 echo "exp root: $EXP    runme flags: '$RUNME_FLAGS'"
 
 # ---------------------------------------------------------------------------

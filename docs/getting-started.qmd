@@ -84,7 +84,7 @@ A few conventions worth knowing:
 - **Response solver** is chosen by `earth_response`: `"ve"` (full viscoelastic,
   default), `"modal"` (the [reduced approximation](physics/modal.qmd), with
   `n_modes` / `mode_rank`), `"elastic"`, or `"null"`.
-- **Reference state / spin-up** is controlled by `i_eq`, `time_equil_max`
+- **Reference state / spin-up** is controlled by `i_eq`, `equil_time_max`, `equil_rate_tol`
   (LGM-memory spin-up cap, relaxing to bed-stationary equilibrium),
   `pre_spinup_1d` (run a cheap 1-D pre-equilibration first), and
   `restart_in_file` (resume full state, interpolated up if lower-resolution).

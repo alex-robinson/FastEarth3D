@@ -115,17 +115,20 @@ module fe_params
       character(len=64)  :: name_z_bed_ref = "bedrock_topography" !! bed var in the ref/eq files
       character(len=64)  :: name_h_ice_ref = "ice_thickness"      !! ice var in the ref/eq files
       character(len=64)  :: name_rsl       = "rsl"                !! rsl var in rsl_restart_file
-      real(wp) :: time_equil_max = 0.0_wp
+      real(wp) :: equil_time_max = 0.0_wp
          !! >0: spin up the LGM memory state by holding the start-slice ice (relaxing to
          !! isostatic equilibrium) in the FULL model BEFORE the transient, with the
          !! i_eq-selected reference held as the datum. A cap [years]: the relaxation
          !! exits early once the bed stops moving, or at this time with a warning if it
          !! has not converged. =0 skips the full-model equilibration phase. Non-default.
+      real(wp) :: equil_rate_tol = 1.0e-3_wp
+         !! spin-up convergence criterion: the mean bed velocity over a relaxation pass
+         !! [m/yr]. Relaxation exits once the rate drops below this.
       logical :: pre_spinup_1d = .false.
          !! .true.: before the full-model phase, run a cheap 1-D pre-equilibration to
          !! bed-stationary convergence (the 1-D radial viscosity is the lateral
          !! geometric mean of the 3-D field), then switch to the full model carrying the
-         !! spun-up memory. Independent of time_equil_max.
+         !! spun-up memory. Independent of equil_time_max.
       character(len=512) :: restart_in_file = ""
          !! full-state restart (fe_restart.nc) to resume from: solid_earth_init at the
          !! reference, then restore the saved memory/clock. A lower-resolution restart is
@@ -168,7 +171,7 @@ contains
       character(len=64)  :: g
       character(len=512) :: df
       real(wp) :: dt_couple_yr, dt_init_yr, dt_min_yr, dt_max_yr, time_init_yr, time_end_yr
-      real(wp) :: time_equil_max_yr, dt_be_yr
+      real(wp) :: equil_time_max_yr, dt_be_yr
 
       g  = "fe3d";      if (present(group))         g  = group
       df = filename;    if (present(defaults_file)) df = defaults_file
@@ -269,9 +272,10 @@ contains
       call nml_read(filename, g, "name_z_bed_ref", p%name_z_bed_ref, defaults_file=df)
       call nml_read(filename, g, "name_h_ice_ref", p%name_h_ice_ref, defaults_file=df)
       call nml_read(filename, g, "name_rsl",       p%name_rsl,       defaults_file=df)
-      time_equil_max_yr = p%time_equil_max/sec_per_year
-      call nml_read(filename, g, "time_equil_max", time_equil_max_yr, defaults_file=df)
-      p%time_equil_max = time_equil_max_yr*sec_per_year
+      equil_time_max_yr = p%equil_time_max/sec_per_year
+      call nml_read(filename, g, "equil_time_max", equil_time_max_yr, defaults_file=df)
+      p%equil_time_max = equil_time_max_yr*sec_per_year
+      call nml_read(filename, g, "equil_rate_tol", p%equil_rate_tol, defaults_file=df)
       call nml_read(filename, g, "pre_spinup_1d",  p%pre_spinup_1d,  defaults_file=df)
       call nml_read(filename, g, "restart_in_file", p%restart_in_file, defaults_file=df)
 
@@ -323,8 +327,9 @@ contains
            '   dt:     couple=', p%dt_couple, '  init=', p%dt_init, &
            '  rtol=', p%rtol, '  atol=', p%atol, '  cfl=', p%cfl
       write(u,'(a,l1)')       '   rotation: ', p%rotation
-      write(u,'(a,l1,a,i0,a,es9.2,a,l1)') '   forcing: remap_input=', p%remap_input, &
-           '  i_eq=', p%i_eq, '  time_equil_max=', p%time_equil_max, '  pre_spinup_1d=', p%pre_spinup_1d
+      write(u,'(a,l1,a,i0,a,es9.2,a,es9.2,a,l1)') '   forcing: remap_input=', p%remap_input, &
+           '  i_eq=', p%i_eq, '  equil_time_max=', p%equil_time_max, &
+           '  equil_rate_tol=', p%equil_rate_tol, '  pre_spinup_1d=', p%pre_spinup_1d
       if (p%l_visc_3d) then
          write(u,'(a,a)')   '   visc_3d: ', trim(p%visc_3d_file)
          write(u,'(a,f6.2,a,f6.2,a,f5.2,a,f5.2,a)') &
